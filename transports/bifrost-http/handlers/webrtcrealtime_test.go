@@ -13,7 +13,7 @@ import (
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
@@ -107,19 +107,24 @@ func TestWebRTCRealtimeProviderErrorPreserved(t *testing.T) {
 	require.Equal(t, string(followup), string(relay.pendingToDownstream[1].payload))
 }
 
-type testKVSyncDelegate struct {
-	destination *kvstore.Store
-	err         error
+// realtimeKeysForTest returns a live store and the shared tables on it, as AttachLiveStore
+// creates them.
+func realtimeKeysForTest(t *testing.T) (*livestore.Store, *lib.SharedTables) {
+	t.Helper()
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatalf("livestore.New() error = %v", err)
+	}
+	t.Cleanup(live.Close)
+	config := &lib.Config{}
+	if err := config.AttachLiveStore(live); err != nil {
+		t.Fatalf("AttachLiveStore() error = %v", err)
+	}
+	return live, config.Shared
 }
-
-func (d *testKVSyncDelegate) OnSet(key string, valueJSON []byte, writtenAt int64, expiresAt int64) {
-	d.err = d.destination.SetRemote(key, valueJSON, writtenAt, expiresAt)
-}
-
-func (d *testKVSyncDelegate) OnDelete(string, int64) {}
 
 type testHandlerStore struct {
-	kv *kvstore.Store
+	tables *lib.SharedTables
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher { return nil }
@@ -128,34 +133,39 @@ func (s testHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor
 }
 func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor  { return nil }
 func (s testHandlerStore) GetAsyncJobResultTTL() int                        { return 0 }
-func (s testHandlerStore) GetKVStore() *kvstore.Store                       { return s.kv }
+func (s testHandlerStore) GetSharedTables() *lib.SharedTables               { return s.tables }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList { return nil }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool       { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool           { return false }
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                      { return false }
 func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool             { return false }
+func (s testHandlerStore) ShouldCaptureClientIP() bool                      { return false }
 func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool  { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                  { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                  { return "" }
+
+func (s testHandlerStore) GetCustomProviderPassthrough(schemas.ModelProvider) (schemas.ModelProvider, bool, bool) {
+	return "", false, false
+}
 
 func TestExtractRealtimeTokenFromAuth(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		auth *authHeaders
-		want string
+		setupHeaders *sessionHeaders
+		want         string
 	}{
-		"authorization bearer": {auth: &authHeaders{authorization: "Bearer ek_auth"}, want: "ek_auth"},
-		"virtual key header":   {auth: &authHeaders{virtualKey: "ek_vk"}, want: "ek_vk"},
-		"api key header":       {auth: &authHeaders{apiKey: "ek_api"}, want: "ek_api"},
-		"google api key":       {auth: &authHeaders{googAPIKey: "ek_google"}, want: "ek_google"},
-		"authorization wins":   {auth: &authHeaders{authorization: "Bearer ek_auth", virtualKey: "ek_vk"}, want: "ek_auth"},
-		"nil":                  {auth: nil, want: ""},
+		"authorization bearer": {setupHeaders: &sessionHeaders{authorization: "Bearer ek_auth"}, want: "ek_auth"},
+		"virtual key header":   {setupHeaders: &sessionHeaders{virtualKey: "ek_vk"}, want: "ek_vk"},
+		"api key header":       {setupHeaders: &sessionHeaders{apiKey: "ek_api"}, want: "ek_api"},
+		"google api key":       {setupHeaders: &sessionHeaders{googAPIKey: "ek_google"}, want: "ek_google"},
+		"authorization wins":   {setupHeaders: &sessionHeaders{authorization: "Bearer ek_auth", virtualKey: "ek_vk"}, want: "ek_auth"},
+		"nil":                  {setupHeaders: nil, want: ""},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := extractRealtimeTokenFromAuth(test.auth); got != test.want {
+			if got := extractRealtimeTokenFromAuth(test.setupHeaders); got != test.want {
 				t.Fatalf("extractRealtimeTokenFromAuth() = %q, want %q", got, test.want)
 			}
 		})
@@ -360,6 +370,20 @@ func TestNewRealtimeRelayContextCarriesRequestGrant(t *testing.T) {
 	}
 }
 
+// The SDP exchange runs on the relay, so the resolved alias must reach it for per-alias provider
+// overrides such as Azure's use_voice_live_endpoints.
+func TestNewRealtimeRelayContextCarriesResolvedAlias(t *testing.T) {
+	requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	alias := &schemas.ResolvedAlias{Key: "gpt-realtime-vl", Config: &schemas.AliasConfig{ModelID: "gpt-realtime"}}
+	requestCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, alias)
+
+	relayCtx, relayCancel := newRealtimeRelayContext(requestCtx)
+	defer relayCancel()
+	if got := schemas.GetResolvedAlias(relayCtx); got != alias {
+		t.Fatalf("relay alias = %+v, want the request's", got)
+	}
+}
+
 func TestNewRealtimeRelayContextCopiesValuesWithoutRequestCancellation(t *testing.T) {
 	type metadataKey uint8
 	const userKey metadataKey = 0
@@ -446,19 +470,9 @@ func TestExtractRealtimeBearerToken(t *testing.T) {
 func TestLookupRealtimeEphemeralKeyMappingKeepsEntryUntilTTLExpiry(t *testing.T) {
 	t.Parallel()
 
-	store, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("kvstore.New() error = %v", err)
-	}
-	defer store.Close()
-
-	payload, err := json.Marshal(realtimeEphemeralKeyMapping{KeyID: "key_123", VirtualKey: "sk-bf-test"})
-	if err != nil {
-		t.Fatalf("json.Marshal() error = %v", err)
-	}
-	if err := store.SetWithTTL(buildRealtimeEphemeralKeyMappingKey("ek_test_123"), payload, time.Minute); err != nil {
-		t.Fatalf("store.SetWithTTL() error = %v", err)
-	}
+	_, tables := realtimeKeysForTest(t)
+	store := tables.RealtimeKeys
+	store.PutWithTTL(buildRealtimeEphemeralKeyMappingKey("ek_test_123"), lib.RealtimeKeyMapping{KeyID: "key_123", VirtualKey: "sk-bf-test"}, time.Minute)
 
 	mapping, ok := lookupRealtimeEphemeralKeyMapping(store, "ek_test_123")
 	if !ok {
@@ -471,32 +485,18 @@ func TestLookupRealtimeEphemeralKeyMappingKeepsEntryUntilTTLExpiry(t *testing.T)
 		t.Fatalf("mapping.VirtualKey = %q, want %q", mapping.VirtualKey, "sk-bf-test")
 	}
 
-	raw, err := store.Get(buildRealtimeEphemeralKeyMappingKey("ek_test_123"))
-	if err != nil {
-		t.Fatalf("expected mapping to remain until TTL expiry: %v", err)
-	}
-	if raw == nil {
-		t.Fatal("expected mapping to remain in KV store")
+	if _, ok := store.Get(buildRealtimeEphemeralKeyMappingKey("ek_test_123")); !ok {
+		t.Fatal("expected mapping to remain until TTL expiry")
 	}
 }
 
-func TestCacheRealtimeEphemeralKeyMappingPreservesVirtualKeyAcrossKVReplication(t *testing.T) {
+// TestCacheRealtimeEphemeralKeyMappingPreservesVirtualKeyThroughJSON checks that the cached
+// mapping keeps the key, the virtual key and the provider's token, in the table and through its
+// JSON form.
+func TestCacheRealtimeEphemeralKeyMappingPreservesVirtualKeyThroughJSON(t *testing.T) {
 	t.Parallel()
 
-	source, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("kvstore.New() source error = %v", err)
-	}
-	defer source.Close()
-
-	destination, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("kvstore.New() destination error = %v", err)
-	}
-	defer destination.Close()
-
-	delegate := &testKVSyncDelegate{destination: destination}
-	source.SetDelegate(delegate)
+	_, source := realtimeKeysForTest(t)
 
 	body, err := json.Marshal(map[string]any{
 		"value":      "ek_test_replicated",
@@ -506,11 +506,8 @@ func TestCacheRealtimeEphemeralKeyMappingPreservesVirtualKeyAcrossKVReplication(
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 	resp := &schemas.BifrostPassthroughResponse{Body: body}
-	if bifrostErr := replaceAndCacheRealtimeEphemeralToken(source, resp, "key_123", "sk-bf-test"); bifrostErr != nil {
+	if bifrostErr := replaceAndCacheRealtimeEphemeralToken(source.RealtimeKeys, resp, "key_123", "sk-bf-test"); bifrostErr != nil {
 		t.Fatalf("replaceAndCacheRealtimeEphemeralToken() error = %v", bifrostErr)
-	}
-	if delegate.err != nil {
-		t.Fatalf("replicating mapping error = %v", delegate.err)
 	}
 
 	var rewritten struct {
@@ -519,9 +516,20 @@ func TestCacheRealtimeEphemeralKeyMappingPreservesVirtualKeyAcrossKVReplication(
 	if err := json.Unmarshal(resp.Body, &rewritten); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	mapping, ok := lookupRealtimeEphemeralKeyMapping(destination, rewritten.Value)
+	cached, ok := lookupRealtimeEphemeralKeyMapping(source.RealtimeKeys, rewritten.Value)
 	if !ok {
-		t.Fatal("expected replicated mapping")
+		t.Fatal("expected cached mapping")
+	}
+	if cached.VirtualKey != "sk-bf-test" {
+		t.Fatalf("cached.VirtualKey = %q, want %q", cached.VirtualKey, "sk-bf-test")
+	}
+	encoded, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var mapping lib.RealtimeKeyMapping
+	if err := json.Unmarshal(encoded, &mapping); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 	if mapping.KeyID != "key_123" {
 		t.Fatalf("mapping.KeyID = %q, want %q", mapping.KeyID, "key_123")
@@ -537,17 +545,16 @@ func TestCacheRealtimeEphemeralKeyMappingPreservesVirtualKeyAcrossKVReplication(
 func TestLookupRealtimeEphemeralKeyMapping_BackwardsCompatibleStringValue(t *testing.T) {
 	t.Parallel()
 
-	store, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("kvstore.New() error = %v", err)
-	}
-	defer store.Close()
+	_, tables := realtimeKeysForTest(t)
 
-	if err := store.SetWithTTL(buildRealtimeEphemeralKeyMappingKey("ek_test_legacy"), "key_legacy", time.Minute); err != nil {
-		t.Fatalf("store.SetWithTTL() error = %v", err)
+	// Earlier versions wrote the bare key ID string.
+	var legacy lib.RealtimeKeyMapping
+	if err := json.Unmarshal([]byte(`" key_legacy "`), &legacy); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
+	tables.RealtimeKeys.PutWithTTL(buildRealtimeEphemeralKeyMappingKey("ek_test_legacy"), legacy, time.Minute)
 
-	mapping, ok := lookupRealtimeEphemeralKeyMapping(store, "ek_test_legacy")
+	mapping, ok := lookupRealtimeEphemeralKeyMapping(tables.RealtimeKeys, "ek_test_legacy")
 	if !ok {
 		t.Fatal("expected legacy mapping to be consumed")
 	}
@@ -610,14 +617,10 @@ func TestWebRTCRealtimeRelayCloseFinalizesActiveTurnHooks(t *testing.T) {
 func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenStaysAnonymous(t *testing.T) {
 	t.Parallel()
 
-	store, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("kvstore.New() error = %v", err)
-	}
-	defer store.Close()
+	_, store := realtimeKeysForTest(t)
 
 	handler := &WebRTCRealtimeHandler{
-		handlerStore: testHandlerStore{kv: store},
+		handlerStore: testHandlerStore{tables: store},
 	}
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -626,7 +629,7 @@ func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenStaysAnonymous(t *testi
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, "mapped-id")
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyName, "mapped-name")
 
-	authKey, selectedKey, err := handler.resolveRealtimeWebRTCKeys(bifrostCtx, schemas.OpenAI, "gpt-realtime", "ek_bf_test_unmapped", realtimeEphemeralKeyMapping{}, false)
+	authKey, selectedKey, err := handler.resolveRealtimeWebRTCKeys(bifrostCtx, schemas.OpenAI, "gpt-realtime", "ek_bf_test_unmapped", lib.RealtimeKeyMapping{}, false)
 	if err != nil {
 		t.Fatalf("resolveRealtimeWebRTCKeys() error = %v", err)
 	}
@@ -657,22 +660,18 @@ func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenStaysAnonymous(t *testi
 func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenOnAzureIsRefused(t *testing.T) {
 	t.Parallel()
 
-	store, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("kvstore.New() error = %v", err)
-	}
-	defer store.Close()
+	_, store := realtimeKeysForTest(t)
 
-	handler := &WebRTCRealtimeHandler{handlerStore: testHandlerStore{kv: store}}
+	handler := &WebRTCRealtimeHandler{handlerStore: testHandlerStore{tables: store}}
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	authKey, selectedKey, err := handler.resolveRealtimeWebRTCKeys(bifrostCtx, schemas.Azure, "gpt-realtime", "ek_bf_test_unmapped", realtimeEphemeralKeyMapping{}, false)
+	authKey, selectedKey, err := handler.resolveRealtimeWebRTCKeys(bifrostCtx, schemas.Azure, "gpt-realtime", "ek_bf_test_unmapped", lib.RealtimeKeyMapping{}, false)
 	if err != nil || selectedKey != nil || authKey.AzureKeyConfig != nil {
 		t.Fatalf("resolveRealtimeWebRTCKeys() = (%#v, %#v, %v), want a bare key with no Azure config", authKey, selectedKey, err)
 	}
 
 	provider := &azure.AzureProvider{}
-	if _, urlErr := provider.RealtimeWebSocketURL(authKey, "gpt-realtime", ""); urlErr == nil || urlErr.StatusCode == nil || *urlErr.StatusCode != fasthttp.StatusBadRequest {
+	if _, urlErr := provider.RealtimeWebSocketURL(nil, authKey, "gpt-realtime", ""); urlErr == nil || urlErr.StatusCode == nil || *urlErr.StatusCode != fasthttp.StatusBadRequest {
 		t.Fatalf("RealtimeWebSocketURL() error = %#v, want a 400", urlErr)
 	}
 	answer, sdpErr := provider.ExchangeRealtimeWebRTCSDP(bifrostCtx, authKey, "gpt-realtime", "v=0", nil)
@@ -685,7 +684,7 @@ func TestApplyRealtimeEphemeralKeyMapping_RestoresVirtualKeyAndKeyID(t *testing.
 	t.Parallel()
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	applyRealtimeEphemeralKeyMapping(bifrostCtx, realtimeEphemeralKeyMapping{
+	applyRealtimeEphemeralKeyMapping(bifrostCtx, lib.RealtimeKeyMapping{
 		KeyID:      "key_123",
 		VirtualKey: "sk-bf-test",
 	})
@@ -760,5 +759,24 @@ func TestRealtimeContextsCarryVirtualKeyMetadata(t *testing.T) {
 	got, _ := relayCtx.Value(governanceVirtualKeyMetadataContextKey).(map[string]string)
 	if got["cost_center"] != "cc-42" {
 		t.Fatalf("relay virtual key metadata = %#v, want the request's", got)
+	}
+}
+
+// Realtime turns are logged on the relay, so it must carry every content-logging layer the request
+// was stamped with, and the resolved marker, or a turn would resolve content differently from the
+// request that opened the session.
+func TestNewRealtimeRelayContextCarriesContentLoggingLayers(t *testing.T) {
+	requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range schemas.ContentLoggingContextKeys() {
+		requestCtx.SetValue(key, true)
+	}
+
+	relayCtx, relayCancel := newRealtimeRelayContext(requestCtx)
+	defer relayCancel()
+
+	for _, key := range schemas.ContentLoggingContextKeys() {
+		if got := relayCtx.Value(key); got != true {
+			t.Errorf("%s = %v on the relay, want true", key, got)
+		}
 	}
 }

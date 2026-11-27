@@ -436,15 +436,16 @@ func chainInjectedStream(ctx *schemas.BifrostContext, turns injectedStreamTurns,
 	go func() {
 		failed := false
 		defer func() {
-			providerUtils.CloseStream(ctx, out)
 			// A stream ending between turns (cancel, a turn that failed to open, an upstream
 			// that died without a final chunk) never reached a provider's completion path,
-			// so complete the LLM span here; a failure marks it failed. A normal end has
-			// already completed it, and this only runs the finalizer, which is idempotent.
+			// so CloseStream completes the LLM span; a failure marks it failed. The flags are
+			// set first because it reads them. A normal end has already completed the span,
+			// and the finalizer is idempotent.
 			ctx.SetValue(schemas.BifrostContextKeyStreamTurnPending, false)
 			if failed || !ended.Load() {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, false)
 			}
+			providerUtils.CloseStream(ctx, out)
 			providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		}()
 		for {
@@ -528,7 +529,8 @@ func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, pro
 // injects tools.
 func (bifrost *Bifrost) startInjectedResponsesStream(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, key schemas.Key, original *schemas.BifrostResponsesRequest, set *injectedToolSet, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	session := newInjectedResponsesStream(set)
-	turn := applyInjectedToolsResponses(original, set)
+	original = set.responsesRequest(original)
+	turn := firstResponsesTurn(original, set)
 	return chainInjectedStream(ctx, injectedStreamTurns{
 		process: func(result *schemas.BifrostResponse, final bool) ([]clientEmit, bool) {
 			if result.ResponsesStreamResponse == nil {
@@ -548,12 +550,15 @@ func (bifrost *Bifrost) startInjectedResponsesStream(ctx *schemas.BifrostContext
 				return bifrost.executeInjectedCall(ctx, set, call)
 			})
 			next := *turn
-			next.Params = relaxForcedResponsesChoice(nextResponsesTools(original, turn, set).Params)
+			next.Params = relaxForcedResponsesChoice(nextResponsesTools(original, turn, set, session.depth).Params)
 			next.Input = make([]schemas.ResponsesMessage, 0, len(turn.Input)+len(items)+len(results))
 			next.Input = append(next.Input, turn.Input...)
 			next.Input = append(next.Input, items...)
 			for _, result := range results {
 				next.Input = append(next.Input, result.ToResponsesMessages()...)
+			}
+			if lastSearchTurn(set, session.depth) {
+				next.Input = searchesAsText(next.Input)
 			}
 			turn = &next
 		},
@@ -650,8 +655,7 @@ func (s *injectedResponsesStream) onEvent(ev *schemas.BifrostResponsesStreamResp
 	}
 
 	var emits []responsesEmit
-	if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && ev.Item != nil && isFunctionCall(*ev.Item) &&
-		ev.Item.Name != nil && s.set.isInjected(*ev.Item.Name) {
+	if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && ev.Item != nil && callsInjected(*ev.Item, s.set) {
 		// The turn calls an injected tool, so it is re-asked and its client calls are never
 		// answered: drop them, and release whatever was held behind them. On the last
 		// permitted turn nothing is re-asked, so the client calls stay, as in chat.
@@ -710,7 +714,7 @@ func (s *injectedResponsesStream) routeOf(ev *schemas.BifrostResponsesStreamResp
 		route := routeVisible
 		if isFunctionCall(*ev.Item) {
 			switch {
-			case ev.Item.Name != nil && s.set.isInjected(*ev.Item.Name):
+			case callsInjected(*ev.Item, s.set):
 				route = routeInjected
 			case s.hasInjected:
 				route = routeDropped

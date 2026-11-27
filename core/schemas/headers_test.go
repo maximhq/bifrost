@@ -54,6 +54,15 @@ func TestRedactSensitiveHeaders_VirtualKeyHeader(t *testing.T) {
 	}
 }
 
+// Ocp-Apim-Subscription-Key carries an Azure AI Speech key or a virtual key, and no generic pattern names it.
+func TestIsSensitiveHeader_AzureSpeechKeyHeader(t *testing.T) {
+	for _, name := range []string{"ocp-apim-subscription-key", "Ocp-Apim-Subscription-Key"} {
+		if !IsSensitiveHeader(name) {
+			t.Errorf("IsSensitiveHeader(%q) = false, want true", name)
+		}
+	}
+}
+
 // BenchmarkIsSensitiveHeader measures the redaction check run on every captured header when a
 // trace is exported, over a typical request's header names.
 func BenchmarkIsSensitiveHeader(b *testing.B) {

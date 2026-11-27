@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -403,6 +402,17 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	}
 
 	performDirectSearch, performSemanticSearch := plugin.resolveCacheTypes(ctx)
+
+	// An agent turn's answer depends on the tools it may call and the results they returned, which an
+	// embedding of its text does not capture, so such a request is served only an exact repeat.
+	if performSemanticSearch && isAgentTurn(req) {
+		performSemanticSearch = false
+		if !performDirectSearch {
+			plugin.clearCacheState(requestID)
+			plugin.logger.Debug("skipping cache: semantic-only lookup requested for a request that uses tools")
+			return req, nil, nil
+		}
+	}
 
 	// If neither search path can produce a lookup in the current plugin
 	// configuration, skip caching entirely (no read, no write). Concretely:
@@ -809,7 +819,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// below must never dereference res: it gets only these owned bytes.
 	// Serialization failure is nonfatal — skip the write, keep the response
 	// flowing (issue #7233).
-	responseData, err := sonic.Marshal(res)
+	responseData, err := marshalCachedResponse(res)
 	if err != nil {
 		switch {
 		case !isStream:

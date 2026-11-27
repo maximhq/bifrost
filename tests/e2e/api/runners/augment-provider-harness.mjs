@@ -90,7 +90,7 @@ const genaiItem = ({ name, model, body }) => ({
 const effortModels = [
   { label: "openai/gpt-5", model: "openai/gpt-5" },
   { label: "openai/gpt-5-mini", model: "openai/gpt-5-mini" },
-  { label: "openai/o3-mini", model: "openai/o3-mini" },
+  { label: "openai/gpt-5.4-mini", model: "openai/gpt-5.4-mini" },
   { label: "anthropic/claude-opus-4-7", model: "anthropic/claude-opus-4-7", maxTokens: 4096 },
   { label: "anthropic/claude-sonnet-4-6", model: "anthropic/claude-sonnet-4-6", maxTokens: 4096 },
   { label: "bedrock/claude-opus-4-7", model: "bedrock/global.anthropic.claude-opus-4-7", maxTokens: 4096 },

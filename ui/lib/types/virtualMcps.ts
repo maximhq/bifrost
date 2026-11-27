@@ -17,6 +17,8 @@ export interface VirtualMCP {
 	tools: VirtualMCPToolSpec[];
 	// Assigned VK ids: batch-loaded on list, loaded on get/update.
 	virtual_key_ids: string[] | null;
+	// Newline-separated parts of the config.json declaration that could not be applied.
+	config_issues?: string;
 	created_at: string;
 	updated_at: string;
 }
@@ -41,6 +43,8 @@ export interface GetVirtualMCPsParams {
 	search?: string;
 	limit?: number;
 	offset?: number;
+	// Only Virtual MCPs that bundle this source server (exact client_id).
+	mcp_client_id?: string;
 }
 
 export interface GetVirtualMCPsResponse {

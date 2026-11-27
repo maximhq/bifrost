@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -40,6 +41,9 @@ type logIndexItem struct {
 	id       string
 	text     string
 	metadata map[string]interface{}
+	// assignment is the request as it is filed under a topic once it has
+	// been embedded: the log's columns, with the topic left to fill in.
+	assignment logstore.WarpTopicAssignment
 }
 
 // LogIndexer owns all stream-sized and queued indexing state outside request
@@ -80,6 +84,17 @@ type LogIndexer struct {
 	// it. A field rather than a constant so a test can pick a short one without
 	// waiting out the production value.
 	drainBudget time.Duration
+	// centres and assigner are live topic assignment: the topics a request
+	// is measured against, and the batches its row is written in. See
+	// topicassign.go.
+	centres  *topicCentres
+	assigner *topicAssigner
+	// topicMu keeps a request's topic lookup and its filing on one store:
+	// assignTopic holds it shared, SetTopicStore exclusively.
+	topicMu sync.RWMutex
+	// beforeFile runs between a request's topic lookup and its filing, for a
+	// test to act in that gap. Nil outside tests.
+	beforeFile func()
 }
 
 // warpIndexItemTimeout bounds one background index. Long enough for a slow
@@ -88,16 +103,30 @@ type LogIndexer struct {
 const warpIndexItemTimeout = 2 * time.Minute
 
 func NewLogIndexer(store configstore.WarpStore, vectors vectorstore.VectorStore, embed EmbeddingExecutor, logger schemas.Logger) *LogIndexer {
+	return newLogIndexer(store, vectors, embed, logger, topicsAssignFlushInterval)
+}
+
+// newLogIndexer is NewLogIndexer with the assignment flush interval chosen,
+// for tests that cannot wait out the production one.
+func newLogIndexer(store configstore.WarpStore, vectors vectorstore.VectorStore, embed EmbeddingExecutor, logger schemas.Logger, assignFlushInterval time.Duration) *LogIndexer {
 	ctx, cancel := context.WithCancel(context.Background())
 	indexer := &LogIndexer{
 		store: store, vectors: vectors, embed: embed, logger: logger,
 		queue: make(chan logIndexItem, warpIndexQueueSize), done: make(chan struct{}),
 		ctx: ctx, cancel: cancel, drainBudget: warpIndexDrainBudget,
+		centres: &topicCentres{ttl: topicCentresTTL}, assigner: newTopicAssigner(logger),
 	}
 	for range warpIndexWorkers {
 		indexer.wg.Add(1)
 		go indexer.worker()
 	}
+	// Started with the workers; it is the workers' writes it flushes, and it
+	// flushes them once more after the workers are done.
+	indexer.wg.Add(1)
+	go func() {
+		defer indexer.wg.Done()
+		indexer.assigner.run(ctx, indexer.done, assignFlushInterval)
+	}()
 	return indexer
 }
 
@@ -250,6 +279,7 @@ func (i *LogIndexer) indexItemWithConfig(ctx context.Context, config *schemas.Wa
 		i.ensureMu.Unlock()
 		return false, usage, err
 	}
+	i.assignTopic(ctx, config, item, embedding)
 	return true, usage, nil
 }
 
@@ -306,6 +336,12 @@ func (i *LogIndexer) Close() {
 		}
 		<-drained
 	}
+	// The workers drain the queue after done closes, so a request they file
+	// then can land after the assigner's last flush. One more, on a context
+	// of its own because the indexer's is about to go.
+	flushCtx, cancel := context.WithTimeout(context.Background(), topicsAssignFlushTimeout)
+	i.assigner.flush(flushCtx)
+	cancel()
 	if i.cancel != nil {
 		i.cancel()
 	}
@@ -353,6 +389,7 @@ func ensureWarpNamespace(ctx context.Context, store vectorstore.VectorStore, nam
 		"completion_tokens": {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Output token count"},
 		"total_tokens":      {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Total token count"},
 		"parent_request_id": {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Fallback or session parent"},
+		"session_id":        {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Bifrost session the request belongs to"},
 		"app":               {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Detected client app"},
 		"virtual_key_id":    {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Virtual key ID"},
 		"user_id":           {DataType: vectorstore.VectorStorePropertyTypeString, Description: "User ID"},
@@ -462,6 +499,11 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 		return logIndexItem{}, false
 	}
 	opening, user := conversationUserTexts(entry)
+	// Nothing the person wrote means nothing to file the request under: a
+	// reply alone would place it by what the model said, not what was asked.
+	if opening == "" && user == "" {
+		return logIndexItem{}, false
+	}
 	assistant := strings.Join(strings.Fields(logAssistantText(entry)), " ")
 	text := boundedConversationText(opening, user, assistant, warpMaxEmbeddingBytes)
 	if text == "" {
@@ -471,17 +513,19 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 	// prefilter compares exactly while the post-filter compares with EqualFold
 	// - appendScalarQuery lowers the filter values to meet these. Hydration
 	// reads the full row from the logstore, so nothing rendered loses casing.
+	// session_id is kept exactly: it is an opaque id, matched exactly by the
+	// log store and by the post-filter.
 	metadata := map[string]interface{}{
 		"log_id": entry.ID, "timestamp": entry.Timestamp.Unix(), "object": entry.Object,
 		"provider": strings.ToLower(entry.Provider), "model": strings.ToLower(entry.Model), "status": strings.ToLower(entry.Status), "warp_log": true,
 		"latency_ms": roundedMetric(entry.Latency, 1), "cost_micro_usd": roundedMetric(entry.Cost, 1_000_000),
 		"prompt_tokens": entry.PromptTokens, "completion_tokens": entry.CompletionTokens, "total_tokens": entry.TotalTokens,
-		"parent_request_id": stringValue(entry.ParentRequestID), "app": strings.ToLower(stringValue(entry.App)),
+		"parent_request_id": stringValue(entry.ParentRequestID), "session_id": stringValue(entry.SessionID), "app": strings.ToLower(stringValue(entry.App)),
 		"virtual_key_id": strings.ToLower(stringValue(entry.VirtualKeyID)), "user_id": strings.ToLower(stringValue(entry.UserID)),
 		"team_ids": mergedIDs(entry.TeamID, entry.TeamIDs), "customer_ids": mergedIDs(entry.CustomerID, entry.CustomerIDs),
 		"business_unit_ids": mergedIDs(entry.BusinessUnitID, entry.BusinessUnitIDs),
 	}
-	return logIndexItem{id: entry.ID, text: text, metadata: metadata}, true
+	return logIndexItem{id: entry.ID, text: text, metadata: metadata, assignment: logstore.WarpTopicAssignmentFromLog(entry)}, true
 }
 
 func roundedMetric(value *float64, multiplier float64) int64 {
@@ -544,39 +588,120 @@ func logInstructions(entry *logstore.Log) string {
 	return ""
 }
 
+// agentReminder matches the envelope a coding agent wraps around the context
+// it adds to a user turn: the project's instructions file, the git status,
+// attribution rules. Claude Code sends several such turns before the first
+// thing the person typed, and the same ones in every request.
+var agentReminder = regexp.MustCompile(`(?is)<system-reminder>.*?</system-reminder>`)
+
+// codexEnvelope matches the context Codex sends as user turns of its own
+// before the person's task: the project's AGENTS.md, the environment, loaded
+// skills, and its notices about aborted turns and subagents. The pairs mirror
+// the complexity router's codexContextTags. Only Codex traffic is matched
+// against them, since a bare <skill> in anyone else's message is their text.
+var codexEnvelope = regexp.MustCompile(`(?s)# AGENTS\.md instructions.*?</INSTRUCTIONS>` +
+	`|<environment_context>.*?</environment_context>` +
+	`|<skill>.*?</skill>` +
+	`|<turn_aborted>.*?</turn_aborted>` +
+	`|<subagent_notification>.*?</subagent_notification>` +
+	`|<codex_internal_context.*?</codex_internal_context>` +
+	`|<goal_context>.*?</goal_context>` +
+	`|<recommended_plugins>.*?</recommended_plugins>`)
+
+// codexEnvelopeOpen matches the tags codexEnvelope opens with. One still in
+// the text once codexEnvelope has run has no closing tag after it.
+var codexEnvelopeOpen = regexp.MustCompile(`# AGENTS\.md instructions|<environment_context>|<skill>|<turn_aborted>` +
+	`|<subagent_notification>|<codex_internal_context|<goal_context>|<recommended_plugins>`)
+
+// isCodexLog reports whether a request came from Codex, by the same user
+// agents the complexity router recognises it by.
+func isCodexLog(entry *logstore.Log) bool {
+	userAgent := stringValue(entry.UserAgent)
+	return schemas.CodexCLI.Matches(userAgent) || schemas.CodexDesktop.Matches(userAgent)
+}
+
+// userTurnText is one user turn as it is read for embedding, naming and
+// previews: what the person wrote, on one line, with the agent's envelopes
+// taken out.
+//
+// Without this, every Claude Code request opened with the same contents of
+// AGENTS.md, so they embedded alike whatever was asked and clustered into one
+// topic about the project's instructions. Codex does the same with envelopes
+// of its own, which codexEnvelope takes out.
+func userTurnText(text string, codex bool) string {
+	text = agentReminder.ReplaceAllString(text, " ")
+	if codex {
+		text = codexEnvelope.ReplaceAllString(text, " ")
+	}
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// summaryTurnText reads a stored ContentSummary as userTurnText reads a turn.
+//
+// The summary is capped at logstore.MaxContentSummaryBytes, so one the cap
+// shortened can end inside a Codex envelope, before its closing tag, and
+// everything from that tag on is the envelope. Only a summary long enough to
+// have been cut is read that way. In a whole message an unmatched tag is the
+// person's own text - a Codex user asking why <skill> shows up - and is kept.
+func summaryTurnText(summary string, codex bool) string {
+	text := userTurnText(summary, codex)
+	if codex && len(summary) > logstore.MaxContentSummaryBytes-utf8.UTFMax {
+		if cut := codexEnvelopeOpen.FindStringIndex(text); cut != nil {
+			text = strings.TrimSpace(text[:cut[0]])
+		}
+	}
+	return text
+}
+
 // conversationUserTexts returns what a conversation opened with and the
 // user's last message, each on one line.
 //
 // The last message alone is what the request answers, but it is often a reply
 // to a question - "all", "yes", "-7d" - and says nothing about the subject.
 // The opening is empty when the conversation has one user turn, or when the
-// history was not kept and only the last message is known.
+// history was not kept and only the last message is known. A turn that was
+// nothing but an agent's envelope is not a turn.
 func conversationUserTexts(entry *logstore.Log) (opening, last string) {
-	last = strings.Join(strings.Fields(entry.BuildInputContentSummary()), " ")
-	if last == "" {
-		last = strings.Join(strings.Fields(entry.ContentSummary), " ")
-	}
+	codex := isCodexLog(entry)
+	var turns []string
+	sawUser := false
 	for index := range entry.InputHistoryParsed {
 		if entry.InputHistoryParsed[index].Role != schemas.ChatMessageRoleUser {
 			continue
 		}
-		if opening = strings.Join(strings.Fields(chatContentText(entry.InputHistoryParsed[index].Content)), " "); opening != "" {
-			break
+		sawUser = true
+		if text := userTurnText(chatContentText(entry.InputHistoryParsed[index].Content), codex); text != "" {
+			turns = append(turns, text)
 		}
 	}
-	if opening == "" {
-		for index := range entry.ResponsesInputHistoryParsed {
-			message := entry.ResponsesInputHistoryParsed[index]
-			if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleUser {
-				continue
-			}
-			if opening = strings.Join(strings.Fields(responsesContentText(message.Content)), " "); opening != "" {
-				break
-			}
+	for index := range entry.ResponsesInputHistoryParsed {
+		message := entry.ResponsesInputHistoryParsed[index]
+		if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleUser {
+			continue
+		}
+		sawUser = true
+		if text := userTurnText(responsesContentText(message.Content), codex); text != "" {
+			turns = append(turns, text)
 		}
 	}
-	if opening == last {
-		opening = ""
+	if len(turns) == 0 {
+		// User turns that were all setup have nothing to give: the stored
+		// preview is that same setup, capped short enough to cut an envelope
+		// before it closes. Only when the history was not kept, or a list row
+		// kept just its last element and that was not a user turn, is the
+		// preview all there is.
+		if sawUser {
+			return "", ""
+		}
+		last = userTurnText(entry.BuildInputContentSummary(), codex)
+		if last == "" {
+			last = summaryTurnText(entry.ContentSummary, codex)
+		}
+		return "", last
+	}
+	last = turns[len(turns)-1]
+	if len(turns) > 1 && turns[0] != last {
+		opening = turns[0]
 	}
 	return opening, last
 }

@@ -9,35 +9,81 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
+// TestIsEmptyModelCapabilities distinguishes empty containers from explicit scalar overrides.
+func TestIsEmptyModelCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		data  string
+		empty bool
+	}{
+		{"zero value", `{}`, true},
+		{"null parameters", `{"model_parameters":null}`, true},
+		{"declared empty parameters", `{"model_parameters":[]}`, false},
+		{"empty containers", `{"supported_endpoints":[],"server_tools":{},"reasoning_budget":{}}`, true},
+		{"empty nested elements", `{"model_parameters":[{},null,{"id":""}]}`, true},
+		{"explicit false", `{"supports_function_calling":false}`, false},
+		{"explicit zero", `{"min_output_tokens":0}`, false},
+		{"explicit empty string", `{"synthetic_structured_output_tool_prefix":""}`, false},
+		{"map entry", `{"unsupported_fields":{"temperature":false}}`, false},
+		{"endpoint", `{"supported_endpoints":["/v1/responses"]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var caps schemas.ModelCapabilities
+			if err := json.Unmarshal([]byte(tc.data), &caps); err != nil {
+				t.Fatal(err)
+			}
+			if got := IsEmptyModelCapabilities(&caps); got != tc.empty {
+				t.Fatalf("IsEmptyModelCapabilities(%s) = %t, want %t", tc.data, got, tc.empty)
+			}
+		})
+	}
+}
+
+// BenchmarkIsEmptyModelCapabilities measures the shared check used during sync
+// and capability cache misses, without database or JSON decoding costs.
+func BenchmarkIsEmptyModelCapabilities(b *testing.B) {
+	for name, caps := range map[string]*schemas.ModelCapabilities{
+		"empty":       {},
+		"token_limit": {MaxOutputTokens: capabilityIntPtr(32000)},
+		"endpoints":   {SupportedEndpoints: []string{"/v1/chat/completions"}},
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				IsEmptyModelCapabilities(caps)
+			}
+		})
+	}
+}
+
 func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T) {
 	contextLengthChat := 128000
 	maxInputTokensChat := 64000
 	maxOutputTokensChat := 16000
 	modality := "text"
 
-	s := &Store{
-		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o", "openai", "responses"): {
-				Model:           "gpt-4o",
-				Provider:        "openai",
-				Mode:            "responses",
-				ContextLength:   capabilityIntPtr(200000),
-				MaxInputTokens:  capabilityIntPtr(100000),
-				MaxOutputTokens: capabilityIntPtr(32000),
-			},
-			makeKey("gpt-4o", "openai", "chat"): {
-				Model:           "gpt-4o",
-				Provider:        "openai",
-				Mode:            "chat",
-				ContextLength:   &contextLengthChat,
-				MaxInputTokens:  &maxInputTokensChat,
-				MaxOutputTokens: &maxOutputTokensChat,
-				Architecture: &schemas.Architecture{
-					Modality: &modality,
-				},
+	s := testStore(t, nil)
+	fillTable(s.pricingData, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o", "openai", "responses"): {
+			Model:           "gpt-4o",
+			Provider:        "openai",
+			Mode:            "responses",
+			ContextLength:   capabilityIntPtr(200000),
+			MaxInputTokens:  capabilityIntPtr(100000),
+			MaxOutputTokens: capabilityIntPtr(32000),
+		},
+		makeKeyNormalized("gpt-4o", "openai", "chat"): {
+			Model:           "gpt-4o",
+			Provider:        "openai",
+			Mode:            "chat",
+			ContextLength:   &contextLengthChat,
+			MaxInputTokens:  &maxInputTokensChat,
+			MaxOutputTokens: &maxOutputTokensChat,
+			Architecture: &schemas.Architecture{
+				Modality: &modality,
 			},
 		},
-	}
+	})
 
 	entry := s.GetCapabilityEntry("gpt-4o", schemas.OpenAI)
 	if entry == nil {
@@ -61,17 +107,16 @@ func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T)
 }
 
 func TestGetCapabilityEntry_FallsBackToAnyModeDeterministically(t *testing.T) {
-	s := &Store{
-		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("imagen", "vertex", "image_generation"): {
-				Model:           "imagen",
-				Provider:        "vertex",
-				Mode:            "image_generation",
-				ContextLength:   capabilityIntPtr(4096),
-				MaxOutputTokens: capabilityIntPtr(1),
-			},
+	s := testStore(t, nil)
+	fillTable(s.pricingData, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("imagen", "vertex", "image_generation"): {
+			Model:           "imagen",
+			Provider:        "vertex",
+			Mode:            "image_generation",
+			ContextLength:   capabilityIntPtr(4096),
+			MaxOutputTokens: capabilityIntPtr(1),
 		},
-	}
+	})
 
 	entry := s.GetCapabilityEntry("imagen", schemas.Vertex)
 	if entry == nil {
@@ -82,32 +127,74 @@ func TestGetCapabilityEntry_FallsBackToAnyModeDeterministically(t *testing.T) {
 	}
 }
 
+// Rows that differ only by casing collapse to the lowercase one, and the any-mode
+// scan returns that same row whatever casing the request uses.
+func TestGetCapabilityEntry_AnyModeFallbackUsesLowercaseRowForEveryCasing(t *testing.T) {
+	s := testStore(t, nil)
+	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "Embed-X", Provider: "azure", Mode: "embedding", MaxInputTokens: capabilityIntPtr(999)},
+		{Model: "embed-x", Provider: "azure", Mode: "embedding", MaxInputTokens: capabilityIntPtr(100)},
+	})
+
+	for _, model := range []string{"embed-x", "Embed-X", "EMBED-X"} {
+		entry := s.GetCapabilityEntry(model, schemas.Azure)
+		if entry == nil || entry.MaxInputTokens == nil {
+			t.Fatalf("%s: expected capability entry with max_input_tokens, got %+v", model, entry)
+		}
+		if *entry.MaxInputTokens != 100 {
+			t.Fatalf("%s: expected max_input_tokens 100 from the lowercase row, got %d", model, *entry.MaxInputTokens)
+		}
+		row := s.Get(model, schemas.Azure, schemas.EmbeddingRequest)
+		if row == nil || row.MaxInputTokens == nil || *row.MaxInputTokens != 100 {
+			t.Fatalf("%s: capability entry and pricing row disagree: row %+v", model, row)
+		}
+	}
+}
+
+// The preferred-mode lookup (chat, responses, text completion) matches a row
+// whose casing differs from the request, so max output tokens and model info
+// resolve for it. The embedding row is what the any-mode scan would return if
+// the chat lookup missed, so it proves the preferred-mode lookup answered.
+func TestGetCapabilityEntry_PreferredModeMatchesAnyCase(t *testing.T) {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("Qwen3-235B-A22B", "azure", "chat"):      {Model: "Qwen3-235B-A22B", Provider: "azure", Mode: "chat", MaxOutputTokens: capabilityIntPtr(32000)},
+		makeKeyNormalized("qwen3-235b-a22b", "azure", "embedding"): {Model: "qwen3-235b-a22b", Provider: "azure", Mode: "embedding", MaxOutputTokens: capabilityIntPtr(1)},
+	})
+
+	entry := s.GetCapabilityEntry("qwen3-235b-a22b", schemas.Azure)
+	if entry == nil || entry.MaxOutputTokens == nil {
+		t.Fatalf("expected capability entry with max_output_tokens, got %+v", entry)
+	}
+	if *entry.MaxOutputTokens != 32000 {
+		t.Fatalf("expected max_output_tokens 32000, got %d", *entry.MaxOutputTokens)
+	}
+}
+
 func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 	contextLengthChat := 128000
 
-	s := &Store{
-		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o-2024-08-06", "openai", "responses"): {
-				Model:           "gpt-4o-2024-08-06",
-				BaseModel:       "gpt-4o",
-				Provider:        "openai",
-				Mode:            "responses",
-				ContextLength:   capabilityIntPtr(64000),
-				MaxOutputTokens: capabilityIntPtr(8000),
-			},
-			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
-				Model:           "gpt-4o-2024-08-06",
-				BaseModel:       "gpt-4o",
-				Provider:        "openai",
-				Mode:            "chat",
-				ContextLength:   &contextLengthChat,
-				MaxOutputTokens: capabilityIntPtr(16000),
-			},
+	s := testStore(t, nil)
+	fillTable(s.pricingData, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o-2024-08-06", "openai", "responses"): {
+			Model:           "gpt-4o-2024-08-06",
+			BaseModel:       "gpt-4o",
+			Provider:        "openai",
+			Mode:            "responses",
+			ContextLength:   capabilityIntPtr(64000),
+			MaxOutputTokens: capabilityIntPtr(8000),
 		},
-		baseModelIndex: map[string]string{
-			"gpt-4o-2024-08-06": "gpt-4o",
+		makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
+			Model:           "gpt-4o-2024-08-06",
+			BaseModel:       "gpt-4o",
+			Provider:        "openai",
+			Mode:            "chat",
+			ContextLength:   &contextLengthChat,
+			MaxOutputTokens: capabilityIntPtr(16000),
 		},
-	}
+	})
+	fillTable(s.baseModelIndex, map[string]string{
+		"gpt-4o-2024-08-06": "gpt-4o",
+	})
 
 	entry := s.GetCapabilityEntry("gpt-4o", schemas.OpenAI)
 	if entry == nil {
@@ -122,21 +209,20 @@ func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 }
 
 func TestGetCapabilityEntry_ResolvesProviderPrefixedAlias(t *testing.T) {
-	s := &Store{
-		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
-				Model:           "gpt-4o-2024-08-06",
-				BaseModel:       "gpt-4o",
-				Provider:        "openai",
-				Mode:            "chat",
-				ContextLength:   capabilityIntPtr(128000),
-				MaxOutputTokens: capabilityIntPtr(16000),
-			},
+	s := testStore(t, nil)
+	fillTable(s.pricingData, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
+			Model:           "gpt-4o-2024-08-06",
+			BaseModel:       "gpt-4o",
+			Provider:        "openai",
+			Mode:            "chat",
+			ContextLength:   capabilityIntPtr(128000),
+			MaxOutputTokens: capabilityIntPtr(16000),
 		},
-		baseModelIndex: map[string]string{
-			"gpt-4o-2024-08-06": "gpt-4o",
-		},
-	}
+	})
+	fillTable(s.baseModelIndex, map[string]string{
+		"gpt-4o-2024-08-06": "gpt-4o",
+	})
 
 	entry := s.GetCapabilityEntry("openai/gpt-4o", schemas.OpenAI)
 	if entry == nil {
@@ -151,30 +237,29 @@ func TestGetCapabilityEntry_PrefersLiteralMatchOverAliasFamily(t *testing.T) {
 	literalContextLength := 32000
 	aliasContextLength := 128000
 
-	s := &Store{
-		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o", "openai", "chat"): {
-				Model:           "gpt-4o",
-				BaseModel:       "gpt-4o",
-				Provider:        "openai",
-				Mode:            "chat",
-				ContextLength:   &literalContextLength,
-				MaxOutputTokens: capabilityIntPtr(4000),
-			},
-			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
-				Model:           "gpt-4o-2024-08-06",
-				BaseModel:       "gpt-4o",
-				Provider:        "openai",
-				Mode:            "chat",
-				ContextLength:   &aliasContextLength,
-				MaxOutputTokens: capabilityIntPtr(16000),
-			},
+	s := testStore(t, nil)
+	fillTable(s.pricingData, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o", "openai", "chat"): {
+			Model:           "gpt-4o",
+			BaseModel:       "gpt-4o",
+			Provider:        "openai",
+			Mode:            "chat",
+			ContextLength:   &literalContextLength,
+			MaxOutputTokens: capabilityIntPtr(4000),
 		},
-		baseModelIndex: map[string]string{
-			"gpt-4o":            "gpt-4o",
-			"gpt-4o-2024-08-06": "gpt-4o",
+		makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
+			Model:           "gpt-4o-2024-08-06",
+			BaseModel:       "gpt-4o",
+			Provider:        "openai",
+			Mode:            "chat",
+			ContextLength:   &aliasContextLength,
+			MaxOutputTokens: capabilityIntPtr(16000),
 		},
-	}
+	})
+	fillTable(s.baseModelIndex, map[string]string{
+		"gpt-4o":            "gpt-4o",
+		"gpt-4o-2024-08-06": "gpt-4o",
+	})
 
 	entry := s.GetCapabilityEntry("gpt-4o", schemas.OpenAI)
 	if entry == nil {

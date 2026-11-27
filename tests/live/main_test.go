@@ -41,6 +41,12 @@ const (
 	frameTimeout   = 10 * time.Second
 )
 
+// The azure key's deployments of voiceModel and backendModel (config.json aliases).
+const (
+	azureVoiceDeployment   = "live-voice-deployment"
+	azureBackendDeployment = "live-luna-deployment"
+)
+
 func TestMain(m *testing.M) {
 	gatewayURL = strings.TrimSuffix(envOr("BIFROST_BASE_URL", "http://localhost:8080"), "/")
 	upstreamMode = envOr("LIVE_UPSTREAM", fakeUpstream)

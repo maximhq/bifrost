@@ -3,14 +3,17 @@ package semanticcache
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/stretchr/testify/require"
 )
 
 // TestResolveCacheKey pins that the cache key is the caller's own value. Tenant isolation is
@@ -230,6 +233,176 @@ func cacheHits(t *testing.T, plugin *Plugin, ctx *schemas.BifrostContext, req *s
 	}
 	plugin.clearCacheState(ctx.Value(schemas.BifrostContextKeyRequestID).(string))
 	return shortCircuit != nil && shortCircuit.Response != nil
+}
+
+// TestCacheWriteKeepsDefaultEncoding pins that cache writes keep the pre-fix
+// sonic.Marshal bytes: only Chat/Text responses with an explicit zero go through the
+// usage wrapper, and even that keeps sonic's default (no HTML escaping) encoding.
+func TestCacheWriteKeepsDefaultEncoding(t *testing.T) {
+	const model = "fixture<b>&</b>"
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}
+	for _, tc := range []struct {
+		name string
+		res  *schemas.BifrostResponse
+	}{
+		{"nonzero chat", &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "c", Model: model, Usage: usage}}},
+		{"nonzero text", &schemas.BifrostResponse{TextCompletionResponse: &schemas.BifrostTextCompletionResponse{ID: "t", Model: model, Usage: usage}}},
+		{"responses", &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Model: model}}},
+		{"embedding", &schemas.BifrostResponse{EmbeddingResponse: &schemas.BifrostEmbeddingResponse{Model: model}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := sonic.Marshal(tc.res)
+			require.NoError(t, err)
+			got, err := marshalCachedResponse(tc.res)
+			require.NoError(t, err)
+			require.Equal(t, string(want), string(got))
+		})
+	}
+	t.Run("explicit zero chat", func(t *testing.T) {
+		zero := &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}
+		got, err := marshalCachedResponse(&schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "z", Model: model, Usage: zero}})
+		require.NoError(t, err)
+		require.Contains(t, string(got), `"model":"`+model+`"`, "wrapper keeps default encoding")
+		require.Contains(t, string(got), `"prompt_tokens":0`)
+		require.Contains(t, string(got), `"completion_tokens":0`)
+	})
+}
+
+// Exercise actual writes and hits, including SSE replay, after a JSON round trip.
+func TestCompletionUsageSurvivesCache(t *testing.T) {
+	for _, text := range []bool{false, true} {
+		for _, streaming := range []bool{false, true} {
+			for _, tc := range []struct {
+				name  string
+				usage *schemas.BifrostLLMUsage
+				want  string
+			}{
+				{"zero", &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`},
+				{"partial", &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, TotalTokens: 12}, `{"prompt_tokens":0,"total_tokens":12}`},
+				{"missing", &schemas.BifrostLLMUsage{TotalTokens: 12}, `{"total_tokens":12}`},
+			} {
+				name := fmt.Sprintf("text=%t/stream=%t/%s", text, streaming, tc.name)
+				t.Run(name, func(t *testing.T) {
+					plugin := identityScopeTestPlugin(t, newObservableStore(), "")
+					key := keyForTest(t, "")
+					req := identityTestChatRequest("cache explicit zero counts", nil)
+					response := identityTestChatResponse("answer")
+					if streaming {
+						req.RequestType = schemas.ChatCompletionStreamRequest
+						response = newChatStreamChunk(0, "answer", nil)
+					}
+					response.ChatResponse.Usage = tc.usage
+					if text {
+						req = &schemas.BifrostRequest{RequestType: schemas.TextCompletionRequest, TextCompletionRequest: &schemas.BifrostTextCompletionRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini", Input: &schemas.TextCompletionInput{PromptStr: schemas.Ptr("cache explicit zero counts")}}}
+						if streaming {
+							req.RequestType = schemas.TextCompletionStreamRequest
+						}
+						response = &schemas.BifrostResponse{TextCompletionResponse: response.ChatResponse.ToTextCompletionResponse()}
+						response.TextCompletionResponse.ExtraFields.RequestType = req.RequestType
+					}
+					seed := identityContext(t, key, identityRef{})
+					_, sc, err := plugin.PreLLMHook(seed, req)
+					require.Nil(t, err)
+					require.Nil(t, sc, "expected cache miss")
+					if streaming {
+						seed.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					}
+					_, _, err = plugin.PostLLMHook(seed, response, nil)
+					require.Nil(t, err)
+					plugin.WaitForPendingOperations()
+					_, sc, err = plugin.PreLLMHook(identityContext(t, key, identityRef{}), req)
+					require.Nil(t, err)
+					require.NotNil(t, sc, "expected cache hit")
+					check := func(view any) {
+						t.Helper()
+						wire, err := schemas.MarshalSorted(view)
+						require.NoError(t, err)
+						var body struct{ Usage json.RawMessage }
+						require.NoError(t, json.Unmarshal(wire, &body))
+						require.JSONEq(t, tc.want, string(body.Usage))
+					}
+					if streaming {
+						require.NotNil(t, sc.Stream)
+						count := 0
+						for chunk := range sc.Stream {
+							count++
+							check(chunk)
+						}
+						require.Equal(t, 1, count)
+					} else {
+						require.NotNil(t, sc.Response)
+						if text {
+							require.NotNil(t, sc.Response.TextCompletionResponse)
+							check(sc.Response.TextCompletionResponse.WithPreservedUsage())
+						} else {
+							require.NotNil(t, sc.Response.ChatResponse)
+							check(sc.Response.ChatResponse.WithPreservedUsage())
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func BenchmarkCachedCompletionUsage(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		usage *schemas.BifrostLLMUsage
+	}{
+		{"nonzero", &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}},
+		{"zero", &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}},
+		{"missing", &schemas.BifrostLLMUsage{TotalTokens: 12}},
+		{"responses", nil},
+		{"embedding", nil},
+	} {
+		response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "bench", Model: "fixture", Usage: tc.usage}}
+		if tc.name == "responses" {
+			response = &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{ID: schemas.Ptr("bench"), Model: "fixture", Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}}}
+		}
+		if tc.name == "embedding" {
+			response = &schemas.BifrostResponse{EmbeddingResponse: &schemas.BifrostEmbeddingResponse{Model: "fixture", Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10}, Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.25, 0.75}}}}}}
+		}
+		body, err := marshalCachedResponse(response)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for _, after := range []bool{false, true} {
+			version := "before"
+			if after {
+				version = "after"
+			}
+			b.Run(tc.name+"/write/"+version, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var err error
+					if after {
+						_, err = marshalCachedResponse(response)
+					} else {
+						_, err = sonic.Marshal(response)
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			b.Run(tc.name+"/read/"+version, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var response schemas.BifrostResponse
+					var err error
+					if after {
+						err = unmarshalCachedResponse(body, &response)
+					} else {
+						err = json.Unmarshal(body, &response)
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
 }
 
 // TestIdentityScopedDirectCache pins identity isolation on the direct path with scoping on (the
@@ -610,5 +783,246 @@ func dropSharedTestNamespace() {
 			defer cancel()
 			_ = store.DeleteNamespace(ctx, SharedTestNamespace)
 		}()
+	}
+}
+
+// TestAgentTurnsUseExactMatchOnly checks that a request offering tools, or carrying tool calls or tool
+// results, never runs a similarity search, while a plain chat request still does.
+func TestAgentTurnsUseExactMatchOnly(t *testing.T) {
+	// Every builder takes the subtest's t, so a fixture that fails to build fails only its own case.
+	plainChat := func(_ *testing.T) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest("Name the tallest mountain in Africa.", 0.7, 50)}
+	}
+	withTools := func(t *testing.T) *schemas.BifrostRequest {
+		req := plainChat(t)
+		req.ChatRequest.Params.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "read_file"}}}
+		return req
+	}
+	withWebSearch := func(t *testing.T) *schemas.BifrostRequest {
+		req := plainChat(t)
+		req.ChatRequest.Params.WebSearchOptions = &schemas.ChatWebSearchOptions{}
+		return req
+	}
+	withMCPServers := func(t *testing.T) *schemas.BifrostRequest {
+		req := plainChat(t)
+		req.ChatRequest.Params.MCPServers = []schemas.ChatMCPServer{{}}
+		return req
+	}
+	withToolResult := func(t *testing.T) *schemas.BifrostRequest {
+		req := plainChat(t)
+		req.ChatRequest.Input = append(req.ChatRequest.Input, schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("file contents")},
+		})
+		return req
+	}
+	responsesToolOutput := func(t *testing.T) *schemas.BifrostRequest {
+		req := responsesTurn("Name the tallest mountain in Africa.")
+		req.ResponsesRequest.Input = append(req.ResponsesRequest.Input, schemas.ResponsesMessage{
+			Type: bifrost.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: bifrost.Ptr("call-1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: bifrost.Ptr("Kilimanjaro")},
+			},
+		})
+		return req
+	}
+
+	// responsesItem puts one input item, decoded from its wire form, ahead of the user message of a
+	// plain Responses request.
+	responsesItem := func(raw string) func(t *testing.T) *schemas.BifrostRequest {
+		return func(t *testing.T) *schemas.BifrostRequest {
+			var item schemas.ResponsesMessage
+			if err := sonic.Unmarshal([]byte(raw), &item); err != nil {
+				t.Fatalf("decode input item: %v", err)
+			}
+			req := responsesTurn("Name the tallest mountain in Africa.")
+			req.ResponsesRequest.Input = append([]schemas.ResponsesMessage{item}, req.ResponsesRequest.Input...)
+			return req
+		}
+	}
+
+	cases := []struct {
+		name     string
+		build    func(t *testing.T) *schemas.BifrostRequest
+		semantic bool
+	}{
+		{"plain chat", plainChat, true},
+		{"plain responses", func(_ *testing.T) *schemas.BifrostRequest {
+			return responsesTurn("Name the tallest mountain in Africa.")
+		}, true},
+		{"responses with a reasoning item", responsesItem(`{"type":"reasoning","id":"rs_1","summary":[]}`), true},
+		{"chat offering tools", withTools, false},
+		{"chat with web search enabled", withWebSearch, false},
+		{"chat with mcp servers", withMCPServers, false},
+		{"chat with a tool result", withToolResult, false},
+		{"responses with a tool output", responsesToolOutput, false},
+		{"responses declaring tools in an input item", responsesItem(`{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}]}`), false},
+		{"responses with a tool search call", responsesItem(`{"type":"tool_search_call","id":"ts_1","status":"completed","arguments":{"query":"files"}}`), false},
+		{"responses with a tool search output", responsesItem(`{"type":"tool_search_output","id":"tso_1","status":"completed","tools":[{"type":"function","name":"read_file"}]}`), false},
+		{"responses with a web search call", responsesItem(`{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"kilimanjaro"}}`), false},
+		{"responses with a web fetch call", responsesItem(`{"type":"web_fetch_call","id":"wf_1","status":"completed"}`), false},
+		{"responses with a file search call", responsesItem(`{"type":"file_search_call","id":"fs_1","status":"completed","queries":["kilimanjaro"]}`), false},
+		{"responses with a code interpreter call", responsesItem(`{"type":"code_interpreter_call","id":"ci_1","status":"completed","container_id":"c_1","code":"1+1"}`), false},
+		{"responses with an image generation call", responsesItem(`{"type":"image_generation_call","id":"ig_1","status":"completed","result":"aGk="}`), false},
+		{"responses with an mcp tool list", responsesItem(`{"type":"mcp_list_tools","id":"ml_1","server_label":"files","tools":[{"name":"read_file","input_schema":{"type":"object"}}]}`), false},
+		{"responses with an mcp approval response", responsesItem(`{"type":"mcp_approval_response","approval_request_id":"mar_1","approve":true}`), false},
+		{"responses with an advisor call", responsesItem(`{"type":"advisor_call","id":"ad_1","status":"completed"}`), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := &semanticFilterStore{observableStore: newObservableStore()}
+			plugin := identityScopeTestPlugin(t, store, `{"provider": "openai", "embedding_model": "text-embedding-3-small", "dimension": 3}`)
+			embedded := 0
+			plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+				embedded++
+				return &schemas.BifrostEmbeddingResponse{
+					Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}}}},
+				}, nil
+			})
+			cacheHits(t, plugin, CreateContextWithCacheKey(t, ""), c.build(t))
+			store.mu.Lock()
+			searched := len(store.searches) > 0
+			store.mu.Unlock()
+			if searched != c.semantic || (embedded > 0) != c.semantic {
+				t.Fatalf("similarity search ran = %t, embedding requested = %t, want both %t", searched, embedded > 0, c.semantic)
+			}
+		})
+	}
+}
+
+// TestAgentTurnSemanticOnlySkipsCache checks that a semantic-only lookup for a request that uses tools
+// skips the cache: it runs no lookup, keeps no request state and writes no entry for the response.
+func TestAgentTurnSemanticOnlySkipsCache(t *testing.T) {
+	offersTools := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest("List the files.", 0.7, 50)}
+	offersTools.ChatRequest.Params.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "list_files"}}}
+	carriesToolResult := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest("List the files.", 0.7, 50)}
+	carriesToolResult.ChatRequest.Input = append(carriesToolResult.ChatRequest.Input, schemas.ChatMessage{
+		Role:    schemas.ChatMessageRoleTool,
+		Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("main.go")},
+	})
+	for name, req := range map[string]*schemas.BifrostRequest{"offers tools": offersTools, "carries a tool result": carriesToolResult} {
+		t.Run(name, func(t *testing.T) {
+			store := &semanticFilterStore{observableStore: newObservableStore()}
+			plugin := identityScopeTestPlugin(t, store, `{"provider": "openai", "embedding_model": "text-embedding-3-small", "dimension": 3}`)
+			plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+				return &schemas.BifrostEmbeddingResponse{
+					Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}}}},
+				}, nil
+			})
+			ctx := CreateContextWithCacheKeyAndType(t, "", CacheTypeSemantic)
+			requestID := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+			if err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+			if shortCircuit != nil {
+				t.Fatal("a semantic-only lookup for a request that uses tools must not hit")
+			}
+			if lookup, ok := schemas.CacheLookupFromContext(ctx); ok {
+				t.Fatalf("expected no lookup to be recorded, got %+v", lookup)
+			}
+			if state := plugin.getCacheState(requestID); state != nil {
+				t.Fatalf("expected no request state to be kept, got %+v", state)
+			}
+
+			if _, _, err := plugin.PostLLMHook(ctx, identityTestChatResponse("answer"), nil); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+			plugin.WaitForPendingOperations()
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			if len(store.searches) != 0 {
+				t.Fatalf("expected no similarity search, got %d", len(store.searches))
+			}
+			if len(store.addIDs) != 0 {
+				t.Fatalf("expected no cache write, got entries %v", store.addIDs)
+			}
+		})
+	}
+}
+
+// BenchmarkAgentTurnCheck measures the tool scan a semantic lookup runs on every request: the scan
+// alone over each request shape, and a whole PreLLMHook lookup that includes it.
+func BenchmarkAgentTurnCheck(b *testing.B) {
+	const prompt = "Name the tallest mountain in Africa."
+	chat := func(turns int, tools bool) *schemas.BifrostRequest {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest(prompt, 0.7, 50)}
+		for len(req.ChatRequest.Input) < turns {
+			role := schemas.ChatMessageRoleAssistant
+			if len(req.ChatRequest.Input)%2 == 0 {
+				role = schemas.ChatMessageRoleUser
+			}
+			req.ChatRequest.Input = append(req.ChatRequest.Input, schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr(prompt)}})
+		}
+		if tools {
+			req.ChatRequest.Params.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "read_file"}}}
+		}
+		return req
+	}
+	responses := func(turns int, declaresTools bool) *schemas.BifrostRequest {
+		texts := make([]string, turns)
+		for i := range texts {
+			texts[i] = prompt
+		}
+		req := responsesTurn(texts...)
+		if declaresTools {
+			req.ResponsesRequest.Input = append(req.ResponsesRequest.Input, schemas.ResponsesMessage{Type: bifrost.Ptr(schemas.ResponsesMessageTypeAdditionalTools)})
+		}
+		return req
+	}
+	shapes := []struct {
+		name string
+		req  *schemas.BifrostRequest
+	}{
+		{"chat/plain", chat(1, false)},
+		{"chat/plain-41-turns", chat(41, false)},
+		{"chat/tools", chat(1, true)},
+		{"responses/plain", responses(1, false)},
+		{"responses/plain-41-turns", responses(41, false)},
+		{"responses/tools-in-last-item", responses(41, true)},
+	}
+	for _, shape := range shapes {
+		b.Run("scan/"+shape.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				isAgentTurn(shape.req)
+			}
+		})
+	}
+
+	plugin := &Plugin{
+		store: newObservableStore(),
+		config: &Config{
+			Provider:                     schemas.OpenAI,
+			EmbeddingModel:               "text-embedding-3-small",
+			Dimension:                    3,
+			TTL:                          5 * time.Minute,
+			Threshold:                    DefaultCacheThreshold,
+			ConversationHistoryThreshold: DefaultConversationHistoryThreshold,
+		},
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+		stopCh: make(chan struct{}),
+	}
+	embedding := &schemas.BifrostEmbeddingResponse{
+		Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}}}},
+	}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embedding, nil
+	})
+	for _, shape := range []int{0, 2} {
+		shape := shapes[shape]
+		b.Run("hook/"+shape.name, func(b *testing.B) {
+			ctx := CreateContextWithCacheKey(b, "")
+			requestID := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, err := plugin.PreLLMHook(ctx, shape.req); err != nil {
+					b.Fatal(err)
+				}
+				plugin.clearCacheState(requestID)
+			}
+		})
 	}
 }

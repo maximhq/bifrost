@@ -15,8 +15,8 @@ import (
 
 func TestVertex(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("VERTEX_API_KEY")) == "" && (strings.TrimSpace(os.Getenv("VERTEX_PROJECT_ID")) == "" || strings.TrimSpace(os.Getenv("VERTEX_CREDENTIALS")) == "") {
-		t.Skip("Skipping Vertex tests because VERTEX_API_KEY is not set and VERTEX_PROJECT_ID or VERTEX_CREDENTIALS is not set")
+	if strings.TrimSpace(os.Getenv("VERTEX_PROJECT_ID")) == "" || strings.TrimSpace(os.Getenv("VERTEX_CREDENTIALS")) == "" {
+		t.Skip("Skipping Vertex tests because VERTEX_PROJECT_ID or VERTEX_CREDENTIALS is not set")
 	}
 
 	client, ctx, cancel, err := llmtests.SetupTest()
@@ -59,9 +59,11 @@ func TestVertex(t *testing.T) {
 		MultimodalEmbeddingModel: "gemini-embedding-2-preview",
 		RerankModel:              rerankModel,
 		ReasoningModel:           "claude-4.5-haiku",
+		WebSearchChatModel:       "claude-sonnet-4-5", // Anthropic web_search is a Claude-on-Vertex tool; Gemini drops it
 		ImageGenerationModel:     "gemini-2.5-flash-image",
 		ImageEditModel:           "gemini-2.5-flash-image",
 		VideoGenerationModel:     "veo-3.1-generate-preview",
+		RealtimeModel:            "gemini-3.8-live",
 		FileStorageConfig:        fileStorageConfig,
 		BatchOutputFolder:        batchOutputFolder,
 		Scenarios: llmtests.TestScenarios{
@@ -107,6 +109,7 @@ func TestVertex(t *testing.T) {
 			FileContent:                  true,
 			FileBatchInput:               true,
 			BatchCreate:                  true,
+			Realtime:                     true, // gemini-3.8-live through the translated Live protocol
 			BatchList:                    true,
 			BatchRetrieve:                true,
 			BatchCancel:                  true,

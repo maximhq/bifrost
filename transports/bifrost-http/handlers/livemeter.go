@@ -71,7 +71,8 @@ type liveMeter struct {
 	key      schemas.Key
 	window   float64
 
-	sessionID string                // Bifrost's id: every unit groups under it, from admission on
+	sessionID string // Bifrost's id: every unit groups under it, from admission on
+	startedAt time.Time
 	bind      func(id string) error // called once with OpenAI's id, before any client learns it
 
 	mu                sync.Mutex
@@ -204,6 +205,19 @@ func (m *liveMeter) setProviderSessionID(id string) error {
 		return bind(id)
 	}
 	return nil
+}
+
+// failStart ends a session the provider refused to create: its units close with the provider's
+// error. It reports false once the provider has created the session, whose errors are not fatal.
+func (m *liveMeter) failStart(bifrostErr *schemas.BifrostError) bool {
+	m.mu.Lock()
+	created := m.providerSessionID != ""
+	m.mu.Unlock()
+	if created {
+		return false
+	}
+	m.abort(bifrostErr)
+	return true
 }
 
 // onUsage records a cumulative session.usage.updated snapshot and bills a full window.
@@ -591,6 +605,10 @@ func (m *liveMeter) openUnit(kind, model string, continuation bool) (*liveBillin
 		preCtx.SetValue(schemas.BifrostContextKeyLiveSessionStart, true)
 	}
 	startedAt := time.Now()
+	if m.startedAt.IsZero() {
+		m.startedAt = startedAt
+	}
+	preCtx.SetValue(schemas.BifrostContextKeyRequestStartTime, m.startedAt)
 	setRealtimeTurnStreamContext(preCtx, startedAt, false)
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.LiveRequest,

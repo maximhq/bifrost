@@ -7,10 +7,13 @@ package warp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -24,6 +27,10 @@ var (
 	// ErrInvalidConfig wraps every validation failure from SaveConfig, so a
 	// caller can map the whole family to one status without matching text.
 	ErrInvalidConfig = errors.New("warp: invalid configuration")
+	// ErrTopicsAlreadyBuilt refuses a seed run for an embedding model that
+	// already has topics: from there they are kept up to date as requests
+	// are indexed, and a run would only replace them.
+	ErrTopicsAlreadyBuilt = errors.New("warp: topics are already built for this embedding model")
 	// ErrNoVectorStore means Warp's required semantic index has no backend.
 	ErrNoVectorStore = errors.New("warp: vector store is not connected")
 )
@@ -78,10 +85,21 @@ type Service struct {
 	cleanupOnce     sync.Once
 	cleanupStopOnce sync.Once
 	stopCleanup     chan struct{}
+	// upkeepOnce/stopUpkeep/upkeepStopOnce own the topic upkeep loop the
+	// same way, and topicJobs is what it starts discovery through.
+	upkeepOnce     sync.Once
+	upkeepStopOnce sync.Once
+	stopUpkeep     chan struct{}
+	topicJobs      TopicJobQueue
+	// topicsAdmitMu admits jobs to TopicsJobPartition one at a time (see
+	// LockTopicsJobAdmission).
+	topicsAdmitMu sync.Mutex
 	// catalog prices Warp's own usage. Nil is supported: the panel then reports
 	// tokens without a cost, rather than reporting a cost of zero.
-	catalog      *modelcatalog.ModelCatalog
-	vectorStore  vectorstore.VectorStore
+	catalog     *modelcatalog.ModelCatalog
+	vectorStore vectorstore.VectorStore
+	// logRetention reports the logs' retention in days, for the vector sweep.
+	logRetention func() int
 	embed        EmbeddingExecutor
 	indexer      *LogIndexer
 	semantic     *SemanticSearcher
@@ -90,19 +108,70 @@ type Service struct {
 	// topicLimits bounds a topics run. Zero means the defaults; tests shrink
 	// them so a run crosses its thresholds on a handful of requests.
 	topicLimits topicLimits
+	// management is the gateway's Bifrost MCP, nil until the server binds it
+	// with SetManagementTools. Guarded by mu.
+	management ManagementTools
+	bifrostMCP bool // Warp uses management; BifrostMCPEnabled unless WithBifrostMCP says otherwise
+	// usedConfirmations is the confirmation tokens this instance has seen
+	// claimed, by when, in a live-store table; the durable claim is in the
+	// conversation store (see claimConfirmation).
+	usedConfirmations *livestore.Table[string, time.Time]
+	live              *livestore.Store
 }
+
+// usedConfirmationsTable is the live-store table a service keeps the confirmations it has seen
+// claimed in, one per process.
+const usedConfirmationsTable = "warp_used_confirmations"
 
 // topicLister returns the topic reader as the tool interface, or a nil
 // interface when there is none - a typed nil would pass the tool's nil check.
+// ListTopics answers a topic query from the current reader, so a caller that
+// holds the service - the logs filter dimension does - follows the reader
+// through a log store rebind rather than keeping a stale one.
+func (s *Service) ListTopics(ctx context.Context, query TopicQuery) (*TopicList, error) {
+	lister := s.topicLister()
+	if lister == nil {
+		return nil, ErrUnavailable
+	}
+	return lister.ListTopics(ctx, query)
+}
+
 func (s *Service) topicLister() TopicLister {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.topics == nil {
 		return nil
 	}
 	return s.topics
 }
 
+// buildTopicReader returns a reader over the log store's topic tables, or
+// nil when the reader Warp has cannot reach them. Callers must hold s.mu, or
+// be the constructor.
+func (s *Service) buildTopicReader() *TopicReader {
+	topics := topicStoreOf(s.logs)
+	if s.store == nil || topics == nil {
+		return nil
+	}
+	return NewTopicReader(s.store, topics)
+}
+
+// BifrostMCPEnabled is whether Warp reaches the gateway's /api through the
+// Bifrost MCP: configuration reads, confirmed writes, and refusing to answer
+// while the Bifrost MCP is not loaded. It is off for now, so Warp answers from
+// its own traffic tools only, as it did before the two were coupled. The wiring
+// stays in place - the gateway still binds its tools with SetManagementTools -
+// and turning this back on restores all of it.
+const BifrostMCPEnabled = false
+
 // Option configures a Service.
 type Option func(*Service)
+
+// WithBifrostMCP overrides BifrostMCPEnabled for one service, so the coupled
+// behaviour stays tested while it is switched off.
+func WithBifrostMCP(enabled bool) Option {
+	return func(s *Service) { s.bifrostMCP = enabled }
+}
 
 // WithLogger sets the logger used for warnings the service cannot surface to a
 // caller (a failed write after a successful answer, for example).
@@ -198,9 +267,18 @@ func WithCallerRestrictionResolver(resolver CallerRestrictionResolver) Option {
 
 // NewService builds a Service over the deployment's config store. A store that
 // does not implement WarpStore is supported: the service then reports
-// ErrUnavailable from every configuration call.
-func NewService(store configstore.ConfigStore, opts ...Option) *Service {
-	service := &Service{}
+// ErrUnavailable from every configuration call. live, which is required, holds the
+// confirmations the service has seen claimed; Shutdown drops their table, so a later
+// service on the same store can create it again.
+func NewService(store configstore.ConfigStore, live *livestore.Store, opts ...Option) (*Service, error) {
+	if live == nil {
+		return nil, fmt.Errorf("warp: %w", livestore.ErrNoLiveStore)
+	}
+	used, err := live.NewTable[string, time.Time](context.Background(), usedConfirmationsTable)
+	if err != nil {
+		return nil, err
+	}
+	service := &Service{bifrostMCP: BifrostMCPEnabled, usedConfirmations: used, live: live}
 	if store != nil {
 		service.store, _ = store.(configstore.WarpStore)
 		service.backfillJobs, _ = store.(BackfillJobStore)
@@ -209,11 +287,10 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	for _, opt := range opts {
 		opt(service)
 	}
-	if service.store != nil && service.vectorStore != nil {
-		service.topics = NewTopicReader(service.store, service.vectorStore)
-	}
+	service.topics = service.buildTopicReader()
 	if service.store != nil && service.vectorStore != nil && service.embed != nil {
 		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)
+		service.indexer.SetTopicStore(topicStoreOf(service.logs))
 		if service.logs != nil {
 			// Only when the reader can hydrate. A reader that cannot is still a
 			// perfectly good LogReader for every other Warp tool, so semantic
@@ -223,7 +300,7 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 			}
 		}
 	}
-	return service
+	return service, nil
 }
 
 // HasHistory reports whether conversations can be listed and filed.
@@ -283,14 +360,15 @@ func (s *Service) costFuncFor(config *schemas.WarpConfig) CostFunc {
 		return nil
 	}
 	return func(usage *schemas.BifrostLLMUsage) float64 {
-		// ResponsesRequest, because that is what the agent calls. The catalog
+		// ResponsesStreamRequest, because that is what the agent calls (see
+		// StreamedResponses); it prices on the responses rate card. The catalog
 		// keeps separate chat and responses rates and only falls back when the
 		// requested mode is absent, so naming the wrong one silently prices the
 		// turn off the other rate card.
 		// costProviderFor, not config.Provider: a provider-qualified model routes
 		// by its own prefix, and pricing must follow routing or the turn is
 		// priced off the wrong rate card.
-		return s.catalog.CalculateCostForUsage(usage, costProviderFor(config), catalogModel(config.Model), schemas.ResponsesRequest, nil)
+		return s.catalog.CalculateCostForUsage(usage, costProviderFor(config), catalogModel(config.Model), schemas.ResponsesStreamRequest, nil)
 	}
 }
 
@@ -301,10 +379,16 @@ func (s *Service) Shutdown() {
 	s.closed = true
 	// Takes no lock of its own, so it is safe inside this one.
 	s.stopHistoryCleanup()
+	s.stopTopicUpkeep()
 	if s.indexer != nil {
 		s.indexer.Close()
 	}
+	if s.management != nil {
+		closeManagementTools(s.management)
+		s.management = nil
+	}
 	s.mu.Unlock()
+	_ = s.live.DropTable(context.Background(), usedConfirmationsTable)
 }
 
 // SetLogReader rebinds what Warp researches through, after construction.
@@ -326,7 +410,66 @@ func (s *Service) SetLogReader(logs LogReader) {
 	// rebuilding it left semantic search hydrating through the reader this
 	// service no longer uses - or absent entirely on a deployment that enabled
 	// logging after startup, which is exactly the case SetLogReader exists for.
+	// The topic reader reads through the same reader's store, so it follows.
 	s.semantic = s.buildSemanticSearcher()
+	s.topics = s.buildTopicReader()
+	// Live assignment files through the same store, so it follows too.
+	if s.indexer != nil {
+		s.indexer.SetTopicStore(topicStoreOf(logs))
+	}
+}
+
+// SetManagementTools binds the gateway's Bifrost MCP. The gateway builds it
+// after Warp's routes are registered, so it arrives late; nil unbinds it.
+func (s *Service) SetManagementTools(tools ManagementTools) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		closeManagementTools(tools)
+		return
+	}
+	// The replaced tools close their client once the turns still using it end.
+	if previous := s.management; previous != nil && previous != tools {
+		closeManagementTools(previous)
+	}
+	s.management = tools
+}
+
+// managementTools returns the bound Bifrost MCP and its current catalog,
+// read together so a turn never pairs a catalog with another binding.
+func (s *Service) managementTools() (ManagementTools, *ManagementCatalog) {
+	s.mu.RLock()
+	tools := s.management
+	s.mu.RUnlock()
+	// Decoupled: the binding is kept but nothing reads through it.
+	if tools == nil || !s.bifrostMCP {
+		return nil, nil
+	}
+	return tools, tools.Catalog()
+}
+
+// leaseManagementTools is managementTools for a turn: the release keeps the
+// catalog's load open until the turn ends (see ManagementLeaser). Always non-nil.
+func (s *Service) leaseManagementTools() (ManagementTools, *ManagementCatalog, func()) {
+	s.mu.RLock()
+	tools := s.management
+	s.mu.RUnlock()
+	if tools == nil || !s.bifrostMCP {
+		return nil, nil, func() {}
+	}
+	if leaser, ok := tools.(ManagementLeaser); ok {
+		catalog, release := leaser.LeaseCatalog()
+		return tools, catalog, release
+	}
+	return tools, tools.Catalog(), func() {}
+}
+
+// closeManagementTools closes tools that hold resources of their own, such as
+// the gateway's in-process client.
+func closeManagementTools(tools ManagementTools) {
+	if closer, ok := tools.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
 }
 
 // buildSemanticSearcher returns a searcher for the current dependencies, or nil

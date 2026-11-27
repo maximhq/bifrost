@@ -9,8 +9,13 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/elevenlabs"
+	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/sagemaker"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -19,11 +24,6 @@ import (
 type PassthroughRouter struct {
 	*GenericRouter
 }
-
-var genAIInferencePath = regexp.MustCompile(`^/(projects/[^/]+/locations/[^/]+/publishers/[^/]+/)?(models|tunedModels)/[^/:]+:(generateContent|streamGenerateContent|countTokens|embedContent|batchEmbedContents|predict|rawPredict|streamRawPredict)$`)
-
-// genAIInteractionsPath admits only interaction creation; get/cancel/delete address stored interactions.
-var genAIInteractionsPath = regexp.MustCompile(`^/(projects/[^/]+/locations/[^/]+/)?interactions$`)
 
 var apiVersionSegment = regexp.MustCompile(`^v\d+((alpha|beta)\d*)?$`)
 
@@ -34,53 +34,6 @@ func passthroughQueryStreams(method, rawQuery string) bool {
 	}
 	q, err := url.ParseQuery(rawQuery)
 	return err == nil && strings.EqualFold(q.Get("stream"), "true")
-}
-
-// passthroughInferenceRoute limits HTTP passthrough to inference operations.
-// A provider key grants more capabilities than an inference credential; raw
-// forwarding must not expose the provider's object or account management APIs.
-func passthroughInferenceRoute(cfg *PassthroughConfig, method, path string) bool {
-	if method != fasthttp.MethodPost || strings.ContainsAny(path, "%?#\\") {
-		return false
-	}
-	for _, segment := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return false
-		}
-	}
-	if cfg.UpstreamURL != "" {
-		return cfg.UpstreamURL == "https://chatgpt.com" && path == "/backend-api/codex/responses"
-	}
-	switch cfg.Provider {
-	case schemas.OpenAI:
-		return openAIInferencePath(strings.TrimPrefix(path, "/v1"))
-	case schemas.Anthropic:
-		return path == "/v1/messages" || path == "/v1/messages/count_tokens" || path == "/v1/complete"
-	case schemas.Azure:
-		if strings.HasPrefix(path, "/openai/v1/") {
-			return openAIInferencePath(strings.TrimPrefix(path, "/openai/v1"))
-		}
-		parts := strings.SplitN(path, "/", 5)
-		return len(parts) == 5 && parts[1] == "openai" && parts[2] == "deployments" && parts[3] != "" && openAIInferencePath("/"+parts[4])
-	case schemas.Gemini, schemas.Vertex:
-		return genAIInferencePath.MatchString(path) || genAIInteractionsPath.MatchString(path)
-	case schemas.Runware:
-		return path == "/v1"
-	case schemas.Bedrock:
-		return bedrock.IsPassthroughRoute(method, path)
-	default:
-		return false
-	}
-}
-
-func openAIInferencePath(path string) bool {
-	switch path {
-	case "/chat/completions", "/completions", "/responses", "/embeddings", "/moderations",
-		"/audio/speech", "/audio/transcriptions", "/audio/translations",
-		"/images/generations", "/images/edits", "/images/variations":
-		return true
-	}
-	return false
 }
 
 // stripPassthroughPrefix removes the first configured prefix that matches path at a segment
@@ -110,54 +63,10 @@ func stripPassthroughPrefix(path string, prefixes []string) (string, string, boo
 	return "", "", false
 }
 
-// validatePassthroughPath rejects passthrough remainders that could change how the upstream
-// URL is interpreted once concatenated onto a provider base URL. The path must be rooted by
-// exactly one "/", must not carry a userinfo separator in its first segment, and must not
-// contain a scheme separator, backslashes, dot-dot segments, or control characters anywhere.
-// The same rules are applied to the percent-decoded form so an encoded variant cannot slip
-// through. Later segments may contain "@" because Vertex model versions use it
-// ("models/claude-sonnet-4-5@20250929"); past the first segment it can no longer reach
-// the authority, and the provider-side host check covers the remaining cases.
+// validatePassthroughPath rejects a path a provider could misread; the rules are shared with the
+// relay data plane in lib.ValidatePassthroughPath.
 func validatePassthroughPath(p string) error {
-	if err := checkPassthroughPathRules(p); err != nil {
-		return err
-	}
-	decoded, err := url.PathUnescape(p)
-	if err != nil {
-		return fmt.Errorf("invalid passthrough path: %w", err)
-	}
-	if decoded != p {
-		return checkPassthroughPathRules(decoded)
-	}
-	return nil
-}
-
-func checkPassthroughPathRules(p string) error {
-	switch {
-	case !strings.HasPrefix(p, "/"):
-		return errors.New("invalid passthrough path: must start with /")
-	case strings.HasPrefix(p, "//"):
-		return errors.New("invalid passthrough path: must not start with //")
-	case strings.Contains(p, "\\"):
-		return errors.New("invalid passthrough path: must not contain backslashes")
-	case strings.Contains(p, "://"):
-		return errors.New("invalid passthrough path: must not contain a scheme")
-	}
-	for i := 0; i < len(p); i++ {
-		if p[i] < 0x20 || p[i] == 0x7f {
-			return errors.New("invalid passthrough path: must not contain control characters")
-		}
-	}
-	first, _, _ := strings.Cut(p[1:], "/")
-	if strings.Contains(first, "@") {
-		return errors.New("invalid passthrough path: first segment must not contain @")
-	}
-	for _, segment := range strings.Split(p, "/") {
-		if segment == ".." {
-			return errors.New("invalid passthrough path: must not contain .. segments")
-		}
-	}
-	return nil
+	return lib.ValidatePassthroughPath(p)
 }
 
 // NewPassthroughRouter creates a passthrough-only router for any prefix/provider combo.
@@ -196,23 +105,97 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 	})
 }
 
+// chatGPTUpstreamURL is the ChatGPT backend, the only OpenAI upstream that accepts a caller's ChatGPT sign-in token.
+const chatGPTUpstreamURL = "https://chatgpt.com"
+
+const (
+	chatGPTPassthroughPrefix  = "/chatgpt_passthrough"
+	chatGPTCodexModelsPath    = "/backend-api/codex/models"
+	chatGPTCodexResponsesPath = "/backend-api/codex/responses"
+
+	// ChatGPTCodexResponsesRoute is the Codex responses route. A POST streams over HTTP; a
+	// WebSocket upgrade on the same path is served by the Codex WebSocket relay.
+	ChatGPTCodexResponsesRoute = chatGPTPassthroughPrefix + chatGPTCodexResponsesPath
+	// ChatGPTCodexResponsesWebSocketURL is the upstream the Codex WebSocket relay dials.
+	ChatGPTCodexResponsesWebSocketURL = "wss://chatgpt.com" + chatGPTCodexResponsesPath
+)
+
+// IsChatGPTBearer reports whether an Authorization header value carries a ChatGPT sign-in
+// token, the only credential the Codex routes forward to chatgpt.com.
+func IsChatGPTBearer(authHeader string) bool {
+	return isChatGPTBearer(authHeader)
+}
+
+// ResolveChatGPTPassthroughProvider applies the provider rule of the HTTP Codex routes to
+// another transport: x-model-provider may only be absent or name OpenAI. It returns the HTTP
+// status to refuse with when the header names anything else.
+func ResolveChatGPTPassthroughProvider(ctx *fasthttp.RequestCtx, store lib.HandlerStore) (schemas.ModelProvider, int, error) {
+	provider, err := getPassthroughProvider(ctx, store, schemas.OpenAI, false)
+	if err != nil {
+		if errors.Is(err, errPassthroughNotEnabled) {
+			return "", fasthttp.StatusForbidden, err
+		}
+		return "", fasthttp.StatusBadRequest, err
+	}
+	return provider, 0, nil
+}
+
+// NewChatGPTCodexTurn builds the passthrough request for one Codex responses turn that arrived
+// as a WebSocket response.create frame, under the rules the HTTP route applies to a POST: the
+// model is read strictly from the frame, the caller's ChatGPT token is the upstream credential
+// so key selection is skipped, and plugins that rewrite text get the Responses body rewriter.
+// The frame is the request body as sent; nothing is re-encoded.
+func NewChatGPTCodexTurn(bifrostCtx *schemas.BifrostContext, frame []byte, safeHeaders map[string]string) (*schemas.BifrostPassthroughRequest, error) {
+	model, _, err := parsePassthroughBody("application/json", frame)
+	if err != nil {
+		return nil, err
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+	req := &schemas.BifrostPassthroughRequest{
+		Method:       fasthttp.MethodPost,
+		Path:         chatGPTCodexResponsesPath,
+		UpstreamURL:  chatGPTUpstreamURL,
+		Body:         frame,
+		SafeHeaders:  safeHeaders,
+		Provider:     schemas.OpenAI,
+		BaseProvider: schemas.OpenAI,
+		Model:        model,
+	}
+	registerPassthroughTextRewriters(bifrostCtx, passthroughparse.Classify(schemas.OpenAI, model, req.Method, req.Path))
+	return req, nil
+}
+
 // NewChatGPTPassthroughRouter creates a passthrough router for /chatgpt_passthrough.
-// Restricted to the Codex responses endpoint only — this is not a general-purpose
+// Restricted to the Codex model list and responses endpoints, the two routes Codex calls
+// through a gateway when users sign in with ChatGPT; this is not a general-purpose
 // ChatGPT backend proxy.
 func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider:    schemas.OpenAI,
-		UpstreamURL: "https://chatgpt.com",
+		UpstreamURL: chatGPTUpstreamURL,
 		// The Codex endpoint owns an event stream even when a WebSocket bridge
 		// omits the HTTP stream flag. Relay incrementally without changing its body.
 		StreamingPath: func(method, path string) bool {
-			return method == fasthttp.MethodPost && path == "/backend-api/codex/responses"
+			return method == fasthttp.MethodPost && path == chatGPTCodexResponsesPath
+		},
+		// The model list names and runs no model; each responses turn is still checked against the model allowlist.
+		ModelFreePath: func(method, path string) bool {
+			return method == fasthttp.MethodGet && path == chatGPTCodexModelsPath
+		},
+		// The list is trimmed to the models the caller's access allows, so the picker offers nothing a turn would refuse.
+		ModelList: func(method, path string) schemas.PassthroughModelListFilter {
+			if method == fasthttp.MethodGet && path == chatGPTCodexModelsPath {
+				return filterCodexModelList
+			}
+			return nil
 		},
 		StripPrefix: []string{
-			"/chatgpt_passthrough",
+			chatGPTPassthroughPrefix,
 		},
+		// The GET upgrade on the responses path is registered by the Codex WebSocket relay.
 		AllowedRoutes: []PassthroughRoute{
-			{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"},
+			{Method: fasthttp.MethodGet, Path: chatGPTPassthroughPrefix + chatGPTCodexModelsPath},
+			{Method: fasthttp.MethodPost, Path: ChatGPTCodexResponsesRoute},
 		},
 	})
 }
@@ -242,6 +225,20 @@ func NewBedrockPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 	})
 }
 
+// NewSageMakerPassthroughRouter creates a passthrough router for /sagemaker_passthrough. It forwards only
+// InvokeEndpoint and InvokeEndpointWithResponseStream, for containers Bifrost has no native route for
+// (TEI, LMI's own format, custom images); the endpoint in the path is the model keys and virtual keys allow.
+func NewSageMakerPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.SageMaker,
+		StripPrefix: []string{
+			"/sagemaker_passthrough",
+		},
+		StreamingPath: sagemaker.IsPassthroughStreamPath,
+		PathModel:     sagemaker.PassthroughModel,
+	})
+}
+
 // NewRunwarePassthroughRouter creates a passthrough router for /runware_passthrough. Runware exposes
 // a single task-based endpoint, so this forwards raw task arrays and unlocks any Runware task type
 // (3D, upscaling, background removal, ...) that Bifrost does not model natively.
@@ -254,11 +251,46 @@ func NewRunwarePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 	})
 }
 
+// NewElevenlabsPassthroughRouter creates a passthrough router for /elevenlabs_passthrough, for the ElevenLabs
+// endpoints Bifrost has no native route for. ElevenLabs names its model model_id.
+func NewElevenlabsPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.Elevenlabs,
+		StripPrefix: []string{
+			"/elevenlabs_passthrough",
+		},
+		StreamingPath: elevenlabs.IsPassthroughStreamPath,
+		BodyModelKey: func(method, path string) string {
+			return "model_id"
+		},
+		// ElevenLabs runs its own default for a call without model_id, whatever a "model" field says.
+		BodyModelKeyOnly: true,
+	})
+}
+
 // NewGenAIPassthroughRouter creates a passthrough router for /genai_passthrough.
 func NewGenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider:         schemas.Gemini,
 		ProviderDetector: detectProviderFromGenAIRequest,
+		// An Interactions create names an agent (Deep Research) instead of a model; the agent is
+		// what runs, so it is what key selection, model allowlists and pricing see.
+		BodyModelKey: func(method, path string) string {
+			if gemini.IsInteractionsCreatePath(method, path) {
+				return "agent"
+			}
+			return ""
+		},
+		// Polling, deleting or cancelling an interaction runs nothing new: the model or agent was
+		// checked when it was created, and the request names none.
+		ModelFreePath: gemini.IsInteractionsResourcePath,
+		// An Interactions path names no model, only a project, location and run id. A project named
+		// "models" or "deployments" would otherwise read as a model segment.
+		NoPathModel: func(method, path string) bool {
+			// The substring gate keeps model calls to one scan; the exact checks run only on Interactions paths.
+			return gemini.IsInteractionsPassthroughPath(path) &&
+				(gemini.IsInteractionsCreatePath(method, path) || gemini.IsInteractionsResourcePath(method, path))
+		},
 		StripPrefix: []string{
 			"/genai_passthrough/v1beta1",
 			"/genai_passthrough/v1beta",
@@ -266,4 +298,130 @@ func NewGenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 			"/genai_passthrough",
 		},
 	})
+}
+
+// registerPassthroughTextRewriters lets plugins that change a passthrough call's text keep its raw bytes in step,
+// using the same integration-owned field rules as the native route for the API the call speaks. A passthrough body
+// is forwarded as received, so a route with no rewriter registers nothing and a plugin that must change its text has
+// to refuse the call instead of forwarding the original bytes.
+func registerPassthroughTextRewriters(ctx *schemas.BifrostContext, route passthroughparse.Route) {
+	var rewriter schemas.RawRequestBodyTextRewriter
+	switch route.Wire {
+	case schemas.Anthropic:
+		rewriter = rewriteAnthropicRawRequestBody
+	case schemas.Gemini:
+		rewriter = rewriteGenAIRawRequestBody
+	case schemas.OpenAI:
+		rewriter = openAIRawRequestBodyRewriter(route.RequestType)
+	case passthroughparse.WireGeminiInteractions:
+		rewriter = rewriteGeminiInteractionsRawRequestBody
+	case schemas.Runware:
+		rewriter = rewriteRunwareRawRequestBody
+	case schemas.SageMaker:
+		rewriter = rewriteSageMakerRawRequestBody
+	case schemas.Bedrock:
+		rewriter = rewriteBedrockAgentRawRequestBody
+	}
+	if rewriter != nil {
+		ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter, rewriter)
+	}
+}
+
+// rewriteRunwareRawRequestBody applies runtime replacements to the task texts a Runware passthrough call is read for.
+func rewriteRunwareRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectRunwareRawRequestTextPaths)
+}
+
+// collectRunwareRawRequestTextPaths selects the texts of a Runware task array (or single task) that passthroughparse
+// reads, by walking the same fields its reader does (passthroughparse.RunwareTaskTexts).
+func collectRunwareRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	collectTask := func(task gjson.Result, path string) {
+		passthroughparse.RunwareTaskTexts(task, func(field string, _ schemas.ChatMessageRole, text gjson.Result) {
+			if path != "" {
+				field = path + "." + field
+			}
+			appendRawRequestTextPath(&paths, text, field)
+		})
+	}
+	if root.IsObject() {
+		collectTask(root, "")
+		return paths, nil
+	}
+	root.ForEach(func(index, task gjson.Result) bool {
+		collectTask(task, rawRequestArrayPath("", int(index.Int())))
+		return true
+	})
+	return paths, nil
+}
+
+// rewriteSageMakerRawRequestBody applies runtime replacements to the texts a SageMaker invocation is read for.
+func rewriteSageMakerRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectSageMakerRawRequestTextPaths)
+}
+
+// collectSageMakerRawRequestTextPaths selects the texts of a SageMaker invocation that passthroughparse reads: every one
+// of the OpenAI chat messages, the OpenAI completion prompt, and the string inputs of a TGI, LMI or TEI call that the
+// body carries, since containers choose among them in different orders.
+func collectSageMakerRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	if root.Get("messages").IsArray() {
+		chatPaths, err := collectOpenAIChatRawRequestTextPaths(root, replacements)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, chatPaths...)
+	}
+	if prompt := root.Get("prompt"); prompt.Exists() && prompt.Type != gjson.Null {
+		promptPaths, err := collectOpenAITextCompletionRawRequestTextPaths(root, replacements)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, promptPaths...)
+	}
+	inputs := root.Get("inputs")
+	appendRawRequestTextPath(&paths, inputs, "inputs")
+	if inputs.IsArray() {
+		inputs.ForEach(func(index, input gjson.Result) bool {
+			appendRawRequestTextPath(&paths, input, rawRequestArrayPath("inputs", int(index.Int())))
+			return true
+		})
+	}
+	return paths, nil
+}
+
+// rewriteBedrockAgentRawRequestBody applies runtime replacements to the texts a Bedrock InvokeAgent call is read for.
+func rewriteBedrockAgentRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectBedrockAgentRawRequestTextPaths)
+}
+
+// collectBedrockAgentRawRequestTextPaths selects the texts of an InvokeAgent body that passthroughparse reads: the
+// prompt session attributes, the input text, the conversation history's text blocks, and the bodies of returned tool
+// results.
+func collectBedrockAgentRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	root.Get("sessionState.promptSessionAttributes").ForEach(func(key, value gjson.Result) bool {
+		appendRawRequestTextPath(&paths, value, rawRequestObjectPath("sessionState.promptSessionAttributes", key.String()))
+		return true
+	})
+	appendRawRequestTextPath(&paths, root.Get("inputText"), "inputText")
+	root.Get("sessionState.conversationHistory.messages").ForEach(func(messageIndex, message gjson.Result) bool {
+		message.Get("content").ForEach(func(blockIndex, block gjson.Result) bool {
+			path := fmt.Sprintf("sessionState.conversationHistory.messages.%d.content.%d.text", messageIndex.Int(), blockIndex.Int())
+			appendRawRequestTextPath(&paths, block.Get("text"), path)
+			return true
+		})
+		return true
+	})
+	root.Get("sessionState.returnControlInvocationResults").ForEach(func(resultIndex, result gjson.Result) bool {
+		for _, kind := range []string{"functionResult", "apiResult"} {
+			bodiesPath := fmt.Sprintf("sessionState.returnControlInvocationResults.%d.%s.responseBody", resultIndex.Int(), kind)
+			result.Get(kind + ".responseBody").ForEach(func(contentType, content gjson.Result) bool {
+				appendRawRequestTextPath(&paths, content.Get("body"), rawRequestObjectPath(rawRequestObjectPath(bodiesPath, contentType.String()), "body"))
+				return true
+			})
+		}
+		return true
+	})
+	return paths, nil
 }

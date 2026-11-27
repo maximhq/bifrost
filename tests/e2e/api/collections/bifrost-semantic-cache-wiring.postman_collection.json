@@ -10775,7 +10775,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
@@ -10835,7 +10835,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
@@ -22399,9 +22399,7 @@
                   "  \"status\": 200,",
                   "  \"outcome\": \"miss\",",
                   "  \"save\": \"s22\",",
-                  "  \"embedding\": true,",
-                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
-                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "  \"embedding\": false",
                   "});"
                 ]
               }
@@ -22492,7 +22490,7 @@
         },
         {
           "id": "scw-435",
-          "name": "S22 paraphrase with tools reordered is a semantic hit",
+          "name": "S22 tools reordered hit",
           "event": [
             {
               "listen": "test",
@@ -22501,14 +22499,11 @@
                 "exec": [
                   "eval(pm.collectionVariables.get('scw_lib'));",
                   "scw.run({",
-                  "  \"name\": \"S22 paraphrase with tools reordered is a semantic hit\",",
+                  "  \"name\": \"S22 tools reordered hit\",",
                   "  \"status\": 200,",
-                  "  \"outcome\": \"semantic\",",
+                  "  \"outcome\": \"direct\",",
                   "  \"poll\": true,",
-                  "  \"same\": \"s22\",",
-                  "  \"threshold\": 0.85,",
-                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
-                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "  \"same\": \"s22\"",
                   "});"
                 ]
               }
@@ -22543,13 +22538,13 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Tell me one famous Italian opera composer from the nineteenth century.\"}],\"max_tokens\":8,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\"}"
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"}],\"max_tokens\":8,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\"}"
             }
           }
         },
         {
           "id": "scw-436",
-          "name": "S22 paraphrase with a renamed tool misses",
+          "name": "S22 paraphrase with the same tools misses",
           "event": [
             {
               "listen": "test",
@@ -22558,12 +22553,13 @@
                 "exec": [
                   "eval(pm.collectionVariables.get('scw_lib'));",
                   "scw.run({",
-                  "  \"name\": \"S22 paraphrase with a renamed tool misses\",",
+                  "  \"name\": \"S22 paraphrase with the same tools misses\",",
                   "  \"status\": 200,",
                   "  \"outcome\": \"miss\",",
                   "  \"distinct\": [",
                   "    \"s22\"",
-                  "  ]",
+                  "  ],",
+                  "  \"embedding\": false",
                   "});"
                 ]
               }
@@ -22598,12 +22594,3075 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Tell me one famous Italian opera composer from the nineteenth century.\"}],\"max_tokens\":8,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_forecast\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\"}"
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Tell me one famous Italian opera composer from the nineteenth century.\"}],\"max_tokens\":8,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\"}"
             }
           }
         },
         {
           "id": "scw-437",
+          "name": "S22 a renamed tool misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S22 a renamed tool misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s22\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s22-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"}],\"max_tokens\":8,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_forecast\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-438",
+          "name": "S31 chat tool turn write runs no embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat tool turn write runs no embedding\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s31chat\",",
+                  "  \"embedding\": false,",
+                  "  \"saveReq\": \"s31\",",
+                  "  \"headersMatch\": \"all\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chat-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital city of France in modern times?\"}],\"max_tokens\":8,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-439",
+          "name": "S31 chat the same tool turn is a direct hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat the same tool turn is a direct hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s31chat\",",
+                  "  \"headersMatch\": \"all\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital city of France in modern times?\"}],\"max_tokens\":8,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-440",
+          "name": "S31 chat a paraphrased tool turn misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat a paraphrased tool turn misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31chat\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Tell me the capital city of France in modern times.\"}],\"max_tokens\":8,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-441",
+          "name": "S31 chat semantic-only tool turn is not cached",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat semantic-only tool turn is not cached\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"none\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"At what temperature does pure water boil at sea level?\"}],\"max_tokens\":8,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-442",
+          "name": "S31 chat the tool turn is a direct miss after the semantic-only lookup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.waitFirst(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat the tool turn is a direct miss after the semantic-only lookup\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"At what temperature does pure water boil at sea level?\"}],\"max_tokens\":8,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-443",
+          "name": "S31 chat tool result turn write runs no embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat tool result turn write runs no embedding\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s31chatresult\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresult-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 21 degrees.\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-444",
+          "name": "S31 chat the same tool result turn is a direct hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat the same tool result turn is a direct hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s31chatresult\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresult-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 21 degrees.\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-445",
+          "name": "S31 chat a paraphrased tool result turn misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat a paraphrased tool result turn misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31chatresult\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresult-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Tell me one famous Italian opera composer from the nineteenth century.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 21 degrees.\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-446",
+          "name": "S31 chat another tool result misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat another tool result misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31chatresult\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresult-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 22 degrees.\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-447",
+          "name": "S31 chat semantic-only tool result turn is not cached",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat semantic-only tool result turn is not cached\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"none\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresultso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 21 degrees.\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-448",
+          "name": "S31 chat the tool result turn is a direct miss after the semantic-only lookup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.waitFirst(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat the tool result turn is a direct miss after the semantic-only lookup\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresultso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 21 degrees.\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-449",
+          "name": "S31 chat web search turn write runs no embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat web search turn write runs no embedding\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s31chatsearch\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsearch-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":256,\"temperature\":0,\"web_search_options\":{}}"
+            }
+          }
+        },
+        {
+          "id": "scw-450",
+          "name": "S31 chat the same web search turn is a direct hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat the same web search turn is a direct hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s31chatsearch\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsearch-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":256,\"temperature\":0,\"web_search_options\":{}}"
+            }
+          }
+        },
+        {
+          "id": "scw-451",
+          "name": "S31 chat a paraphrased web search turn misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat a paraphrased web search turn misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31chatsearch\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsearch-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":256,\"temperature\":0,\"web_search_options\":{}}"
+            }
+          }
+        },
+        {
+          "id": "scw-452",
+          "name": "S31 chat semantic-only web search turn is not cached",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat semantic-only web search turn is not cached\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"none\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsearchso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"}],\"max_tokens\":256,\"temperature\":0,\"web_search_options\":{}}"
+            }
+          }
+        },
+        {
+          "id": "scw-453",
+          "name": "S31 chat the web search turn is a direct miss after the semantic-only lookup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.waitFirst(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat the web search turn is a direct miss after the semantic-only lookup\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsearchso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"}],\"max_tokens\":256,\"temperature\":0,\"web_search_options\":{}}"
+            }
+          }
+        },
+        {
+          "id": "scw-454",
+          "name": "S31 chat stream tool turn write runs no embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream tool turn write runs no embedding\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s31chats\",",
+                  "  \"embedding\": false,",
+                  "  \"stream\": {",
+                  "    \"finalOnly\": true,",
+                  "    \"done\": true,",
+                  "    \"save\": \"s31chats\"",
+                  "  },",
+                  "  \"headersMatch\": \"stream\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chats-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital city of France in modern times?\"}],\"max_tokens\":12,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\",\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-455",
+          "name": "S31 chat stream the same tool turn is a direct hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream the same tool turn is a direct hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s31chats\",",
+                  "  \"stream\": {",
+                  "    \"finalOnly\": true,",
+                  "    \"done\": true,",
+                  "    \"compare\": \"s31chats\"",
+                  "  },",
+                  "  \"headersMatch\": \"stream\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chats-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital city of France in modern times?\"}],\"max_tokens\":12,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\",\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-456",
+          "name": "S31 chat stream a paraphrased tool turn misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream a paraphrased tool turn misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31chats\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chats-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Tell me the capital city of France in modern times.\"}],\"max_tokens\":12,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\",\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-457",
+          "name": "S31 chat stream semantic-only tool turn is not cached",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream semantic-only tool turn is not cached\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"none\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"At what temperature does pure water boil at sea level?\"}],\"max_tokens\":12,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\",\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-458",
+          "name": "S31 chat stream the tool turn is a direct miss after the semantic-only lookup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.waitFirst(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream the tool turn is a direct miss after the semantic-only lookup\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"At what temperature does pure water boil at sea level?\"}],\"max_tokens\":12,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"none\",\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-459",
+          "name": "S31 chat stream tool result turn write runs no embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream tool result turn write runs no embedding\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s31chatresults\",",
+                  "  \"embedding\": false,",
+                  "  \"stream\": {",
+                  "    \"finalOnly\": true,",
+                  "    \"done\": true,",
+                  "    \"save\": \"s31chatresults\"",
+                  "  },",
+                  "  \"headersMatch\": \"stream\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresults-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 21 degrees.\"}],\"max_tokens\":12,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-460",
+          "name": "S31 chat stream the same tool result turn is a direct hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream the same tool result turn is a direct hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s31chatresults\",",
+                  "  \"stream\": {",
+                  "    \"finalOnly\": true,",
+                  "    \"done\": true,",
+                  "    \"compare\": \"s31chatresults\"",
+                  "  },",
+                  "  \"headersMatch\": \"stream\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresults-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 21 degrees.\"}],\"max_tokens\":12,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-461",
+          "name": "S31 chat stream a paraphrased tool result turn misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream a paraphrased tool result turn misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31chatresults\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresults-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Tell me one famous Italian opera composer from the nineteenth century.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 21 degrees.\"}],\"max_tokens\":12,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-462",
+          "name": "S31 chat stream another tool result misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream another tool result misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31chatresults\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresults-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 22 degrees.\"}],\"max_tokens\":12,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-463",
+          "name": "S31 chat stream semantic-only tool result turn is not cached",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream semantic-only tool result turn is not cached\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"none\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresultsso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 21 degrees.\"}],\"max_tokens\":12,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-464",
+          "name": "S31 chat stream the tool result turn is a direct miss after the semantic-only lookup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.waitFirst(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream the tool result turn is a direct miss after the semantic-only lookup\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatresultsso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_s31\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_s31\",\"content\":\"Sunny, 21 degrees.\"}],\"max_tokens\":12,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-465",
+          "name": "S31 chat stream web search turn write runs no embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream web search turn write runs no embedding\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s31chatsearchs\",",
+                  "  \"embedding\": false,",
+                  "  \"stream\": {",
+                  "    \"finalOnly\": true,",
+                  "    \"done\": true,",
+                  "    \"save\": \"s31chatsearchs\"",
+                  "  },",
+                  "  \"headersMatch\": \"stream\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsearchs-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":256,\"temperature\":0,\"web_search_options\":{},\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-466",
+          "name": "S31 chat stream the same web search turn is a direct hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream the same web search turn is a direct hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s31chatsearchs\",",
+                  "  \"stream\": {",
+                  "    \"finalOnly\": true,",
+                  "    \"done\": true,",
+                  "    \"compare\": \"s31chatsearchs\"",
+                  "  },",
+                  "  \"headersMatch\": \"stream\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsearchs-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":256,\"temperature\":0,\"web_search_options\":{},\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-467",
+          "name": "S31 chat stream a paraphrased web search turn misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream a paraphrased web search turn misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31chatsearchs\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsearchs-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":256,\"temperature\":0,\"web_search_options\":{},\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-468",
+          "name": "S31 chat stream semantic-only web search turn is not cached",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream semantic-only web search turn is not cached\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"none\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsearchsso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"}],\"max_tokens\":256,\"temperature\":0,\"web_search_options\":{},\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-469",
+          "name": "S31 chat stream the web search turn is a direct miss after the semantic-only lookup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.waitFirst(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 chat stream the web search turn is a direct miss after the semantic-only lookup\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31chatsearchsso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"}],\"max_tokens\":256,\"temperature\":0,\"web_search_options\":{},\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-470",
+          "name": "S31 responses tool turn write runs no embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses tool turn write runs no embedding\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s31responses\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responses-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"What is the capital city of France in modern times?\",\"max_output_tokens\":16,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-471",
+          "name": "S31 responses the same tool turn is a direct hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses the same tool turn is a direct hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s31responses\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"What is the capital city of France in modern times?\",\"max_output_tokens\":16,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-472",
+          "name": "S31 responses a paraphrased tool turn misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses a paraphrased tool turn misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31responses\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"Tell me the capital city of France in modern times.\",\"max_output_tokens\":16,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-473",
+          "name": "S31 responses semantic-only tool turn is not cached",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses semantic-only tool turn is not cached\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"none\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"At what temperature does pure water boil at sea level?\",\"max_output_tokens\":16,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-474",
+          "name": "S31 responses the tool turn is a direct miss after the semantic-only lookup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.waitFirst(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses the tool turn is a direct miss after the semantic-only lookup\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"At what temperature does pure water boil at sea level?\",\"max_output_tokens\":16,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"none\"}"
+            }
+          }
+        },
+        {
+          "id": "scw-475",
+          "name": "S31 responses tool result turn write runs no embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses tool result turn write runs no embedding\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s31responsesresult\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresult-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 21 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-476",
+          "name": "S31 responses the same tool result turn is a direct hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses the same tool result turn is a direct hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s31responsesresult\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresult-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 21 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-477",
+          "name": "S31 responses a paraphrased tool result turn misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses a paraphrased tool result turn misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31responsesresult\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresult-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Tell me one famous Italian opera composer from the nineteenth century.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 21 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-478",
+          "name": "S31 responses another tool result misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses another tool result misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31responsesresult\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresult-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 22 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-479",
+          "name": "S31 responses semantic-only tool result turn is not cached",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses semantic-only tool result turn is not cached\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"none\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresultso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 21 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-480",
+          "name": "S31 responses the tool result turn is a direct miss after the semantic-only lookup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.waitFirst(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses the tool result turn is a direct miss after the semantic-only lookup\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresultso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 21 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-481",
+          "name": "S31 responses stream tool turn write runs no embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream tool turn write runs no embedding\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s31responsess\",",
+                  "  \"embedding\": false,",
+                  "  \"stream\": {",
+                  "    \"finalOnly\": true,",
+                  "    \"save\": \"s31responsess\"",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsess-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"What is the capital city of France in modern times?\",\"max_output_tokens\":16,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"none\",\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-482",
+          "name": "S31 responses stream the same tool turn is a direct hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream the same tool turn is a direct hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s31responsess\",",
+                  "  \"stream\": {",
+                  "    \"finalOnly\": true,",
+                  "    \"compare\": \"s31responsess\"",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsess-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"What is the capital city of France in modern times?\",\"max_output_tokens\":16,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"none\",\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-483",
+          "name": "S31 responses stream a paraphrased tool turn misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream a paraphrased tool turn misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31responsess\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsess-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"Tell me the capital city of France in modern times.\",\"max_output_tokens\":16,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"none\",\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-484",
+          "name": "S31 responses stream semantic-only tool turn is not cached",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream semantic-only tool turn is not cached\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"none\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsessso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"At what temperature does pure water boil at sea level?\",\"max_output_tokens\":16,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"none\",\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-485",
+          "name": "S31 responses stream the tool turn is a direct miss after the semantic-only lookup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.waitFirst(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream the tool turn is a direct miss after the semantic-only lookup\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsessso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"At what temperature does pure water boil at sea level?\",\"max_output_tokens\":16,\"temperature\":0,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current local time for a city.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"none\",\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-486",
+          "name": "S31 responses stream tool result turn write runs no embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream tool result turn write runs no embedding\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s31responsesresults\",",
+                  "  \"embedding\": false,",
+                  "  \"stream\": {",
+                  "    \"finalOnly\": true,",
+                  "    \"save\": \"s31responsesresults\"",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresults-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 21 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-487",
+          "name": "S31 responses stream the same tool result turn is a direct hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream the same tool result turn is a direct hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s31responsesresults\",",
+                  "  \"stream\": {",
+                  "    \"finalOnly\": true,",
+                  "    \"compare\": \"s31responsesresults\"",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresults-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 21 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-488",
+          "name": "S31 responses stream a paraphrased tool result turn misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream a paraphrased tool result turn misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31responsesresults\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresults-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Tell me one famous Italian opera composer from the nineteenth century.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 21 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-489",
+          "name": "S31 responses stream another tool result misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream another tool result misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s31responsesresults\"",
+                  "  ],",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresults-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Name a famous Italian opera composer from the nineteenth century.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 22 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-490",
+          "name": "S31 responses stream semantic-only tool result turn is not cached",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream semantic-only tool result turn is not cached\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"none\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresultsso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 21 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-491",
+          "name": "S31 responses stream the tool result turn is a direct miss after the semantic-only lookup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.waitFirst(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 responses stream the tool result turn is a direct miss after the semantic-only lookup\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s31responsesresultsso-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Briefly explain how photosynthesis works in green plants.\"},{\"type\":\"function_call\",\"call_id\":\"call_s31\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_s31\",\"output\":\"Sunny, 21 degrees.\"}],\"max_output_tokens\":16,\"temperature\":0,\"stream\":true}"
+            }
+          }
+        },
+        {
+          "id": "scw-492",
           "name": "S23 write at temperature 0",
           "event": [
             {
@@ -22655,7 +25714,7 @@
           }
         },
         {
-          "id": "scw-438",
+          "id": "scw-493",
           "name": "S23 hits",
           "event": [
             {
@@ -22709,7 +25768,7 @@
           }
         },
         {
-          "id": "scw-439",
+          "id": "scw-494",
           "name": "S23 paraphrase at temperature 0.5 misses",
           "event": [
             {
@@ -22764,7 +25823,766 @@
           }
         },
         {
-          "id": "scw-440",
+          "id": "scw-495",
+          "name": "S30 chat turn 1 write",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat turn 1 write\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s30chata\",",
+                  "  \"embedding\": true,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-496",
+          "name": "S30 chat turn 1 hits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat turn 1 hits\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30chata\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-497",
+          "name": "S30 chat follow-up does not replay turn 1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat follow-up does not replay turn 1\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s30chata\"",
+                  "  ]",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-498",
+          "name": "S30 chat follow-up write",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat follow-up write\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s30chatb\",",
+                  "  \"distinct\": [",
+                  "    \"s30chata\"",
+                  "  ],",
+                  "  \"embedding\": true,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-499",
+          "name": "S30 chat the same follow-up hits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat the same follow-up hits\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30chatb\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-500",
+          "name": "S30 chat reworded follow-up after the same history is a semantic hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat reworded follow-up after the same history is a semantic hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"semantic\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30chatb\",",
+                  "  \"threshold\": 0.85,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-501",
+          "name": "S30 chat the same follow-up after a different reply misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat the same follow-up after a different reply misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s30chata\",",
+                  "    \"s30chatb\"",
+                  "  ]",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Use lemon juice and olive oil.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-502",
+          "name": "S30 responses turn 1 write",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses turn 1 write\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s30responsesa\",",
+                  "  \"embedding\": true,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"How do I make a basic vinaigrette salad dressing at home?\",\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-503",
+          "name": "S30 responses turn 1 hits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses turn 1 hits\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30responsesa\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"How do I make a basic vinaigrette salad dressing at home?\",\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-504",
+          "name": "S30 responses follow-up does not replay turn 1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses follow-up does not replay turn 1\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s30responsesa\"",
+                  "  ]",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-505",
+          "name": "S30 responses follow-up write",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses follow-up write\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s30responsesb\",",
+                  "  \"distinct\": [",
+                  "    \"s30responsesa\"",
+                  "  ],",
+                  "  \"embedding\": true,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-506",
+          "name": "S30 responses the same follow-up hits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses the same follow-up hits\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30responsesb\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-507",
+          "name": "S30 responses reworded follow-up after the same history is a semantic hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses reworded follow-up after the same history is a semantic hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"semantic\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30responsesb\",",
+                  "  \"threshold\": 0.85,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-508",
+          "name": "S30 responses the same follow-up after a different reply misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses the same follow-up after a different reply misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s30responsesa\",",
+                  "    \"s30responsesb\"",
+                  "  ]",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Use lemon juice and olive oil.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-509",
           "name": "S29 plugin default threshold",
           "event": [
             {
@@ -22813,7 +26631,7 @@
           }
         },
         {
-          "id": "scw-441",
+          "id": "scw-510",
           "name": "S29 write",
           "event": [
             {
@@ -22865,7 +26683,7 @@
           }
         },
         {
-          "id": "scw-442",
+          "id": "scw-511",
           "name": "S29 hits",
           "event": [
             {
@@ -22919,7 +26737,7 @@
           }
         },
         {
-          "id": "scw-443",
+          "id": "scw-512",
           "name": "S29 the same question about another country misses",
           "event": [
             {
@@ -22977,7 +26795,7 @@
           }
         },
         {
-          "id": "scw-444",
+          "id": "scw-513",
           "name": "S29 restore baseline",
           "event": [
             {
@@ -23026,7 +26844,7 @@
           }
         },
         {
-          "id": "scw-445",
+          "id": "scw-514",
           "name": "S24 switch to a new namespace",
           "event": [
             {
@@ -23075,7 +26893,7 @@
           }
         },
         {
-          "id": "scw-446",
+          "id": "scw-515",
           "name": "S24 the paraphrase misses in the new namespace",
           "event": [
             {
@@ -23130,7 +26948,7 @@
           }
         },
         {
-          "id": "scw-447",
+          "id": "scw-516",
           "name": "S24 switch back",
           "event": [
             {
@@ -23179,7 +26997,7 @@
           }
         },
         {
-          "id": "scw-448",
+          "id": "scw-517",
           "name": "S24 the paraphrase hits in the old namespace",
           "event": [
             {
@@ -23236,7 +27054,7 @@
           }
         },
         {
-          "id": "scw-449",
+          "id": "scw-518",
           "name": "S25 image generation write",
           "event": [
             {
@@ -23289,12 +27107,12 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
         {
-          "id": "scw-450",
+          "id": "scw-519",
           "name": "S25 image generation hits",
           "event": [
             {
@@ -23343,12 +27161,12 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
         {
-          "id": "scw-451",
+          "id": "scw-520",
           "name": "S25 image paraphrase is a semantic hit with the same image",
           "event": [
             {
@@ -23406,12 +27224,12 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A vivid red apple resting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A vivid red apple resting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
         {
-          "id": "scw-452",
+          "id": "scw-521",
           "name": "S26 embedding provider with an invalid key",
           "event": [
             {
@@ -23460,7 +27278,7 @@
           }
         },
         {
-          "id": "scw-453",
+          "id": "scw-522",
           "name": "S26 the request still succeeds and writes",
           "event": [
             {
@@ -23511,7 +27329,7 @@
           }
         },
         {
-          "id": "scw-454",
+          "id": "scw-523",
           "name": "S26 the exact repeat hits direct",
           "event": [
             {
@@ -23566,7 +27384,7 @@
           }
         },
         {
-          "id": "scw-455",
+          "id": "scw-524",
           "name": "S26 the write's log row has the plugin warning",
           "event": [
             {
@@ -23609,7 +27427,7 @@
           }
         },
         {
-          "id": "scw-456",
+          "id": "scw-525",
           "name": "S26 the hit's log row has no warning",
           "event": [
             {
@@ -23652,7 +27470,7 @@
           }
         },
         {
-          "id": "scw-457",
+          "id": "scw-526",
           "name": "S27 semantic baseline",
           "event": [
             {
@@ -23701,7 +27519,7 @@
           }
         },
         {
-          "id": "scw-458",
+          "id": "scw-527",
           "name": "S27 delete the embedding provider",
           "event": [
             {
@@ -23738,7 +27556,7 @@
           }
         },
         {
-          "id": "scw-459",
+          "id": "scw-528",
           "name": "S27 the request still succeeds and writes",
           "event": [
             {
@@ -23789,7 +27607,7 @@
           }
         },
         {
-          "id": "scw-460",
+          "id": "scw-529",
           "name": "S27 the exact repeat hits direct",
           "event": [
             {
@@ -23843,7 +27661,7 @@
           }
         },
         {
-          "id": "scw-461",
+          "id": "scw-530",
           "name": "S27 the write's log row has the plugin warning",
           "event": [
             {
@@ -23886,7 +27704,7 @@
           }
         },
         {
-          "id": "scw-462",
+          "id": "scw-531",
           "name": "S27 recreate the embedding provider",
           "event": [
             {
@@ -23931,7 +27749,7 @@
           }
         },
         {
-          "id": "scw-463",
+          "id": "scw-532",
           "name": "S27 recreate the embedding key",
           "event": [
             {
@@ -23978,7 +27796,7 @@
           }
         },
         {
-          "id": "scw-464",
+          "id": "scw-533",
           "name": "S27 write after the provider is back",
           "event": [
             {
@@ -24030,7 +27848,7 @@
           }
         },
         {
-          "id": "scw-465",
+          "id": "scw-534",
           "name": "S27 hits after the provider is back",
           "event": [
             {
@@ -24084,7 +27902,7 @@
           }
         },
         {
-          "id": "scw-466",
+          "id": "scw-535",
           "name": "S27 paraphrase is a semantic hit again",
           "event": [
             {
@@ -24142,7 +27960,7 @@
           }
         },
         {
-          "id": "scw-467",
+          "id": "scw-536",
           "name": "S27 the semantic hit's log row has no warning",
           "event": [
             {
@@ -24185,7 +28003,7 @@
           }
         },
         {
-          "id": "scw-468",
+          "id": "scw-537",
           "name": "S28 the semantic miss's log row",
           "event": [
             {
@@ -24226,7 +28044,7 @@
           }
         },
         {
-          "id": "scw-469",
+          "id": "scw-538",
           "name": "S28 the semantic hit's log row",
           "event": [
             {
@@ -24267,7 +28085,46 @@
           }
         },
         {
-          "id": "scw-470",
+          "id": "scw-539",
+          "name": "S31 the tool turn's log row",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S31 the tool turn's log row\",",
+                  "  \"status\": 200,",
+                  "  \"poll\": true,",
+                  "  \"source\": \"log\",",
+                  "  \"outcome\": \"miss\",",
+                  "  \"same\": \"s31chat\",",
+                  "  \"embedding\": false",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/{{rid_s31}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "{{rid_s31}}"
+              ]
+            }
+          }
+        },
+        {
+          "id": "scw-540",
           "name": "K7 Anthropic messages write in semantic mode",
           "event": [
             {
@@ -24325,7 +28182,7 @@
           }
         },
         {
-          "id": "scw-471",
+          "id": "scw-541",
           "name": "K7 Anthropic messages exact repeat",
           "event": [
             {
@@ -24384,7 +28241,7 @@
           }
         },
         {
-          "id": "scw-472",
+          "id": "scw-542",
           "name": "K7 Anthropic messages paraphrase carries every semantic header",
           "event": [
             {
@@ -24447,7 +28304,7 @@
           }
         },
         {
-          "id": "scw-473",
+          "id": "scw-543",
           "name": "S cleanup: semantic baseline",
           "event": [
             {
@@ -24501,7 +28358,7 @@
       "name": "O: logs",
       "item": [
         {
-          "id": "scw-474",
+          "id": "scw-544",
           "name": "O1 a direct miss's log row equals the response",
           "event": [
             {
@@ -24539,7 +28396,7 @@
           }
         },
         {
-          "id": "scw-475",
+          "id": "scw-545",
           "name": "O1 a direct hit's log row equals the response",
           "event": [
             {
@@ -24577,7 +28434,7 @@
           }
         },
         {
-          "id": "scw-476",
+          "id": "scw-546",
           "name": "O1 a semantic miss's log row equals the response",
           "event": [
             {
@@ -24615,7 +28472,7 @@
           }
         },
         {
-          "id": "scw-477",
+          "id": "scw-547",
           "name": "O1 a semantic hit's log row equals the response",
           "event": [
             {
@@ -24653,7 +28510,7 @@
           }
         },
         {
-          "id": "scw-478",
+          "id": "scw-548",
           "name": "O2 the direct filter lists the hit and not the miss",
           "event": [
             {
@@ -24705,7 +28562,7 @@
           }
         },
         {
-          "id": "scw-479",
+          "id": "scw-549",
           "name": "O2 the semantic filter lists the hit and not the miss",
           "event": [
             {
@@ -24757,7 +28614,7 @@
           }
         },
         {
-          "id": "scw-480",
+          "id": "scw-550",
           "name": "O3 stats before",
           "event": [
             {
@@ -24801,7 +28658,7 @@
           }
         },
         {
-          "id": "scw-481",
+          "id": "scw-551",
           "name": "O3 semantic baseline",
           "event": [
             {
@@ -24850,7 +28707,7 @@
           }
         },
         {
-          "id": "scw-482",
+          "id": "scw-552",
           "name": "O3 write",
           "event": [
             {
@@ -24900,7 +28757,7 @@
           }
         },
         {
-          "id": "scw-483",
+          "id": "scw-553",
           "name": "O3 a direct hit",
           "event": [
             {
@@ -24954,7 +28811,7 @@
           }
         },
         {
-          "id": "scw-484",
+          "id": "scw-554",
           "name": "O3 a semantic hit",
           "event": [
             {
@@ -25008,7 +28865,7 @@
           }
         },
         {
-          "id": "scw-485",
+          "id": "scw-555",
           "name": "O3 stats count both hits",
           "event": [
             {
@@ -25059,7 +28916,7 @@
           }
         },
         {
-          "id": "scw-486",
+          "id": "scw-556",
           "name": "O4 the speech hit's log row",
           "event": [
             {
@@ -25102,7 +28959,7 @@
       "name": "Teardown",
       "item": [
         {
-          "id": "scw-487",
+          "id": "scw-557",
           "name": "Teardown: delete the plugin",
           "event": [
             {
@@ -25140,7 +28997,7 @@
           }
         },
         {
-          "id": "scw-488",
+          "id": "scw-558",
           "name": "Teardown: delete virtual key A",
           "event": [
             {
@@ -25179,7 +29036,7 @@
           }
         },
         {
-          "id": "scw-489",
+          "id": "scw-559",
           "name": "Teardown: delete virtual key B",
           "event": [
             {
@@ -25218,7 +29075,7 @@
           }
         },
         {
-          "id": "scw-490",
+          "id": "scw-560",
           "name": "Teardown: delete provider openai",
           "event": [
             {
@@ -25256,7 +29113,7 @@
           }
         },
         {
-          "id": "scw-491",
+          "id": "scw-561",
           "name": "Teardown: delete provider anthropic",
           "event": [
             {
@@ -25294,7 +29151,7 @@
           }
         },
         {
-          "id": "scw-492",
+          "id": "scw-562",
           "name": "Teardown: delete provider gemini",
           "event": [
             {
@@ -25332,7 +29189,7 @@
           }
         },
         {
-          "id": "scw-493",
+          "id": "scw-563",
           "name": "Teardown: delete provider cohere",
           "event": [
             {
@@ -25370,7 +29227,7 @@
           }
         },
         {
-          "id": "scw-494",
+          "id": "scw-564",
           "name": "Teardown: delete provider openrouter",
           "event": [
             {
@@ -25408,7 +29265,7 @@
           }
         },
         {
-          "id": "scw-495",
+          "id": "scw-565",
           "name": "Teardown: delete provider bedrock",
           "event": [
             {
@@ -25446,7 +29303,7 @@
           }
         },
         {
-          "id": "scw-496",
+          "id": "scw-566",
           "name": "Teardown: delete provider scw-embed-{{run_id}}",
           "event": [
             {
@@ -25484,7 +29341,7 @@
           }
         },
         {
-          "id": "scw-497",
+          "id": "scw-567",
           "name": "Teardown: delete provider scw-alt-{{run_id}}",
           "event": [
             {
@@ -25522,7 +29379,7 @@
           }
         },
         {
-          "id": "scw-498",
+          "id": "scw-568",
           "name": "Teardown: delete provider scw-badembed-{{run_id}}",
           "event": [
             {

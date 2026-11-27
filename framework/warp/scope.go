@@ -102,6 +102,13 @@ func withCallerRestriction(ctx context.Context, scope Scope, resolve CallerRestr
 	return scope
 }
 
+// CallerScope resolves who the caller on ctx is and what they may see: the
+// scope Warp's tools run under, which GET /api/session/me also reports. resolve
+// is the deployment's row-level access control, nil when it has none.
+func CallerScope(ctx context.Context, resolve CallerRestrictionResolver) Scope {
+	return withCallerRestriction(ctx, ScopeFromContext(ctx), resolve)
+}
+
 // ScopeFromContext derives the caller's scope.
 //
 // Read from the context, never from the request: a scope the caller can name in

@@ -1,14 +1,14 @@
 import type { Badge } from "@/components/ui/badge";
-import type { GuardrailMatch } from "@/lib/types/logs";
+import i18n from "@/lib/i18n";
+import type { GuardrailMatch, GuardrailMatchAction } from "@/lib/types/logs";
 import type { ComponentProps } from "react";
 
-/** What a guardrail did to a request, as shown to users. */
-export type GuardrailMatchAction = "blocked" | "redacted" | "transformed" | "monitored" | "detected";
+export type { GuardrailMatchAction } from "@/lib/types/logs";
 
+// English fallback only; the UI renders logs.detail.guardrailActions.<action> through t().
 export const GUARDRAIL_MATCH_ACTION_LABEL: Record<GuardrailMatchAction, string> = {
 	blocked: "Blocked",
 	redacted: "Redacted",
-	transformed: "Transformed",
 	monitored: "Monitored",
 	detected: "Detected",
 };
@@ -16,18 +16,20 @@ export const GUARDRAIL_MATCH_ACTION_LABEL: Record<GuardrailMatchAction, string> 
 export const GUARDRAIL_MATCH_ACTION_BADGE: Record<GuardrailMatchAction, ComponentProps<typeof Badge>["variant"]> = {
 	blocked: "destructive",
 	redacted: "secondary",
-	transformed: "secondary",
 	monitored: "outline",
 	detected: "warning",
 };
 
-const ENFORCED_VERB: Record<string, string> = { block: "blocked", redact: "redacted", transform: "transformed" };
+// A provider rewriting the matched content is a redaction to users, whichever way the provider reports it.
+const ENFORCED_ACTIONS: Record<string, GuardrailMatchAction> = { block: "blocked", redact: "redacted", transform: "redacted" };
 
 /**
  * guardrailMatchAction names what a guardrail did for one recorded match. An
  * intervention always blocked the request. A detection is labelled by its
- * action, except that a match an output-monitor rule recorded without acting
- * on it (enforced=false) is "monitored" whatever it would have done.
+ * action, a provider rewrite counting as a redaction, except that a match an
+ * output-monitor rule recorded without acting on it (enforced=false) is
+ * "monitored" whatever it would have done. The logs API's guardrail_actions
+ * filter labels matches the same way.
  */
 export function guardrailMatchAction(match: GuardrailMatch, intervention: boolean): GuardrailMatchAction {
 	if (intervention) return "blocked";
@@ -36,9 +38,8 @@ export function guardrailMatchAction(match: GuardrailMatch, intervention: boolea
 		case "block":
 			return "blocked";
 		case "redact":
-			return "redacted";
 		case "transform":
-			return "transformed";
+			return "redacted";
 		default:
 			return "detected";
 	}
@@ -48,18 +49,20 @@ export function guardrailMatchAction(match: GuardrailMatch, intervention: boolea
 export function guardrailMatchActionHint(match: GuardrailMatch, action: GuardrailMatchAction): string {
 	switch (action) {
 		case "blocked":
-			return "The rule stopped the request.";
+			return i18n.t("logs.detail.guardrailHints.blocked", { ns: "observability" });
 		case "redacted":
-			return "The rule removed the matched content and the request continued.";
-		case "transformed":
-			return "The rule rewrote the matched content and the request continued.";
+			return i18n.t("logs.detail.guardrailHints.redacted", { ns: "observability" });
 		case "monitored": {
-			const verb = match.action ? ENFORCED_VERB[match.action] : undefined;
-			return verb
-				? `The rule only monitors: it would have ${verb} this, but the request continued unchanged.`
-				: "The rule only monitors: the request continued unchanged.";
+			switch (match.action ? ENFORCED_ACTIONS[match.action] : undefined) {
+				case "blocked":
+					return i18n.t("logs.detail.guardrailHints.monitoredWouldBlock", { ns: "observability" });
+				case "redacted":
+					return i18n.t("logs.detail.guardrailHints.monitoredWouldRedact", { ns: "observability" });
+				default:
+					return i18n.t("logs.detail.guardrailHints.monitored", { ns: "observability" });
+			}
 		}
 		default:
-			return "The rule flagged the request and let it continue unchanged.";
+			return i18n.t("logs.detail.guardrailHints.detected", { ns: "observability" });
 	}
 }

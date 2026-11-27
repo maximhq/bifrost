@@ -1,6 +1,7 @@
 flush-cache:
   post:
     operationId: flushVaultCache
+    x-bifrost-destructive: true
     x-mint:
       metadata:
         tag: Enterprise

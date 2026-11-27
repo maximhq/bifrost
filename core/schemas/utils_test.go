@@ -1,11 +1,43 @@
 package schemas
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDocumentCitationsDeepCopyIsolation(t *testing.T) {
+	const content = `[{"type":"text","text":"Budget: $4.2M."}]`
+	chat := ChatMessage{Role: ChatMessageRoleUser, Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+		Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileContent: json.RawMessage(content)},
+		Citations: &Citations{Enabled: Ptr(true)},
+	}}}}
+	copiedChat := DeepCopyChatMessage(chat)
+	require.Equal(t, chat, copiedChat)
+	copiedChat.Content.ContentBlocks[0].File.FileContent[0] = ' '
+	require.Equal(t, content, string(chat.Content.ContentBlocks[0].File.FileContent))
+
+	responses := chat.ToResponsesMessages()[0]
+	copiedResponses := DeepCopyResponsesMessage(responses)
+	require.Equal(t, responses, copiedResponses)
+	copiedResponses.Content.ContentBlocks[0].FileContent[0] = ' '
+	require.Equal(t, content, string(responses.Content.ContentBlocks[0].FileContent))
+
+	output := ResponsesMessage{Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
+		Type: ResponsesOutputMessageContentTypeText,
+		ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{Annotations: []ResponsesOutputMessageContentTextAnnotation{{
+			Type: "content_block_location", Index: Ptr(0), StartBlockIndex: Ptr(0), EndBlockIndex: Ptr(1),
+			SourceContent: []string{"Budget: ", "$4.2M."}, Source: Ptr("pack"),
+		}}},
+	}}}}
+	copiedOutput := DeepCopyResponsesMessage(output)
+	require.Equal(t, output, copiedOutput)
+	annotation := &copiedOutput.Content.ContentBlocks[0].Annotations[0]
+	annotation.SourceContent[0] = "changed"
+	require.Equal(t, []string{"Budget: ", "$4.2M."}, output.Content.ContentBlocks[0].Annotations[0].SourceContent)
+}
 
 func TestSanitizeImageURLDefaultRejectsNonHTTPSchemes(t *testing.T) {
 	// The no-args overload must keep the historical http/https-only policy. Providers
@@ -239,6 +271,24 @@ func TestIsClefModel(t *testing.T) {
 	}
 }
 
+func TestIsBasetenDecisionModel(t *testing.T) {
+	for _, model := range []string{"decision-models/baseten-joey-2b-latest", "decision-models/baseten-elephant-9b-latest", "Decision-Models/baseten-mammoth-27b-latest"} {
+		assert.True(t, IsBasetenDecisionModel(model), model)
+	}
+	for _, model := range []string{"zai-org/GLM-5.3", "baseten/decision-models/baseten-joey-2b-latest", "decision-models", ""} {
+		assert.False(t, IsBasetenDecisionModel(model), model)
+	}
+}
+
+func TestIsGeminiDecisionModel(t *testing.T) {
+	for _, model := range []string{"gemini-decision-1", "models/gemini-decision-1", "Gemini-Decision-2-preview"} {
+		assert.True(t, IsGeminiDecisionModel(model), model)
+	}
+	for _, model := range []string{"gemini-3-flash", "gemini-2.5-flash-lite", "gemini/gemini-decision-1", "gemini-decision", ""} {
+		assert.False(t, IsGeminiDecisionModel(model), model)
+	}
+}
+
 func TestIsPerplexityDeciderModel(t *testing.T) {
 	for _, model := range []string{"pplx-decider-v1-27b", "pplx-decider-v1.1-27b", "pplx-decider-v1.1-27b-20261006", "PPLX-Decider-v1.1-27b"} {
 		assert.True(t, IsPerplexityDeciderModel(model), model)
@@ -258,11 +308,29 @@ func TestIsMicrosoftDecisionModel(t *testing.T) {
 }
 
 func TestIsDatabricksDecisionModel(t *testing.T) {
-	for _, model := range []string{"ai_decide", "AI_DECIDE"} {
+	for _, model := range []string{"ai_decide", "AI_DECIDE", "system.ai.openjev-qwen35-4b", "system.ai.typesafeai-jev-1-14-0"} {
 		assert.True(t, IsDatabricksDecisionModel(model), model)
 	}
 	for _, model := range []string{"databricks/ai_decide", "ai-decide", "ai_decide_v2", "ai_classify", "databricks-claude-sonnet-4", ""} {
 		assert.False(t, IsDatabricksDecisionModel(model), model)
+	}
+}
+
+func TestIsDatabricksSystemOneModel(t *testing.T) {
+	for _, model := range []string{
+		"system.ai.openjev-qwen35-4b", "System.AI.OpenJev-Qwen35-4B",
+		"system.ai.typesafeai-jev-1-14-0", "system.ai.typesafeai-jev-1-15-0",
+	} {
+		assert.True(t, IsDatabricksSystemOneModel(model), model)
+	}
+	// Serving endpoint names and bare names are not Unity Catalog model services, the only
+	// names the systemone endpoint takes.
+	for _, model := range []string{
+		"databricks-openjev-qwen35-4b", "databricks-typesafeai-jev-1-14-0", "openjev-qwen35-4b",
+		"main.default.openjev-qwen35-4b", "system.ai.claude-sonnet-4-5",
+		"ai_decide", "databricks-claude-sonnet-4", "jev-1.13", "typesafe/jev-latest", "",
+	} {
+		assert.False(t, IsDatabricksSystemOneModel(model), model)
 	}
 }
 
@@ -273,4 +341,28 @@ func TestIsOllamaDecisionModel(t *testing.T) {
 	for _, model := range []string{"llama3.1:latest", "ollama/nimble", "", ":nimble", "tev2"} {
 		assert.False(t, IsOllamaDecisionModel(model), model)
 	}
+}
+
+// Deep copies feed prompt-cache injection and provider converters; a dropped ttl
+// silently turns a 12h breakpoint into 30m.
+func TestDeepCopy_PromptCacheBreakpointTTL(t *testing.T) {
+	bp := func() *PromptCacheBreakpoint { return &PromptCacheBreakpoint{Mode: Ptr("explicit"), TTL: Ptr("12h")} }
+
+	chat := ChatMessage{Role: ChatMessageRoleSystem, Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{
+		{Type: ChatContentBlockTypeText, Text: Ptr("p"), PromptCacheBreakpoint: bp()},
+	}}}
+	chatCopy := DeepCopyChatMessage(chat)
+	got := chatCopy.Content.ContentBlocks[0].PromptCacheBreakpoint
+	require.NotNil(t, got.TTL)
+	assert.Equal(t, "12h", *got.TTL)
+	assert.NotSame(t, chat.Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, got.TTL)
+
+	resp := ResponsesMessage{Role: Ptr(ResponsesInputMessageRoleDeveloper), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+		{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("p"), PromptCacheBreakpoint: bp()},
+	}}}
+	respCopy := DeepCopyResponsesMessage(resp)
+	gotResp := respCopy.Content.ContentBlocks[0].PromptCacheBreakpoint
+	require.NotNil(t, gotResp.TTL)
+	assert.Equal(t, "12h", *gotResp.TTL)
+	assert.NotSame(t, resp.Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, gotResp.TTL)
 }

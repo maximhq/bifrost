@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ConfigIssuesAlert } from "@/components/ui/configIssuesAlert";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -26,6 +27,7 @@ import { VirtualMCPRequest, VirtualMCPToolSpec } from "@/lib/types/virtualMcps";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import VirtualMCPAccessTab from "./virtualMcpAccessTab";
 import VirtualMCPGeneralTab from "./virtualMcpGeneralTab";
 import VirtualMcpToolsEditor from "./virtualMcpToolsEditor";
@@ -47,6 +49,8 @@ function normalizeTools(tools: VirtualMCPToolSpec[]) {
 }
 
 export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasNext = false, onNavigate }: VirtualMCPSheetProps) {
+	const { t } = useTranslation("mcp");
+	const { t: tc } = useTranslation("common");
 	const { toast } = useToast();
 	const editId = target.mode === "edit" ? target.id : null;
 	const isCreate = target.mode === "create";
@@ -136,7 +140,7 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 			if (isCreate) {
 				body.endpoint_slug = endpointSlug.trim() || undefined;
 				await createVirtualMCP(body).unwrap();
-				toast({ title: "Virtual MCP created" });
+				toast({ title: t("virtualMcps.created") });
 			} else {
 				await updateVirtualMCP({ id: target.id, data: body }).unwrap();
 				// Commit staged VK assignment changes (attach/detach are separate endpoints).
@@ -149,12 +153,12 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 				for (const vkId of original.filter((id) => !stagedSet.has(id))) {
 					await detachVk({ id: target.id, vkId }).unwrap();
 				}
-				toast({ title: "Virtual MCP updated" });
+				toast({ title: t("virtualMcps.updated") });
 			}
 			onClose();
 		} catch (err) {
 			toast({
-				title: isCreate ? "Failed to create Virtual MCP" : "Failed to update Virtual MCP",
+				title: isCreate ? t("virtualMcps.createFailed") : t("virtualMcps.updateFailed"),
 				description: getErrorMessage(err),
 				variant: "destructive",
 			});
@@ -173,18 +177,23 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 
 	return (
 		<Sheet open onOpenChange={(open) => !open && onClose()}>
-			<SheetContent className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]">
+			<SheetContent resizeKey="virtual-mcp" className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]">
 				<SheetHeader headerClassName="mb-0 px-4 py-4 md:px-8" showCloseButton={false}>
 					<div className="flex w-full items-center justify-between gap-2">
 						<div className="space-y-2">
 							<SheetTitle className="flex w-fit items-center gap-2 font-medium">
-								{isCreate ? "New Virtual MCP" : "Edit Virtual MCP"}
-								{enabled ? <Badge>Enabled</Badge> : <Badge variant="secondary">Disabled</Badge>}
+								{isCreate ? t("virtualMcps.new") : t("virtualMcps.edit")}
+								{enabled ? <Badge>{t("common.enabled")}</Badge> : <Badge variant="secondary">{t("common.disabled")}</Badge>}
 							</SheetTitle>
-							<SheetDescription>Bundle tools from your MCP servers into a single endpoint served at /mcp/&lt;slug&gt;.</SheetDescription>
+							<SheetDescription>{t("virtualMcps.sheetDesc")}</SheetDescription>
 						</div>
 						{!isCreate && onNavigate && (
-							<SheetNavigationButtons hasPrev={hasPrev} hasNext={hasNext} onNavigate={handleNavigate} entityLabel="Virtual MCP" />
+							<SheetNavigationButtons
+								hasPrev={hasPrev}
+								hasNext={hasNext}
+								onNavigate={handleNavigate}
+								entityLabel={t("virtualMcps.entity")}
+							/>
 						)}
 					</div>
 				</SheetHeader>
@@ -197,17 +206,18 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 					<Tabs value={tab} onValueChange={setTab} className="flex grow flex-col overflow-hidden">
 						<TabsList className="mx-4 mt-4 flex justify-start md:mx-8">
 							<TabsTrigger value="general" data-testid="virtual-mcp-tab-general">
-								General
+								{t("virtualMcps.wizard.general")}
 							</TabsTrigger>
 							<TabsTrigger value="tools" data-testid="virtual-mcp-tab-tools">
-								Tools
+								{t("virtualMcps.wizard.tools")}
 							</TabsTrigger>
 							<TabsTrigger value="access" data-testid="virtual-mcp-tab-access">
-								Access
+								{t("virtualMcps.wizard.access")}
 							</TabsTrigger>
 						</TabsList>
 
 						<div className="grow overflow-y-auto px-4 py-5 md:px-8">
+							{!isCreate && <ConfigIssuesAlert issues={existing?.config_issues} className="mb-5" />}
 							<TabsContent value="general" className="mt-0">
 								<VirtualMCPGeneralTab
 									name={name}
@@ -239,15 +249,15 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 
 				<SheetFooter className="flex-row items-center justify-between gap-2 border-t md:px-8">
 					<span className="text-muted-foreground text-xs">
-						{!hasSavePermission ? `You do not have permission to ${isCreate ? "create" : "edit"} Virtual MCPs.` : ""}
+						{!hasSavePermission ? (isCreate ? t("virtualMcps.noPermissionCreate") : t("virtualMcps.noPermissionEdit")) : ""}
 					</span>
 					<div className="flex items-center gap-2">
 						<Button variant="outline" onClick={onClose} disabled={saving}>
-							Cancel
+							{tc("cancel")}
 						</Button>
 						<Button onClick={handleSave} disabled={!canSave} data-testid="virtual-mcp-save-btn">
 							{saving && <Loader2 className="h-4 w-4 animate-spin" />}
-							{isCreate ? "Create" : "Save changes"}
+							{isCreate ? tc("create") : t("common.saveChangesLower")}
 						</Button>
 					</div>
 				</SheetFooter>
@@ -256,11 +266,11 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 			<AlertDialog open={pendingNav !== null} onOpenChange={(open) => !open && setPendingNav(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
-						<AlertDialogDescription>You have unsaved changes to this Virtual MCP. Leaving now will discard them.</AlertDialogDescription>
+						<AlertDialogTitle>{t("virtualMcps.discardTitle")}</AlertDialogTitle>
+						<AlertDialogDescription>{t("virtualMcps.discardDesc")}</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel onClick={() => setPendingNav(null)}>Cancel</AlertDialogCancel>
+						<AlertDialogCancel onClick={() => setPendingNav(null)}>{tc("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => {
 								const dir = pendingNav;
@@ -268,7 +278,7 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 								if (dir) onNavigate?.(dir);
 							}}
 						>
-							Discard changes
+							{t("common.discardChangesLower")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

@@ -834,19 +834,20 @@ graph TB
   <Tab title="Go SDK">
 
 ```go
-mcpConfig := &schemas.MCPConfig{
-    ClientConfigs: []schemas.MCPClientConfig{
-        {
-            Name:             "filesystem",
-            IsCodeModeClient: true,
-            ConnectionType:   schemas.MCPConnectionTypeSTDIO,
-            StdioConfig: &schemas.MCPStdioConfig{
-                Command: "npx",
-                Args:    []string{"-y", "@anthropic/mcp-filesystem"},
-            },
-            ToolsToExecute: []string{"*"},
-        },
+// The Account serves the client; MCPConfig carries only the tool manager settings.
+filesystem := &schemas.MCPClientConfig{
+    ID:               "filesystem",
+    Name:             "filesystem",
+    IsCodeModeClient: true,
+    ConnectionType:   schemas.MCPConnectionTypeSTDIO,
+    StdioConfig: &schemas.MCPStdioConfig{
+        Command: "npx",
+        Args:    []string{"-y", "@anthropic/mcp-filesystem"},
     },
+    ToolsToExecute: []string{"*"},
+}
+
+mcpConfig := &schemas.MCPConfig{
     ToolManagerConfig: &schemas.MCPToolManagerConfig{
         CodeModeBindingLevel: schemas.CodeModeBindingLevelServer,
         ToolExecutionTimeout: 30 * time.Second,
