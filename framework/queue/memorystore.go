@@ -453,6 +453,19 @@ func (s *memoryStore) Stats(ctx context.Context, topic, group string) (Stats, er
 	return st, nil
 }
 
+func (s *memoryStore) Delivery(ctx context.Context, topic, deliveryID string) (DeliveryState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return DeliveryState{}, ErrClosed
+	}
+	it, ok := s.items[deliveryID]
+	if !ok || it.removed || it.message.msg.Topic != topic {
+		return DeliveryState{Status: DeliveryMissing}, nil
+	}
+	return deliveryState(it.status, it.claimedUntil.Sub(s.now())), nil
+}
+
 func (s *memoryStore) Ping(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

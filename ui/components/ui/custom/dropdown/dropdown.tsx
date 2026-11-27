@@ -114,10 +114,10 @@ export function CustomDropdown<T = {}>({
 	}, [flattenedOptions, selectedIndex]);
 
 	return (
-		<div className={cn("flex flex-col rounded-md border p-2", className)} ref={containerRef} style={style}>
+		<div className={cn("flex flex-col rounded-md border p-1", className)} ref={containerRef} style={style}>
 			{options.length === 0 ? (
-				<div className="w-[350px]">
-					<p className="text-content-secondary text-md">{emptyViewText}</p>
+				<div className="w-72 px-2 py-1.5">
+					<p className="text-muted-foreground text-xs leading-4">{emptyViewText}</p>
 				</div>
 			) : (
 				<>

@@ -838,6 +838,13 @@ func RedactedKey(key schemas.Key) schemas.Key {
 	} else {
 		redacted.UseForBatchAPI = new(false)
 	}
+	// Add back the eval flag and its concurrency
+	if key.UseForEvals != nil {
+		redacted.UseForEvals = key.UseForEvals
+	} else {
+		redacted.UseForEvals = new(false)
+	}
+	redacted.EvalConcurrency = key.EvalConcurrency
 	// Add back use anthropic endpoints
 	if key.UseAnthropicEndpoints != nil {
 		redacted.UseAnthropicEndpoints = key.UseAnthropicEndpoints
@@ -1611,6 +1618,13 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	}
 	if useForBatchAPI {
 		hash.Write([]byte("useForBatchAPI:true"))
+	}
+	// Hash UseForEvals (nil = default false) and EvalConcurrency (nil = default)
+	if key.UseForEvals != nil && *key.UseForEvals {
+		hash.Write([]byte("useForEvals:true"))
+	}
+	if key.EvalConcurrency != nil {
+		hash.Write([]byte("evalConcurrency:" + strconv.Itoa(*key.EvalConcurrency)))
 	}
 	// Hash UseAnthropicEndpoints (nil = default false for new keys)
 	useAnthropicEndpoints := false

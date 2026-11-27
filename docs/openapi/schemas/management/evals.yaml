@@ -1,0 +1,593 @@
+# Evaluators schemas
+
+Criterion:
+  type: object
+  description: One pass/fail rule
+  properties:
+    name:
+      type: string
+      enum: [score, ""]
+      description: |
+        What the rule judges. Entry level: `score`. Run level: `mean_score`, `median_score`,
+        `minimum_score`, `maximum_score` or `queries_passed` (percent of scored entries that passed;
+        entries scored `na` or `error` are left out of the count).
+    operator:
+      type: string
+      enum: ["=", "!=", ">", "<", ">=", "<=", "is one of"]
+    value:
+      description: The value to compare against. A number, a string, a boolean, or a list of strings for `is one of`.
+    options:
+      type: array
+      items:
+        type: string
+      description: The choices of a multiselect score
+  allOf:
+    - if:
+        required: [operator]
+        properties:
+          operator:
+            enum: [">", "<", ">=", "<="]
+      then:
+        properties:
+          value:
+            type: number
+    - if:
+        required: [operator]
+        properties:
+          operator:
+            enum: ["=", "!="]
+      then:
+        properties:
+          value:
+            type: [string, number, boolean]
+    - if:
+        required: [operator]
+        properties:
+          operator:
+            enum: ["is one of"]
+      then:
+        properties:
+          value:
+            type: array
+            items:
+              type: string
+            minItems: 1
+
+RunCriterion:
+  type: object
+  description: The run-level pass/fail rule. Run-level aggregates are numbers, so the value is a number and `is one of` is not allowed.
+  properties:
+    name:
+      type: string
+      enum: [mean_score, median_score, minimum_score, maximum_score, queries_passed]
+      description: "The aggregate the rule judges. `queries_passed` is the percent of scored entries that passed. Entries scored `na` or `error` are not counted, so one pass and one error is 100."
+    operator:
+      type: string
+      enum: ["=", "!=", ">", "<", ">=", "<="]
+    value:
+      type: number
+      description: The number to compare the aggregate against.
+
+PassCriteria:
+  type: object
+  properties:
+    entry_level:
+      $ref: '#/Criterion'
+    run_level:
+      $ref: '#/RunCriterion'
+
+EvaluatorConfig:
+  type: object
+  description: |
+    Evaluator config. The fields depend on the evaluator type.
+
+    - `ai`: `instructions`, `grading_style` (`yes_no`, `scale`, `multiselect`, `number`), `scale`, `provider`, `model`, `model_params`
+    - `programmatic`: `code` (Starlark, must define `validate(...)`), `response_type`
+    - `api`: `method`, `url`, `headers`, `params`, `payload`, `output_mapping`, `timeout_ms`, `concurrency`
+    - `statistical`: `embedding_provider`, `embedding_model` (embedding-based metrics only)
+    - `human`: `instructions`, `evaluation_type`, `scale`
+
+    Every type also takes `pass_criteria`, `reversed`, `score_normalizer`, `variables` and `optional_variables`.
+  additionalProperties: true
+  properties:
+    pass_criteria:
+      $ref: '#/PassCriteria'
+    reversed:
+      type: boolean
+      description: Whether a lower score is better
+    variables:
+      type: object
+      additionalProperties:
+        type: string
+      description: Required variables, name to description
+    optional_variables:
+      type: object
+      additionalProperties:
+        type: string
+      description: Optional variables, name to description
+
+Evaluator:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Unique evaluator ID (UUID)
+    name:
+      type: string
+    description:
+      type: string
+    type:
+      type: string
+      enum: [ai, programmatic, statistical, api, human]
+    builtin_key:
+      type: string
+      description: Catalog key, for an evaluator installed from a built-in
+    current_version:
+      type: integer
+    tags:
+      type: array
+      items:
+        type: string
+    created_by:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+EvalKey:
+  type: object
+  description: A provider key marked "use for evaluations". The secret is never returned
+  properties:
+    key_id:
+      type: string
+    name:
+      type: string
+    provider:
+      type: string
+    concurrency:
+      type: integer
+      description: The most evaluations that run on this key at once. With a log store this holds across every instance that shares that log store (a SQLite log store belongs to one instance); without one each instance runs its own queue, and the cap holds per instance. A changed value applies on each instance at its next key sync.
+
+ListEvalKeysResponse:
+  type: object
+  properties:
+    keys:
+      type: array
+      items:
+        $ref: '#/EvalKey'
+
+EvaluatorSummary:
+  description: An evaluator as a listing returns it. It has no config, only the facts a list shows
+  allOf:
+    - $ref: '#/Evaluator'
+    - type: object
+      properties:
+        variables:
+          type: array
+          items:
+            type: string
+          description: Names of the inputs the evaluator requires
+        pass_criterion:
+          $ref: '#/Criterion'
+        lower_is_better:
+          type: boolean
+        provider:
+          type: string
+          description: Judge or embedding provider, for an evaluator that calls a model
+        model:
+          type: string
+        endpoint:
+          type: string
+          description: Method and host of an API evaluator. The path, query and headers are left out
+
+EvaluatorWithConfig:
+  allOf:
+    - $ref: '#/Evaluator'
+    - type: object
+      properties:
+        version:
+          type: integer
+          description: The version `config` belongs to
+        config:
+          $ref: '#/EvaluatorConfig'
+        variables:
+          type: array
+          items:
+            type: string
+          description: Variables the evaluator requires
+        optional_variables:
+          type: array
+          items:
+            type: string
+          description: Variables the evaluator reads when present
+        executable:
+          type: boolean
+          description: False for human evaluators, which reviewers score by hand
+
+CreateEvaluatorRequest:
+  type: object
+  required: [name, type, config]
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+    type:
+      type: string
+      enum: [ai, programmatic, api, human]
+      description: Cannot be changed afterwards. Statistical evaluators are installed from the catalog.
+    tags:
+      type: array
+      items:
+        type: string
+    config:
+      $ref: '#/EvaluatorConfig'
+    commit_message:
+      type: string
+      description: Note stored with the first version
+
+UpdateEvaluatorRequest:
+  type: object
+  properties:
+    name:
+      type: string
+      description: Left as it is when empty
+    description:
+      type: string
+      description: Replaces the stored description. Omitting it clears the description.
+    type:
+      type: string
+      enum: [ai, programmatic, statistical, api, human]
+      description: Optional. When sent it must equal the stored type, which cannot be changed.
+    tags:
+      type: array
+      description: Replaces the stored tags. Omitting it clears the tags.
+      items:
+        type: string
+    config:
+      $ref: '#/EvaluatorConfig'
+      description: A config that differs from the current one creates a new version
+    commit_message:
+      type: string
+      description: Note stored with the version this request creates
+
+EvaluatorResponse:
+  type: object
+  properties:
+    evaluator:
+      $ref: '#/EvaluatorWithConfig'
+
+EvaluatorListResponse:
+  type: object
+  properties:
+    evaluators:
+      type: array
+      items:
+        $ref: '#/EvaluatorSummary'
+    total:
+      type: integer
+      description: Number of matching evaluators before paging
+    limit:
+      type: integer
+    offset:
+      type: integer
+
+EvaluatorVersion:
+  type: object
+  properties:
+    id:
+      type: string
+    evaluator_id:
+      type: string
+    version:
+      type: integer
+    config:
+      $ref: '#/EvaluatorConfig'
+    commit_message:
+      type: string
+    created_by:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+
+EvaluatorVersionListResponse:
+  type: object
+  properties:
+    versions:
+      type: array
+      items:
+        $ref: '#/EvaluatorVersion'
+
+DuplicateRequest:
+  type: object
+  properties:
+    name:
+      type: string
+      description: "Name of the copy. Without a name, the copy is named after the original with ` (copy)` appended, for example `Accuracy (copy)`."
+
+ValidateRequest:
+  type: object
+  anyOf:
+    - required: [type]
+    - required: [evaluator_id]
+  properties:
+    type:
+      type: string
+      enum: [ai, programmatic, statistical, api, human]
+      description: "Required without evaluator_id. With evaluator_id it may be left out, and the saved evaluator's type is used; a different type answers `valid: false`."
+    builtin_key:
+      type: string
+    config:
+      $ref: '#/EvaluatorConfig'
+    evaluator_id:
+      type: string
+      description: |
+        The saved evaluator this config edits. Its stored secrets stand behind any `<REDACTED>` values in the config,
+        as they do on update, so the redacted config the editor was shown validates. An unknown id returns 404.
+        A header sent as `<REDACTED>` keeps its stored value only when the stored config has that header and the URL keeps the same scheme, host and port. Otherwise the request is refused (validate answers `valid: false`): send the header value again after changing the endpoint.
+
+ValidationResponse:
+  type: object
+  properties:
+    valid:
+      type: boolean
+    error:
+      type: string
+      description: Why the config is invalid
+    variables:
+      type: array
+      items:
+        type: string
+    optional_variables:
+      type: array
+      items:
+        type: string
+    config:
+      $ref: '#/EvaluatorConfig'
+
+ExecuteRequest:
+  type: object
+  properties:
+    variables:
+      type: object
+      additionalProperties:
+        type: string
+      description: The values to evaluate, by variable name
+    version:
+      type: integer
+      minimum: 0
+      description: Version to run. 0 or absent runs the current version.
+    wait_ms:
+      type: integer
+      description: "How long to wait for a result once the execution is stored and queued, up to 120000. Defaults to 30000. Storing and queueing come first, so the call can take longer than wait_ms. 0 does not wait: the execution is read once, which takes up to 5 seconds on a slow store, and the response may already carry the result of a fast evaluator."
+
+DraftEvaluator:
+  type: object
+  required: [type]
+  properties:
+    type:
+      type: string
+      enum: [ai, programmatic, statistical, api]
+    builtin_key:
+      type: string
+    config:
+      $ref: '#/EvaluatorConfig'
+    evaluator_id:
+      type: string
+      description: |
+        The evaluator being edited, if any. Lets a draft that carries redacted secrets run with the stored ones.
+        A header sent as `<REDACTED>` keeps its stored value only when the stored config has that header and the URL keeps the same scheme, host and port. Otherwise the request is refused (this call answers 400 and no execution is created): send the header value again after changing the endpoint.
+
+ExecuteDraftRequest:
+  type: object
+  required: [draft]
+  properties:
+    draft:
+      $ref: '#/DraftEvaluator'
+    variables:
+      type: object
+      additionalProperties:
+        type: string
+    wait_ms:
+      type: integer
+      description: "How long to wait for a result once the execution is stored and queued, up to 120000. Defaults to 30000. Storing and queueing come first, so the call can take longer than wait_ms. 0 does not wait: the execution is read once, which takes up to 5 seconds on a slow store, and the response may already carry the result of a fast evaluator."
+
+Score:
+  type: object
+  description: An evaluator's verdict. Exactly one of `number`, `bool` and `string` is set when `status` is `ok`, and none when it is `na` or `error`.
+  required: [status]
+  properties:
+    status:
+      type: string
+      enum: [ok, na, error]
+      description: "`na` when a required variable is missing, `error` when the evaluator failed"
+    number:
+      type: number
+    bool:
+      type: boolean
+    string:
+      type: string
+  oneOf:
+    - title: Number score
+      properties:
+        status:
+          const: ok
+      required: [status, number]
+      not:
+        anyOf:
+          - required: [bool]
+          - required: [string]
+    - title: Boolean score
+      properties:
+        status:
+          const: ok
+      required: [status, bool]
+      not:
+        anyOf:
+          - required: [number]
+          - required: [string]
+    - title: Label score
+      properties:
+        status:
+          const: ok
+      required: [status, string]
+      not:
+        anyOf:
+          - required: [number]
+          - required: [bool]
+    - title: No score
+      properties:
+        status:
+          enum: [na, error]
+      not:
+        anyOf:
+          - required: [number]
+          - required: [bool]
+          - required: [string]
+
+EvaluationResult:
+  type: object
+  properties:
+    evaluator_id:
+      type: string
+    evaluator_version:
+      type: integer
+    score:
+      $ref: '#/Score'
+    reasoning:
+      type: string
+    pass:
+      type: boolean
+      description: Whether the score met the entry-level pass criterion. Absent unless the score status is `ok`.
+    usage:
+      type: object
+      description: Tokens the evaluator's model calls used
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+    cost:
+      type: number
+      description: Cost of the evaluator's model calls
+    latency_ms:
+      type: integer
+    logs:
+      type: array
+      items:
+        type: string
+      description: Output printed by a programmatic evaluator
+
+Execution:
+  type: object
+  properties:
+    id:
+      type: string
+    status:
+      type: string
+      enum: [queued, running, completed]
+    evaluator_id:
+      type: string
+    evaluator_version:
+      type: integer
+    key_id:
+      type: string
+      description: The eval key the run is routed to, for an evaluator that calls a model. It is set when the job is placed on that key's queue, so a queued execution can have it before any model call is made.
+    result:
+      $ref: '#/EvaluationResult'
+    created_at:
+      type: string
+      format: date-time
+    started_at:
+      type: string
+      format: date-time
+    completed_at:
+      type: string
+      format: date-time
+
+ExecutionResponse:
+  type: object
+  properties:
+    execution:
+      $ref: '#/Execution'
+
+CatalogEntry:
+  type: object
+  properties:
+    key:
+      type: string
+    name:
+      type: string
+    description:
+      type: string
+    category:
+      type: string
+    type:
+      type: string
+      enum: [ai, statistical]
+    variables:
+      type: array
+      items:
+        type: string
+    optional_variables:
+      type: array
+      items:
+        type: string
+    lower_is_better:
+      type: boolean
+    needs_judge_model:
+      type: boolean
+    needs_embedding_model:
+      type: boolean
+    pass_criteria:
+      $ref: '#/PassCriteria'
+    scale:
+      type: string
+      description: The range of the score, in words
+
+CatalogResponse:
+  type: object
+  properties:
+    catalog:
+      type: array
+      items:
+        $ref: '#/CatalogEntry'
+
+InstallRequest:
+  type: object
+  properties:
+    name:
+      type: string
+      description: Defaults to the built-in's name
+    description:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+    provider:
+      type: string
+      description: Judge or embedding provider, when the built-in needs one
+    model:
+      type: string
+      description: Judge or embedding model
+    model_params:
+      type: object
+      additionalProperties: true
+    pass_criteria:
+      description: "Replaces the built-in's pass rules as a whole: give both entry_level and run_level. Leave pass_criteria out to keep the built-in's rules."
+      allOf:
+        - $ref: '#/PassCriteria'
+        - required: [entry_level, run_level]
+
+MessageResponse:
+  type: object
+  properties:
+    message:
+      type: string

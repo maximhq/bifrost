@@ -986,6 +986,21 @@ func (s *clickhouseStore) Stats(ctx context.Context, topic, group string) (Stats
 	return st, nil
 }
 
+func (s *clickhouseStore) Delivery(ctx context.Context, topic, deliveryID string) (DeliveryState, error) {
+	live, liveArg := s.liveWhere()
+	var row struct {
+		Status       string
+		ClaimedUntil int64
+		NowMicros    int64
+	}
+	if err := s.readRows(ctx, &row, []string{"status", "claimed_until", "now_micros"},
+		"SELECT status, claimed_until, "+chNowMicros+" AS now_micros FROM queue_deliveries FINAL WHERE topic = ? AND id = ? AND "+live+" LIMIT 1",
+		topic, deliveryID, liveArg); err != nil {
+		return DeliveryState{}, fmt.Errorf("delivery: %w", err)
+	}
+	return deliveryState(row.Status, time.Duration(row.ClaimedUntil-row.NowMicros)*time.Microsecond), nil
+}
+
 func (s *clickhouseStore) Ping(ctx context.Context) error {
 	return s.db.WithContext(ctx).Exec("SELECT 1").Error
 }

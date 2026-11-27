@@ -68,6 +68,10 @@ func (p *RoutingPlugin) applyModelRouters(ctx *schemas.BifrostContext, req *sche
 	if !p.routerMatcher.HasRoutes() {
 		return ""
 	}
+	// An evaluation call stays on its eval key, provider and model: a router may not move it.
+	if pinLocked(ctx) {
+		return ""
+	}
 	provider, model, _ := req.GetRequestFields()
 	if model == "" {
 		return ""

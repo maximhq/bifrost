@@ -303,6 +303,7 @@ type BifrostHTTPServer struct {
 	NotificationService  *handlers.NotificationService
 	RSSFeedsHandler      *handlers.RSSFeedsHandler
 	WarpHandler          *handlers.WarpHandler
+	evals                *evalsRuntime // evaluation queue and runner; nil until RegisterAPIRoutes builds them
 	MCPServerHandler     *handlers.MCPServerHandler
 	BifrostMCP           *handlers.BifrostMCP          // the gateway's API as MCP tools on /v1/mcp; its server loads after boot
 	BifrostMCPToolAccess handlers.BifrostMCPToolAccess // set before StartBifrostMCP to shape tools/list per caller
@@ -3396,6 +3397,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	pluginsHandler.RegisterRoutes(s.Router, configRoutes...)
 	sessionHandler.RegisterRoutes(s.Router, middlewares...)
 	promptsHandler.RegisterRoutes(s.Router, configRoutes...)
+	if evalsHandler := s.setupEvals(s.Ctx); evalsHandler != nil {
+		evalsHandler.RegisterRoutes(s.Router, configRoutes...)
+	}
 	handlers.NewSkillsHandler(s.Config.ConfigStore, s.Config.ObjectStore).RegisterRoutes(s.Router, configRoutes...)
 	webhookHandler := handlers.NewWebhookHandler(callbacks, s.Config, s.WebhookDispatcher)
 	webhookHandler.RegisterRoutes(s.Router, configRoutes...)
@@ -4317,6 +4321,9 @@ func (s *BifrostHTTPServer) Start() error {
 				s.WarpHandler.Shutdown()
 				logger.Info("warp shutdown completed")
 			}
+			// Evals next, for the same reason as Warp: its jobs call the client.
+			logger.Info("shutting down evals...")
+			s.shutdownEvals()
 			logger.Info("closing agent gateway...")
 			s.CloseAgentGateway()
 			logger.Info("shutting down bifrost client...")

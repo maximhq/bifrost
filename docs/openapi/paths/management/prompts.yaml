@@ -960,6 +960,12 @@ sessions-commit:
                   $ref: '../../schemas/management/prompts.yaml#/PromptVersion'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Session not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
       '503':

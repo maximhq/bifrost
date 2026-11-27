@@ -449,6 +449,10 @@ export interface ModelProviderKey {
 	use_for_batch_api?: boolean;
 	// The key's own content-logging decision: absent/null inherits, true forces content off, false forces it on.
 	disable_content_logging?: boolean | null;
+	/** Whether evaluators may call models with this key. Evaluations use no other keys. */
+	use_for_evals?: boolean;
+	/** Most evaluations in flight on this key at once, across all instances. Unset means the default. */
+	eval_concurrency?: number | null;
 	use_anthropic_endpoints?: boolean;
 	use_openai_endpoints?: boolean;
 	aliases?: Record<string, AliasConfig>;

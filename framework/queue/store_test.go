@@ -49,6 +49,7 @@ func runStoreContract(t *testing.T, newStore storeFactory) {
 		{"ExtendReportsHeldLeases", contractExtend},
 		{"Purge", contractPurge},
 		{"Stats", contractStats},
+		{"DeliveryReportsOneDelivery", contractDelivery},
 		{"PayloadsAndHeadersRoundTrip", contractPayloadsRoundTrip},
 		{"EarliestBackfillKeepsPublishOrder", contractBackfillOrder},
 		{"LargeBatchesCrossChunkBoundaries", contractLargeBatches},
@@ -464,6 +465,61 @@ func contractStats(t *testing.T, s Store) {
 	st, err = s.Stats(ctx, topic, "missing")
 	require.NoError(t, err)
 	assert.Equal(t, Stats{}, st)
+}
+
+// contractDelivery pins Delivery for each state a delivery passes through:
+// pending (due, or waiting behind its key), leased with time left, leased with
+// its lease run out, dead, and missing once acknowledged or never created.
+func contractDelivery(t *testing.T, s Store) {
+	ctx := context.Background()
+	topic := uniqueTopic(t)
+	mustGroup(t, s, topic, "g", StartFromLatest)
+	acked, killed, expiring := newMsg(topic, "", "acked"), newMsg(topic, "", "killed"), newMsg(topic, "", "expiring")
+	head, behind := newMsg(topic, "k", "head"), newMsg(topic, "k", "behind")
+	mustAppend(t, s, acked, killed, expiring, head, behind)
+	state := func(m *Message, group string) DeliveryState {
+		t.Helper()
+		st, err := s.Delivery(ctx, topic, DeliveryID(m.ID, group))
+		require.NoError(t, err)
+		return st
+	}
+
+	assert.Equal(t, DeliveryState{Status: DeliveryPending}, state(acked, "g"), "a due delivery is pending")
+	assert.Equal(t, DeliveryState{Status: DeliveryPending}, state(behind, "g"), "a delivery queued behind its key is pending")
+	assert.Equal(t, DeliveryState{Status: DeliveryMissing}, state(acked, "unregistered"), "a group that is not registered has no delivery")
+	st, err := s.Delivery(ctx, topic, DeliveryID(uuid.NewString(), "g"))
+	require.NoError(t, err)
+	assert.Equal(t, DeliveryState{Status: DeliveryMissing}, st, "an unknown delivery is missing")
+
+	cs := mustClaim(t, s, topic, "g", 2, longLease)
+	require.Len(t, cs, 2)
+	byPayload := map[string]*Claimed{}
+	for _, c := range cs {
+		byPayload[string(c.Message.Payload)] = c
+	}
+	require.Contains(t, byPayload, "acked")
+	require.Contains(t, byPayload, "killed")
+	leased := state(acked, "g")
+	assert.Equal(t, DeliveryLeased, leased.Status)
+	assert.Greater(t, leased.LeaseRemaining, longLease-30*time.Second, "a fresh lease has most of its time left")
+	assert.LessOrEqual(t, leased.LeaseRemaining, longLease)
+
+	held, err := ackOne(ctx, s, byPayload["acked"])
+	require.NoError(t, err)
+	require.True(t, held)
+	assert.Equal(t, DeliveryState{Status: DeliveryMissing}, state(acked, "g"), "an acknowledged delivery is missing")
+	held, err = s.Kill(ctx, byPayload["killed"], "boom")
+	require.NoError(t, err)
+	require.True(t, held)
+	assert.Equal(t, DeliveryState{Status: DeliveryDead}, state(killed, "g"))
+
+	short := mustClaim(t, s, topic, "g", 1, contractLease)
+	require.Len(t, short, 1)
+	require.Equal(t, "expiring", string(short[0].Message.Payload))
+	time.Sleep(contractWait)
+	expired := state(expiring, "g")
+	assert.Equal(t, DeliveryLeased, expired.Status, "an expired lease not claimed again is still leased")
+	assert.LessOrEqual(t, expired.LeaseRemaining, time.Duration(0), "with no time left")
 }
 
 // TestMemoryStoreClockSkew pins that leases follow the store's clock: an

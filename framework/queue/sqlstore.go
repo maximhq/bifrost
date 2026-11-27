@@ -905,6 +905,30 @@ func (s *sqlStore) Stats(ctx context.Context, topic, group string) (Stats, error
 	return st, nil
 }
 
+func (s *sqlStore) Delivery(ctx context.Context, topic, deliveryID string) (DeliveryState, error) {
+	var row struct {
+		Status       string
+		ClaimedUntil *int64
+		NowMicros    int64
+	}
+	var b sqlBuilder
+	b.add("SELECT status, claimed_until, ")
+	s.dialect.nowMicros(&b)
+	b.add(" AS now_micros FROM queue_deliveries WHERE topic = ? AND id = ?", topic, deliveryID)
+	res := s.db.WithContext(ctx).Raw(b.String(), b.args...).Scan(&row)
+	if res.Error != nil {
+		return DeliveryState{}, fmt.Errorf("delivery: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return DeliveryState{Status: DeliveryMissing}, nil
+	}
+	var remaining time.Duration
+	if row.ClaimedUntil != nil {
+		remaining = time.Duration(*row.ClaimedUntil-row.NowMicros) * time.Microsecond
+	}
+	return deliveryState(row.Status, remaining), nil
+}
+
 func (s *sqlStore) Ping(ctx context.Context) error {
 	sqlDB, err := s.db.DB()
 	if err != nil {

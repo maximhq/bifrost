@@ -276,6 +276,8 @@ const KeySchema = z.object({
 	use_for_batch_api: z.boolean().optional(),
 	// Tri-state: null/absent inherits, true forces content off, false forces it on.
 	disable_content_logging: z.boolean().nullable().optional(),
+	use_for_evals: z.boolean().optional(),
+	eval_concurrency: z.number().int().min(1).optional(),
 });
 
 // Main provider form schema

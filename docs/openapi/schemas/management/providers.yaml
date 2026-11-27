@@ -562,6 +562,14 @@ Key:
         never loosens a connector's own disable_content_logging. When
         client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request
         header still takes precedence for the log store.
+    use_for_evals:
+      type: boolean
+      description: Whether this key can serve evaluation model calls. Evaluations only ever use keys with this set.
+    eval_concurrency:
+      type: [integer, 'null']
+      minimum: 1
+      maximum: 256
+      description: Maximum evaluations in flight on this key at once. With a log store this holds across every Bifrost instance that shares that log store (a SQLite log store belongs to one instance); without one each instance runs its own queue, and the cap holds per instance. Defaults to 4. On an update, null clears the stored value and returns the key to the default; leaving the field out keeps the stored value. A value below 1 or above 256 is refused. A changed value applies on each instance at its next key sync.
     config_hash:
       type: string
       description: Hash of config.json version, used for change detection

@@ -274,9 +274,11 @@ CommitSessionRequest:
   properties:
     commit_message:
       type: string
+      minLength: 1
     message_indices:
       type: array
+      minItems: 1
       items:
         type: integer
         minimum: 0
-      description: 0-based indices of session messages to include in the version (duplicates ignored). Omit to include all messages.
+      description: 0-based indices of session messages to include in the version (duplicates ignored). Omit to include all messages; an empty list is refused.

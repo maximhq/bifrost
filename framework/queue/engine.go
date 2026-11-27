@@ -229,6 +229,13 @@ func (q *storeQueue) Stats(ctx context.Context, topic, group string) (Stats, err
 	return q.store.Stats(ctx, topic, group)
 }
 
+func (q *storeQueue) Delivery(ctx context.Context, topic, deliveryID string) (DeliveryState, error) {
+	if q.isClosed() {
+		return DeliveryState{}, ErrClosed
+	}
+	return q.store.Delivery(ctx, topic, deliveryID)
+}
+
 func (q *storeQueue) Ping(ctx context.Context) error {
 	if q.isClosed() {
 		return ErrClosed
