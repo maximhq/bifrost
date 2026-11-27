@@ -7,6 +7,9 @@
 # vertex), so the collection needs an instance nothing else has configured: with
 # --binary the runner boots a clean one for the run (CI does this); without it,
 # it runs against BIFROST_BASE_URL, else the environment file's base_url.
+# The retry scenarios point a provider at a scripted upstream, provider-error-fixture.mjs,
+# which the runner starts on PROVIDER_ERROR_FIXTURE_PORT (default 8791) and stops on exit.
+# The server under test must reach it on 127.0.0.1.
 #
 # Usage: run-newman-routing-wiring-tests.sh [--binary <bifrost-http> [--port <port>]]
 
@@ -145,9 +148,34 @@ if [ "$ci_normalized" = "1" ] || [ "$ci_normalized" = "true" ]; then
     cmd+=(--reporter-cli-no-failures false)
 fi
 
+# The scripted upstream. stop_fixture keeps the exit status, which stop_clean_bifrost reads next.
+FIXTURE_PORT="${PROVIDER_ERROR_FIXTURE_PORT:-8791}"
+FIXTURE_PID=""
+stop_fixture() {
+    local code=$?
+    [ -n "$FIXTURE_PID" ] && kill "$FIXTURE_PID" 2>/dev/null
+    return "$code"
+}
+if (echo >/dev/tcp/127.0.0.1/"$FIXTURE_PORT") 2>/dev/null; then
+    echo -e "${RED}Error: port $FIXTURE_PORT is already in use; set PROVIDER_ERROR_FIXTURE_PORT to use another${NC}" >&2
+    exit 1
+fi
+trap 'set +e; stop_fixture' EXIT
+PROVIDER_ERROR_FIXTURE_PORT="$FIXTURE_PORT" node "$SCRIPT_DIR/../provider-error-fixture.mjs" > "$REPORT_DIR/provider-error-fixture.log" 2>&1 &
+FIXTURE_PID=$!
+until (echo >/dev/tcp/127.0.0.1/"$FIXTURE_PORT") 2>/dev/null; do
+    if ! kill -0 "$FIXTURE_PID" 2>/dev/null; then
+        echo -e "${RED}Error: the provider error fixture exited before it was ready${NC}" >&2
+        cat "$REPORT_DIR/provider-error-fixture.log" >&2
+        exit 1
+    fi
+    sleep 0.2
+done
+cmd+=(--env-var "fixture_url=http://127.0.0.1:$FIXTURE_PORT")
+
 if [ -n "$BIFROST_BINARY" ]; then
     source "$SCRIPT_DIR/../lib/clean-bifrost.sh"
-    trap 'stop_clean_bifrost "$API_DIR/$REPORT_DIR"' EXIT
+    trap 'set +e; stop_fixture; stop_clean_bifrost "$API_DIR/$REPORT_DIR"' EXIT
     boot_clean_bifrost "$BIFROST_BINARY" "$PORT" || exit 1
     BIFROST_BASE_URL="http://localhost:$PORT"
 fi

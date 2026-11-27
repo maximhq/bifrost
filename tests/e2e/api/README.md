@@ -957,6 +957,10 @@ azure, bedrock, vertex), so run it against a server nothing else has configured.
 one (no providers, sqlite stores in a throwaway app dir) and stops it afterwards;
 CI runs it this way from `.github/workflows/scripts/test-api-integrations.sh`.
 
+The retry scenarios point a provider at a scripted upstream, `runners/provider-error-fixture.mjs`,
+which answers by model name. The runner starts it on `PROVIDER_ERROR_FIXTURE_PORT` (default 8791)
+and stops it afterwards, so that port must be free and the server must reach it on 127.0.0.1.
+
 ```bash
 ./runners/individual/run-newman-routing-wiring-tests.sh --binary /path/to/bifrost-http  # --port, default 8094
 node runners/build-routing-wiring.mjs                                                  # regenerate after editing scenarios

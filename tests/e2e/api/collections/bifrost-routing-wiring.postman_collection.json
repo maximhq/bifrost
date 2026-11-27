@@ -27,6 +27,11 @@
       "type": "string"
     },
     {
+      "key": "fixture_url",
+      "value": "http://127.0.0.1:8791",
+      "type": "string"
+    },
+    {
       "key": "setup_token",
       "value": "bifrost-e2e-setup-token",
       "type": "string"
@@ -27616,6 +27621,327 @@
                     "api",
                     "providers",
                     "catwiring-rt-vk-empty-configs-{{run_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "A Cloudflare 520 from the upstream is retried on the same key",
+      "description": "Cloudflare answers 520-523 when its edge gets no usable response from the origin, and a provider behind it passes that on as a plain-text body such as \"error code: 520\". The provider is on the scripted upstream with one key, whose alias sends upstream-520-once: the first attempt gets a plain-text 520 and the next an answer. The request succeeds on that key, and the upstream counts two attempts.",
+      "item": [
+        {
+          "id": "rt-retry-cloudflare-520-01-add-provider",
+          "name": "01. add provider [retry-cloudflare-520]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [retry-cloudflare-520]\";",
+                  "pm.test(\"01. add provider [retry-cloudflare-520]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-retry-cloudflare-520-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"{{fixture_url}}\",\"max_retries\":2,\"retry_backoff_initial\":100,\"retry_backoff_max\":200,\"default_request_timeout_in_seconds\":30}}"
+            }
+          }
+        },
+        {
+          "id": "rt-retry-cloudflare-520-02-add-key",
+          "name": "02. add key k1 [retry-cloudflare-520]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [retry-cloudflare-520]\";",
+                  "pm.test(\"02. add key k1 [retry-cloudflare-520]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-retry-cloudflare-520-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-retry-cloudflare-520-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"k1-{{run_id}}\",\"name\":\"catwiring-rt-retry-cloudflare-520-k1-{{run_id}}\",\"models\":[\"catwiring-cf520-{{run_id}}\"],\"enabled\":true,\"value\":\"test-key\",\"aliases\":{\"catwiring-cf520-{{run_id}}\":\"upstream-520-once~cf520-{{run_id}}\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-retry-cloudflare-520-03-await-catalog",
+          "name": "03. wait for the catalog to list the provider's models [retry-cloudflare-520]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [retry-cloudflare-520]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-retry-cloudflare-520-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-cf520-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"03. wait for the catalog to list the provider's models [retry-cloudflare-520]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"03. wait for the catalog to list the provider's models [retry-cloudflare-520]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-retry-cloudflare-520-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-retry-cloudflare-520-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-retry-cloudflare-520-04-route",
+          "name": "04. the request is answered after the 520 (routing_info.key=k1) [retry-cloudflare-520]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [retry-cloudflare-520]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
+                  "  var ri = (body.extra_fields || {}).routing_info || {};",
+                  "  var providerName = 'catwiring-rt-retry-cloudflare-520-' + pm.variables.get('run_id');",
+                  "  if (ri.provider !== providerName) { throw new Error('routing_info.provider=' + ri.provider + ' expected ' + providerName); }",
+                  "  var expectedKey = 'catwiring-rt-retry-cloudflare-520-k1-' + pm.variables.get('run_id');",
+                  "  if (ri.key !== expectedKey) { throw new Error('routing_info.key=' + ri.key + ' expected ' + expectedKey); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"04. the request is answered after the 520 (routing_info.key=k1) [retry-cloudflare-520]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-retry-cloudflare-520-{{run_id}}/catwiring-cf520-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "id": "rt-retry-cloudflare-520-05-upstream-hits",
+          "name": "05. the upstream received two attempts [retry-cloudflare-520]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [retry-cloudflare-520]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('upstream hits status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var model = pm.variables.replaceIn(\"upstream-520-once~cf520-{{run_id}}\");",
+                  "  var hits = ((((pm.response.json() || {}).data || [])[0] || {}).hits || {})[model] || 0;",
+                  "  if (hits !== 2) { throw new Error('the upstream received ' + hits + ' requests for ' + model + ', expected 2'); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"05. the upstream received two attempts [retry-cloudflare-520]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{fixture_url}}/__hits",
+              "host": [
+                "{{fixture_url}}"
+              ],
+              "path": [
+                "__hits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-retry-cloudflare-520-cleanup-provider-self",
+              "name": "cleanup: delete provider [retry-cloudflare-520]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [retry-cloudflare-520]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-retry-cloudflare-520-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-retry-cloudflare-520-{{run_id}}"
                   ]
                 }
               }
