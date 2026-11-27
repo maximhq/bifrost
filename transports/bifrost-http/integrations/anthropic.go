@@ -1399,6 +1399,12 @@ func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicBatchRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicFilesRouteConfigs("/anthropic", handlerStore)...)
+	// Root aliases: Anthropic clients (Claude Code, the Anthropic SDKs) append /v1/messages to
+	// their base URL, and most gateways serve it there. Without these a client pointed at the
+	// bare gateway URL gets 405 and must be told to add /anthropic. Only the Messages API is
+	// aliased: /v1/models at the root is Bifrost's own listing and must stay as it is.
+	routes = append(routes, createAnthropicMessagesRouteConfig("", logger)...)
+	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("", handlerStore)...)
 
 	return &AnthropicRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
