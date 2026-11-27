@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -37,6 +38,9 @@ const (
 	LimitScopeMCP LimitScope = "mcp"
 )
 
+// limitScopes are the scopes this build knows.
+var limitScopes = []LimitScope{LimitScopeShared, LimitScopeModel, LimitScopeMCP}
+
 // Normalize returns the scope with the empty value read as LimitScopeShared.
 func (s LimitScope) Normalize() LimitScope {
 	if s == "" {
@@ -47,18 +51,28 @@ func (s LimitScope) Normalize() LimitScope {
 
 // IsValid reports whether the scope, once normalized, is a known value.
 func (s LimitScope) IsValid() bool {
-	switch s.Normalize() {
-	case LimitScopeShared, LimitScopeModel, LimitScopeMCP:
-		return true
+	return slices.Contains(limitScopes, s.Normalize())
+}
+
+// ScopesChargedBy lists the stored scope values a limit charged by traffic of the given scope can hold
+// (see AppliesTo), for a query that filters stored rows by it. The empty value is listed as Normalize
+// reads it, as shared, though rows are written normalized.
+func ScopesChargedBy(traffic LimitScope) []LimitScope {
+	scopes := make([]LimitScope, 0, len(limitScopes)+1)
+	for _, scope := range append([]LimitScope{""}, limitScopes...) {
+		if scope.AppliesTo(traffic) {
+			scopes = append(scopes, scope)
+		}
 	}
-	return false
+	return scopes
 }
 
 // RequestScope is the scope of the traffic a request of this type is, and the one place a request
 // type is classified: an MCP tool execution is mcp traffic, every other request is model traffic.
 //
-// A new scope is added in one place each: its constant, IsValid, the request types it classifies
-// here, AppliesTo when it is a narrow scope, and NeedsAllModelsOwner when its traffic names no model.
+// A new scope is added in one place each: its constant and limitScopes, the request types it
+// classifies here, AppliesTo when it is a narrow scope, and NeedsAllModelsOwner when its traffic names
+// no model.
 func RequestScope(requestType schemas.RequestType) LimitScope {
 	if requestType == schemas.MCPToolExecutionRequest {
 		return LimitScopeMCP

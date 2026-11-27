@@ -520,6 +520,8 @@ func TestBudgetScopeSemantics(t *testing.T) {
 		assert.Equal(t, tc.mcp, tc.scope.AppliesTo(LimitScopeMCP), "%q applies to MCP tool executions", tc.scope)
 		assert.Equal(t, tc.needsAllModelsOwner, tc.scope.NeedsAllModelsOwner(), "%q needs an all-models owner", tc.scope)
 	}
+	assert.Equal(t, []LimitScope{"", LimitScopeShared, LimitScopeModel}, ScopesChargedBy(LimitScopeModel))
+	assert.Equal(t, []LimitScope{"", LimitScopeShared, LimitScopeMCP}, ScopesChargedBy(LimitScopeMCP))
 	assert.Equal(t, LimitScopeMCP, RequestScope(schemas.MCPToolExecutionRequest))
 	for _, requestType := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ResponsesStreamRequest, schemas.EmbeddingRequest, schemas.BatchCreateRequest} {
 		assert.Equal(t, LimitScopeModel, RequestScope(requestType), "%s is model traffic", requestType)
