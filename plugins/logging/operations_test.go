@@ -7655,3 +7655,13 @@ func BenchmarkTraceLinkFromContext(b *testing.B) {
 		_ = traceLinkFromContext(ctx, req)
 	}
 }
+
+// TestLoggerPluginRecordsGatewayTracesOnly pins that the logging plugin opts out of traces received
+// from observability SDKs: they live in the trace store, and request logs hold gateway calls only.
+func TestLoggerPluginRecordsGatewayTracesOnly(t *testing.T) {
+	var plugin schemas.ObservabilityPlugin = &LoggerPlugin{}
+	consumer, ok := plugin.(schemas.GatewayTraceConsumer)
+	if !ok || !consumer.ConsumesGatewayTracesOnly() {
+		t.Fatal("the logging plugin must record gateway traces only")
+	}
+}

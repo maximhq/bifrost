@@ -30,6 +30,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/evals"
 	"github.com/maximhq/bifrost/framework/evals/datasets"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
@@ -391,9 +392,10 @@ type BifrostHTTPServer struct {
 	// TraceIngest receives traces pushed by observability SDKs. Nil without a logs store and a config store.
 	TraceIngest        *traceingest.Service
 	TraceIngestHandler *handlers.TraceIngestHandler
-	TraceForwarder     *traceingest.Forwarder
 	traceGRPCServer    *handlers.TraceIngestGRPCServer
-	traceEvaluator     traceingest.TraceEvaluator
+	// EvalsService runs evaluators. Nil until the evals runner starts. The enterprise build scores
+	// tracing projects' traces with it.
+	EvalsService *evals.Service
 
 	// relays serves /relay/{name}/{path}; built by InitializeRelays together with RelaysHandler,
 	// the management handler a clustered server replays relay changes through.
@@ -3076,14 +3078,6 @@ func (s *BifrostHTTPServer) RegisterTraceIngestRoutes(middlewares ...schemas.Bif
 	s.startTraceIngestGRPC()
 }
 
-// wireTraceEvaluator connects trace ingest to the evals service once both exist. They are built in
-// either order, so each calls this when it is ready.
-func (s *BifrostHTTPServer) wireTraceEvaluator() {
-	if s.TraceIngest != nil && s.traceEvaluator != nil {
-		s.TraceIngest.SetTraceEvaluator(s.traceEvaluator)
-	}
-}
-
 // traceGRPCPortEnv names the port of the OTLP gRPC listener for trace ingest. The listener is off
 // unless it is set: opening a second port is something an operator opts into. 4317 is the port
 // OTLP exporters expect.
@@ -3124,7 +3118,19 @@ func (s *BifrostHTTPServer) ensureTraceIngest() bool {
 	if s.TraceIngest != nil {
 		return true
 	}
+	// Part ids are keyed, so a retried part keeps its id when part hooks rewrite it differently, and
+	// the id is no plain hash of content the hooks removed. Without the key, ids fall back to the hash
+	// of the stored part.
+	var partIdentityKey []byte
+	if s.Config.ConfigStore != nil {
+		key, err := loadTracePartIdentityKey(context.Background(), s.Config.ConfigStore)
+		if err != nil {
+			logger.Warn("tracing: part ids fall back to the content hash: %v", err)
+		}
+		partIdentityKey = key
+	}
 	ingestConfig := traceingest.Config{
+		PartIdentityKey: partIdentityKey,
 		RetentionDays: func() int {
 			if s.Config.ClientConfig == nil {
 				return 0
@@ -3146,15 +3152,29 @@ func (s *BifrostHTTPServer) ensureTraceIngest() bool {
 	if s.AuthMiddleware != nil {
 		s.TraceIngestHandler.SetCredentials(s.AuthMiddleware)
 	}
-	// Replays received requests to a project's upstream vendor, after Bifrost has stored them.
-	s.TraceForwarder = traceingest.NewForwarder(nil, logger)
-	s.TraceIngestHandler.SetForwarder(s.TraceForwarder)
+	// Completed SDK traces go to the observability connectors, as gateway traffic does.
+	s.TraceIngest.SetExporter(sdkTraceExporter{server: s})
 	// SDK prompt fetches are served from the prompt repository.
 	s.TraceIngestHandler.SetPromptStore(s.Config.ConfigStore)
 	// SDK dataset calls create and fill evals datasets.
 	s.TraceIngestHandler.SetDatasetService(datasets.NewService(s.Config.ConfigStore, s.Config.LogsStore))
-	s.wireTraceEvaluator()
 	return true
+}
+
+// sdkTraceExporter hands completed SDK traces to the observability connectors through the tracer the
+// server runs at the moment of the export. The tracer is created after trace ingest and is replaced
+// when observability plugins change, so it is looked up each time rather than captured.
+type sdkTraceExporter struct {
+	server *BifrostHTTPServer
+}
+
+func (e sdkTraceExporter) ExportTrace(ctx context.Context, trace *schemas.Trace) {
+	if e.server.TracingMiddleware == nil {
+		return
+	}
+	if tracer := e.server.TracingMiddleware.GetTracer(); tracer != nil {
+		tracer.ExportTrace(ctx, trace)
+	}
 }
 
 // RegisterInferenceRoutes initializes the routes for the inference handler
@@ -4446,9 +4466,6 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.TraceIngest != nil {
 				// Queued trace batches are written before the stores close.
 				s.TraceIngest.Close()
-			}
-			if s.TraceForwarder != nil {
-				s.TraceForwarder.Close()
 			}
 			logger.Info("shutting down bifrost client...")
 			s.Client.Shutdown()

@@ -244,36 +244,11 @@ export interface TraceSessionSearchResponse {
 	pagination: TracePagination;
 }
 
-export interface TraceMaskingRule {
-	name: string;
-	pattern: string;
-	replacement: string;
-}
-
-export interface TraceForwardTarget {
-	vendor: TraceSource;
-	base_url: string;
-	headers?: Record<string, string>;
-	enabled: boolean;
-}
-
-/** Runs one evaluator on the project's traces as they complete. Its result is a score on the trace. */
-export interface TraceEvaluatorRule {
-	evaluator_id: string;
-	name?: string;
-	sample_rate: number;
-	daily_cap: number;
-	enabled: boolean;
-}
-
 export interface TraceProject {
 	id: string;
 	name: string;
 	description?: string;
 	retention_days?: number | null;
-	masking_rules?: TraceMaskingRule[];
-	forward?: TraceForwardTarget | null;
-	evaluators?: TraceEvaluatorRule[];
 	created_at?: string;
 }
 
