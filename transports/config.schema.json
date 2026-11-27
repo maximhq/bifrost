@@ -171,7 +171,7 @@
         },
         "send_back_cost": {
           "type": "boolean",
-          "description": "Return Bifrost's computed cost of each request to the caller: in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header (USD) on every route. Off by default. A request can turn it on or off for itself with the x-bf-send-back-cost: true|false header, which applies regardless of this setting.",
+          "description": "Return Bifrost's computed cost of each request to the caller: in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header (USD) on non-streaming responses and errors on every route. Streams carry it only in extra_fields, on the final chunk or an error chunk, so SDK-route streams and /v1 streams with extra_fields_placement set to headers get no cost. Off by default. A request can turn it on or off for itself with the x-bf-send-back-cost: true|false header, which applies regardless of this setting.",
           "default": false
         },
         "disable_db_pings_in_health": {
