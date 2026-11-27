@@ -658,6 +658,7 @@ func TestChatMessageThinkingContentBlocksBecomeReasoningDetails(t *testing.T) {
 	for name, extra := range map[string]string{
 		"an empty reasoning_details list":                        `"reasoning_details":[]`,
 		"reasoning_details holding only empty entries":           `"reasoning_details":[{"type":"reasoning.text","text":""}]`,
+		"reasoning_details holding only empty strings":           `"reasoning_details":[{"type":"reasoning.encrypted","data":""},{"type":"reasoning.text","signature":"","summary":""}]`,
 		"an empty list beside reasoning text to synthesize from": `"reasoning_details":[],"reasoning_content":"t"`,
 	} {
 		t.Run(name+" counts as not sent", func(t *testing.T) {

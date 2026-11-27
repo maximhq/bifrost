@@ -1387,13 +1387,22 @@ func (cm *ChatMessage) MoveThinkingBlocksToReasoningDetails(sentDetails func() [
 	} else {
 		cm.Content = &ChatMessageContent{ContentBlocks: kept}
 	}
-	if len(pruneEmptyReasoningDetails(sentDetails())) > 0 {
+	if slices.ContainsFunc(sentDetails(), hasReasoningPayload) {
 		return
 	}
 	if cm.ChatAssistantMessage == nil {
 		cm.ChatAssistantMessage = &ChatAssistantMessage{}
 	}
 	cm.ChatAssistantMessage.ReasoningDetails = details
+}
+
+func hasReasoningPayload(d ChatReasoningDetails) bool {
+	for _, field := range []*string{d.Text, d.Summary, d.Signature, d.Data} {
+		if field != nil && *field != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatMessageContent represents a content in a message.

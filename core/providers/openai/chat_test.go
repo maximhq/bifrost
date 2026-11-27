@@ -3897,7 +3897,7 @@ func TestConvertOpenAIMessagesToBifrostMessages_NullReasoningDetailsKeepThinking
 }
 
 func TestConvertOpenAIMessagesToBifrostMessages_EmptyReasoningDetailsKeepThinkingBlocks(t *testing.T) {
-	for name, sent := range map[string]string{"empty list": `[]`, "only empty entries": `[{"type":"reasoning.text","text":""}]`} {
+	for name, sent := range map[string]string{"empty list": `[]`, "only empty entries": `[{"type":"reasoning.text","text":""}]`, "only empty strings": `[{"type":"reasoning.encrypted","data":""},{"type":"reasoning.text","signature":""}]`} {
 		t.Run(name, func(t *testing.T) {
 			var msg OpenAIMessage
 			require.NoError(t, sonic.Unmarshal([]byte(`{"role":"assistant","reasoning_details":`+sent+`,
