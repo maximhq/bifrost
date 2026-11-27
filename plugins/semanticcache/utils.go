@@ -451,6 +451,50 @@ func responsesOutputHasToolCalls(output []schemas.ResponsesMessage) bool {
 	return false
 }
 
+// isAgentTurn reports whether a chat or Responses request offers tools or carries tool calls or tool
+// results in its input. A chat request also offers tools through the parameters a provider runs as
+// tools: web search options and MCP servers.
+func isAgentTurn(req *schemas.BifrostRequest) bool {
+	switch {
+	case req.ChatRequest != nil:
+		if params := req.ChatRequest.Params; params != nil &&
+			(len(params.Tools) > 0 || params.WebSearchOptions != nil || len(params.MCPServers) > 0) {
+			return true
+		}
+		for _, msg := range req.ChatRequest.Input {
+			if msg.Role == schemas.ChatMessageRoleTool ||
+				(msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0) {
+				return true
+			}
+		}
+	case req.ResponsesRequest != nil:
+		if req.ResponsesRequest.Params != nil && len(req.ResponsesRequest.Params.Tools) > 0 {
+			return true
+		}
+		for _, item := range req.ResponsesRequest.Input {
+			if item.ResponsesToolMessage != nil || (item.Type != nil && !isResponsesConversationItem(*item.Type)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isResponsesConversationItem reports whether t is an input item that carries conversation text or
+// state and no tool declaration, tool call or tool result. Every other type marks an agent turn.
+func isResponsesConversationItem(t schemas.ResponsesMessageType) bool {
+	switch t {
+	case schemas.ResponsesMessageTypeMessage,
+		schemas.ResponsesMessageTypeReasoning,
+		schemas.ResponsesMessageTypeRefusal,
+		schemas.ResponsesMessageTypeCompaction,
+		schemas.ResponsesMessageTypeItemReference,
+		schemas.ResponsesMessageTypeConfigurationUpdate:
+		return true
+	}
+	return false
+}
+
 func isResponsesToolCallItem(t schemas.ResponsesMessageType) bool {
 	switch t {
 	case schemas.ResponsesMessageTypeFunctionCall,
