@@ -10,11 +10,11 @@ const single = folder.item.find(item => item.name.includes('single streamed tool
 const mixed = folder.item.find(item => item.name.includes('mixed streamed tools'));
 
 // failuresFor runs the Postman assertions against synthetic SSE and returns their errors.
-function failuresFor(parts, item = parallel) {
+function failuresFor(parts, item = parallel, ending = 'data: [DONE]\n\n') {
   const failures = [];
   const script = item.event.find(event => event.listen === 'test').script.exec.join('\n');
   const frames = [{ extra_fields: { converted_request_type: 'responses' }, choices: [{ delta: { tool_calls: parts } }] }];
-  const text = frames.map(frame => 'data: ' + JSON.stringify(frame) + '\n\n').join('') + 'data: [DONE]\n\n';
+  const text = frames.map(frame => 'data: ' + JSON.stringify(frame) + '\n\n').join('') + ending;
   const expect = (value, message) => ({ to: {
     eql: expected => assert.deepEqual(value, expected, message),
     include: expected => assert.ok(value.includes(expected), message),
@@ -78,4 +78,29 @@ test('mixed stream rejects colliding indexes', () => {
 test('mixed stream rejects an empty custom input', () => {
   const failures = failuresFor([{ ...custom, index: 0, custom: { ...custom.custom, input: '' } }], mixed);
   assert.ok(failures.some(error => error.message.includes('custom input missing')));
+});
+
+for (const [name, item, parts] of [
+  ['parallel', parallel, [read, glob]],
+  ['single', single, [read]],
+  ['mixed', mixed, [mixedRead, custom]],
+]) {
+  test(`${name} stream rejects a named SSE error after a complete call`, () => {
+    const failures = failuresFor(parts, item, 'event: error\ndata: {"message":"stream failed"}\n\n');
+    assert.ok(failures.some(error => error.message.includes('stream error event')));
+  });
+  test(`${name} stream rejects a data-only error after a complete call`, () => {
+    const failures = failuresFor(parts, item, 'data: {"error":{"message":"stream failed"}}\n\n');
+    assert.ok(failures.some(error => error.message.includes('stream error event')));
+  });
+}
+
+test('stream rejects a named SSE error with CRLF and no space', () => {
+  const failures = failuresFor([read], parallel, 'event:error\r\ndata: {"message":"stream failed"}\r\n\r\n');
+  assert.ok(failures.some(error => error.message.includes('stream error event')));
+});
+
+test('stream accepts event error text inside tool arguments', () => {
+  const call = { ...read, function: { ...read.function, arguments: '{"filePath":"event: error"}' } };
+  assert.deepEqual(failuresFor([call]), []);
 });
