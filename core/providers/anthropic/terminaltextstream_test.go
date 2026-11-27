@@ -2,6 +2,8 @@ package anthropic
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,6 +243,7 @@ func TestTerminalToolArgumentsStreamEmitsMissingSuffix(t *testing.T) {
 		itemType     schemas.ResponsesMessageType
 		deltaType    schemas.ResponsesStreamResponseType
 		doneType     schemas.ResponsesStreamResponseType
+		addedArgs    string
 		deltas       []string
 		aggregate    string
 		want         string
@@ -256,14 +259,14 @@ func TestTerminalToolArgumentsStreamEmitsMissingSuffix(t *testing.T) {
 			wantTerminal: `{"file_path":"/etc/hostname"}`,
 		},
 		{
-			name:         "partial deltas then done",
+			name:         "empty deltas then done",
 			itemType:     schemas.ResponsesMessageTypeFunctionCall,
 			deltaType:    schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
 			doneType:     schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
-			deltas:       []string{`{"file_path":`},
+			deltas:       []string{"", ""},
 			aggregate:    `{"file_path":"/etc/hostname"}`,
 			want:         `{"file_path":"/etc/hostname"}`,
-			wantTerminal: `"/etc/hostname"}`,
+			wantTerminal: `{"file_path":"/etc/hostname"}`,
 		},
 		{
 			name:         "complete deltas then done",
@@ -276,13 +279,23 @@ func TestTerminalToolArgumentsStreamEmitsMissingSuffix(t *testing.T) {
 			wantTerminal: "",
 		},
 		{
-			name:         "divergent prefix rejected",
+			name:         "prior non-empty delta suppresses done",
 			itemType:     schemas.ResponsesMessageTypeFunctionCall,
 			deltaType:    schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
 			doneType:     schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
-			deltas:       []string{`{"file_path":"/etc/hosts"`},
+			deltas:       []string{`{"file_path":"/etc/hosts"}`},
 			aggregate:    `{"file_path":"/etc/hostname"}`,
-			want:         `{"file_path":"/etc/hosts"`,
+			want:         `{"file_path":"/etc/hosts"}`,
+			wantTerminal: "",
+		},
+		{
+			name:         "inline arguments on added suppress done",
+			itemType:     schemas.ResponsesMessageTypeFunctionCall,
+			deltaType:    schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			doneType:     schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+			addedArgs:    `{"file_path":"/etc/hostname"}`,
+			aggregate:    `{"file_path":"/etc/hostname"}`,
+			want:         `{"file_path":"/etc/hostname"}`,
 			wantTerminal: "",
 		},
 		{
@@ -299,9 +312,11 @@ func TestTerminalToolArgumentsStreamEmitsMissingSuffix(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(nil, time.Time{})
-			responses := []*schemas.BifrostResponsesStreamResponse{
-				terminalToolItem("call_1", 0, tc.itemType, schemas.ResponsesStreamResponseTypeOutputItemAdded),
+			added := terminalToolItem("call_1", 0, tc.itemType, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+			if tc.addedArgs != "" {
+				added.Item.Arguments = schemas.Ptr(tc.addedArgs)
 			}
+			responses := []*schemas.BifrostResponsesStreamResponse{added}
 			for _, d := range tc.deltas {
 				responses = append(responses, terminalToolArgsEvent("call_1", 0, tc.deltaType, d))
 			}
@@ -324,8 +339,9 @@ func TestTerminalToolArgumentsStreamEmitsMissingSuffix(t *testing.T) {
 			if len(stopEvents) != 1 || stopEvents[0].Type != AnthropicStreamEventTypeContentBlockStop {
 				t.Fatalf("stop events = %#v, want single content_block_stop", stopEvents)
 			}
-			if progress := getOrCreateAnthropicToResponsesStreamState(ctx).emittedTextByBlock; len(progress) != 0 {
-				t.Fatalf("emitted progress leaked after block stop: %#v", progress)
+			state := getOrCreateAnthropicToResponsesStreamState(ctx)
+			if len(state.emittedTextByBlock) != 0 || state.emittedInputJSONMask != 0 || len(state.emittedInputJSONOverflow) != 0 {
+				t.Fatalf("emitted progress leaked after block stop: text=%#v mask=%#x overflow=%#v", state.emittedTextByBlock, state.emittedInputJSONMask, state.emittedInputJSONOverflow)
 			}
 		})
 	}
@@ -349,11 +365,25 @@ func TestTerminalToolArgumentsStreamEmitsMissingSuffix(t *testing.T) {
 			}
 		}
 
-		// WebSearch skips terminal arguments.done so output_item.done sanitization remains authoritative.
-		wsAdded := terminalToolItem("ws_1", 3, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+		for i := 3; i < 66; i++ {
+			id := fmt.Sprintf("call_%d", i)
+			added := terminalToolItem(id, i, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+			done := terminalToolArgsEvent(id, i, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{"idx":1}`)
+			stop := terminalToolItem(id, i, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemDone)
+			events := convertTerminalTextEvents(ctx, added, done, stop)
+			if got := terminalToolInputJSON(events); got != `{"idx":1}` {
+				t.Fatalf("call %d input = %q, want {\"idx\":1}", i, got)
+			}
+		}
+		if state := getOrCreateAnthropicToResponsesStreamState(ctx); state.emittedInputJSONMask != 0 || len(state.emittedInputJSONOverflow) != 0 {
+			t.Fatalf("overflow progress leaked: mask=%#x overflow=%#v", state.emittedInputJSONMask, state.emittedInputJSONOverflow)
+		}
+
+		// WebSearch skips terminal arguments.done so output_item.done sanitization remains the single source.
+		wsAdded := terminalToolItem("ws_1", 70, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded)
 		wsAdded.Item.ResponsesToolMessage.Name = schemas.Ptr("WebSearch")
 		convertTerminalTextEvents(ctx, wsAdded)
-		if events := convertTerminalTextEvents(ctx, terminalToolArgsEvent("ws_1", 3, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{"query":"test"}`)); len(events) != 0 {
+		if events := convertTerminalTextEvents(ctx, terminalToolArgsEvent("ws_1", 70, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{"query":"test"}`)); len(events) != 0 {
 			t.Fatalf("WebSearch emitted terminal arguments before output_item.done: %#v", events)
 		}
 
@@ -388,35 +418,146 @@ func TestTerminalToolArgumentsStreamWebSearchOutputIndexKey(t *testing.T) {
 	if parsed["query"] != "test" {
 		t.Fatalf("query = %v, want %q", parsed["query"], "test")
 	}
-	if left := getOrCreateAnthropicToResponsesStreamState(ctx).webSearchItemIDs; len(left) != 0 {
-		t.Fatalf("WebSearch tracking leaked after output_item.done: %#v", left)
+	state := getOrCreateAnthropicToResponsesStreamState(ctx)
+	if len(state.webSearchItemIDs) != 0 {
+		t.Fatalf("WebSearch tracking leaked after output_item.done: %#v", state.webSearchItemIDs)
+	}
+	if len(state.emittedTextByBlock) != 0 || state.emittedInputJSONMask != 0 || len(state.emittedInputJSONOverflow) != 0 {
+		t.Fatalf("block progress leaked after WebSearch output_item.done: text=%#v mask=%#x overflow=%#v", state.emittedTextByBlock, state.emittedInputJSONMask, state.emittedInputJSONOverflow)
 	}
 }
 
-// BenchmarkTerminalToolArgumentsStream measures per-call reverse stream conversion with and without deltas.
-func BenchmarkTerminalToolArgumentsStream(b *testing.B) {
-	added := terminalToolItem("call_1", 0, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded)
-	delta := terminalToolArgsEvent("call_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, `{"file_path":"/etc/hostname"}`)
-	done := terminalToolArgsEvent("call_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, `{"file_path":"/etc/hostname"}`)
-	stop := terminalToolItem("call_1", 0, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemDone)
+func benchToolJSONPayload(size int) string {
+	const prefix = `{"payload":"`
+	const suffix = `"}`
+	if size <= len(prefix)+len(suffix) {
+		return `{"a":"` + strings.Repeat("x", max(0, size-8)) + `"}`
+	}
+	return prefix + strings.Repeat("a", size-len(prefix)-len(suffix)) + suffix
+}
 
-	b.Run("with_delta", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			ctx := schemas.NewBifrostContext(nil, time.Time{})
-			ToAnthropicResponsesStreamResponse(ctx, added)
-			ToAnthropicResponsesStreamResponse(ctx, delta)
-			ToAnthropicResponsesStreamResponse(ctx, done)
-			ToAnthropicResponsesStreamResponse(ctx, stop)
+func benchSplitChunks(s string, chunkSize int) []string {
+	var out []string
+	for i := 0; i < len(s); i += chunkSize {
+		out = append(out, s[i:min(len(s), i+chunkSize)])
+	}
+	return out
+}
+
+func benchToolStreamFrames(callIdx int, fullArgs string, streamedArgs string, deltaSize int, itemType schemas.ResponsesMessageType) []*schemas.BifrostResponsesStreamResponse {
+	id := fmt.Sprintf("call_%d", callIdx)
+	deltaType := schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta
+	doneType := schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone
+	if itemType == schemas.ResponsesMessageTypeMCPCall {
+		deltaType = schemas.ResponsesStreamResponseTypeMCPCallArgumentsDelta
+		doneType = schemas.ResponsesStreamResponseTypeMCPCallArgumentsDone
+	}
+	frames := []*schemas.BifrostResponsesStreamResponse{
+		terminalToolItem(id, callIdx, itemType, schemas.ResponsesStreamResponseTypeOutputItemAdded),
+	}
+	for _, chunk := range benchSplitChunks(streamedArgs, deltaSize) {
+		frames = append(frames, terminalToolArgsEvent(id, callIdx, deltaType, chunk))
+	}
+	if fullArgs != "" {
+		frames = append(frames, terminalToolArgsEvent(id, callIdx, doneType, fullArgs))
+	}
+	if itemType == schemas.ResponsesMessageTypeMCPCall {
+		frames = append(frames, &schemas.BifrostResponsesStreamResponse{
+			Type:        schemas.ResponsesStreamResponseTypeMCPCallCompleted,
+			ItemID:      schemas.Ptr(id),
+			OutputIndex: schemas.Ptr(callIdx),
+		})
+	} else {
+		frames = append(frames, terminalToolItem(id, callIdx, itemType, schemas.ResponsesStreamResponseTypeOutputItemDone))
+	}
+	return frames
+}
+
+func runBenchStreamFrames(b *testing.B, frames []*schemas.BifrostResponsesStreamResponse) {
+	b.Helper()
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		for _, f := range frames {
+			_ = ToAnthropicResponsesStreamResponse(ctx, f)
 		}
+	}
+}
+
+func BenchmarkTerminalToolArgumentsStream(b *testing.B) {
+	args256 := benchToolJSONPayload(256)
+	for _, n := range []int{1, 8, 32} {
+		var frames []*schemas.BifrostResponsesStreamResponse
+		for i := range n {
+			frames = append(frames, benchToolStreamFrames(i, args256, args256, 16, schemas.ResponsesMessageTypeFunctionCall)...)
+		}
+		b.Run(fmt.Sprintf("tool_calls/%d", n), func(b *testing.B) {
+			runBenchStreamFrames(b, frames)
+		})
+	}
+
+	for _, sc := range []struct {
+		label     string
+		bytes     int
+		deltaSize int
+	}{
+		{"1KB", 1 << 10, 64},
+		{"64KB", 64 << 10, 64},
+		{"1MB", 1 << 20, 64},
+		{"10MB", 10 << 20, 4096},
+		{"50MB", 50 << 20, 4096},
+	} {
+		payload := benchToolJSONPayload(sc.bytes)
+		frames := benchToolStreamFrames(0, payload, payload, sc.deltaSize, schemas.ResponsesMessageTypeFunctionCall)
+		b.Run("deltas_and_done/"+sc.label, func(b *testing.B) {
+			runBenchStreamFrames(b, frames)
+		})
+	}
+
+	payload1KB := benchToolJSONPayload(1 << 10)
+	payload1MB := benchToolJSONPayload(1 << 20)
+
+	b.Run("done_only/1KB", func(b *testing.B) {
+		runBenchStreamFrames(b, benchToolStreamFrames(0, payload1KB, "", 64, schemas.ResponsesMessageTypeFunctionCall))
 	})
-	b.Run("terminal_only", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			ctx := schemas.NewBifrostContext(nil, time.Time{})
-			ToAnthropicResponsesStreamResponse(ctx, added)
-			ToAnthropicResponsesStreamResponse(ctx, done)
-			ToAnthropicResponsesStreamResponse(ctx, stop)
+	b.Run("done_only/1MB", func(b *testing.B) {
+		runBenchStreamFrames(b, benchToolStreamFrames(0, payload1MB, "", 64, schemas.ResponsesMessageTypeFunctionCall))
+	})
+	b.Run("mcp_deltas_and_done/1KB", func(b *testing.B) {
+		runBenchStreamFrames(b, benchToolStreamFrames(0, payload1KB, payload1KB, 64, schemas.ResponsesMessageTypeMCPCall))
+	})
+	b.Run("mcp_done_only/1KB", func(b *testing.B) {
+		runBenchStreamFrames(b, benchToolStreamFrames(0, payload1KB, "", 64, schemas.ResponsesMessageTypeMCPCall))
+	})
+	b.Run("websearch/1KB", func(b *testing.B) {
+		wsQuery := `{"query":"` + strings.Repeat("q", 1000) + `"}`
+		added := terminalToolItem("ws_1", 0, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+		added.Item.Name = schemas.Ptr("WebSearch")
+		frames := []*schemas.BifrostResponsesStreamResponse{added}
+		for _, chunk := range benchSplitChunks(wsQuery, 64) {
+			frames = append(frames, terminalToolArgsEvent("ws_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, chunk))
 		}
+		frames = append(frames, terminalToolArgsEvent("ws_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, wsQuery))
+		stop := terminalToolItem("ws_1", 0, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemDone)
+		stop.Item.Name = schemas.Ptr("WebSearch")
+		stop.Item.ResponsesToolMessage.Arguments = schemas.Ptr(wsQuery)
+		frames = append(frames, stop)
+		runBenchStreamFrames(b, frames)
+	})
+	b.Run("text_only/1KB", func(b *testing.B) {
+		frames := []*schemas.BifrostResponsesStreamResponse{terminalTextItemAdded("msg_0", 0)}
+		for _, chunk := range benchSplitChunks(payload1KB, 64) {
+			frames = append(frames, terminalTextDelta("msg_0", 0, chunk))
+		}
+		frames = append(frames, terminalTextDone("msg_0", 0, payload1KB), terminalTextItemDone("msg_0", 0))
+		runBenchStreamFrames(b, frames)
+	})
+	b.Run("text_only/1MB", func(b *testing.B) {
+		frames := []*schemas.BifrostResponsesStreamResponse{terminalTextItemAdded("msg_0", 0)}
+		for _, chunk := range benchSplitChunks(payload1MB, 64) {
+			frames = append(frames, terminalTextDelta("msg_0", 0, chunk))
+		}
+		frames = append(frames, terminalTextDone("msg_0", 0, payload1MB), terminalTextItemDone("msg_0", 0))
+		runBenchStreamFrames(b, frames)
 	})
 }

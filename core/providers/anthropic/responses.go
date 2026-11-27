@@ -197,7 +197,9 @@ type anthropicToResponsesStreamState struct {
 	// Anthropic clients assemble incremental content_block_delta events, so the
 	// converter needs this state to recover only a verified missing suffix without
 	// retaining a second full copy of the streamed response.
-	emittedTextByBlock map[int]*emittedTextProgress
+	emittedTextByBlock       map[int]*emittedTextProgress
+	emittedInputJSONMask     uint64       // bit i set once block i emits a non-empty input_json_delta
+	emittedInputJSONOverflow map[int]bool // block indices >= 64 that emitted a non-empty input_json_delta
 
 	// blockIndexMisses records non-empty item keys for which blockIndexFor was
 	// asked for an index that allocBlockIndex never assigned — i.e. a
@@ -295,25 +297,71 @@ func (s *anthropicToResponsesStreamState) recordEmittedText(blockIndex int, text
 	progress.emittedBytes += len(text)
 }
 
-// recordEmittedTextEvents tracks only text and tool-argument deltas that survived
-// protocol validation and will reach the normalized client. Raw passthrough frames
-// remain authoritative, so the converter must neither track nor later supplement them.
+func (s *anthropicToResponsesStreamState) markInputJSONEmitted(blockIndex int) {
+	if blockIndex < 0 {
+		return
+	}
+	if blockIndex < 64 {
+		s.emittedInputJSONMask |= uint64(1) << blockIndex
+		return
+	}
+	if s.emittedInputJSONOverflow == nil {
+		s.emittedInputJSONOverflow = make(map[int]bool)
+	}
+	s.emittedInputJSONOverflow[blockIndex] = true
+}
+
+func (s *anthropicToResponsesStreamState) hasEmittedInputJSON(blockIndex int) bool {
+	if blockIndex < 0 {
+		return false
+	}
+	if blockIndex < 64 {
+		return (s.emittedInputJSONMask & (uint64(1) << blockIndex)) != 0
+	}
+	return s.emittedInputJSONOverflow[blockIndex]
+}
+
+func (s *anthropicToResponsesStreamState) clearBlockProgress(blockIndex int) {
+	delete(s.emittedTextByBlock, blockIndex)
+	if blockIndex < 0 {
+		return
+	}
+	if blockIndex < 64 {
+		s.emittedInputJSONMask &^= uint64(1) << blockIndex
+		return
+	}
+	delete(s.emittedInputJSONOverflow, blockIndex)
+}
+
+// recordEmittedTextEvents tracks text deltas and non-empty input_json_delta frames
+// that survived protocol validation on still-open blocks. Batches that also close
+// the block (such as synthetic deltas in output_item.done) already cleared
+// s.blockType(idx) in enforceStreamBlockTypes, so skipping empty block types avoids
+// recreating state after close. Raw passthrough frames remain untouched.
 func (s *anthropicToResponsesStreamState) recordEmittedTextEvents(events []*AnthropicStreamEvent) {
 	if s.passthrough {
 		return
 	}
 	for _, event := range events {
-		if event == nil || event.Type != AnthropicStreamEventTypeContentBlockDelta || event.Index == nil || event.Delta == nil {
+		if event == nil || event.Index == nil {
+			continue
+		}
+		idx := *event.Index
+		if event.Type == AnthropicStreamEventTypeContentBlockStop {
+			s.clearBlockProgress(idx)
+			continue
+		}
+		if event.Type != AnthropicStreamEventTypeContentBlockDelta || event.Delta == nil || s.blockType(idx) == "" {
 			continue
 		}
 		switch event.Delta.Type {
 		case AnthropicStreamDeltaTypeText:
 			if event.Delta.Text != nil {
-				s.recordEmittedText(*event.Index, *event.Delta.Text)
+				s.recordEmittedText(idx, *event.Delta.Text)
 			}
 		case AnthropicStreamDeltaTypeInputJSON:
-			if event.Delta.PartialJSON != nil {
-				s.recordEmittedText(*event.Index, *event.Delta.PartialJSON)
+			if event.Delta.PartialJSON != nil && *event.Delta.PartialJSON != "" {
+				s.markInputJSONEmitted(idx)
 			}
 		}
 	}
@@ -340,14 +388,12 @@ func (s *anthropicToResponsesStreamState) missingTerminalText(blockIndex int, ag
 	return missing, missing != ""
 }
 
-// clearEmittedTextProgress releases terminal-text bookkeeping once
-// output_item.done closes the corresponding Anthropic content block.
 func (s *anthropicToResponsesStreamState) clearEmittedTextProgress(key string) {
-	if key == "" || s.blockIndexByItem == nil || s.emittedTextByBlock == nil {
+	if key == "" || s.blockIndexByItem == nil {
 		return
 	}
 	if blockIndex, ok := s.blockIndexByItem[key]; ok {
-		delete(s.emittedTextByBlock, blockIndex)
+		s.clearBlockProgress(blockIndex)
 	}
 }
 
@@ -4055,18 +4101,14 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		if bifrostResp.Type == schemas.ResponsesStreamResponseTypeMCPCallArgumentsDone {
 			expectedBlockType = AnthropicContentBlockTypeMCPToolUse
 		}
-		if state.blockType(blockIndex) != expectedBlockType {
-			return nil
-		}
-		missing, ok := state.missingTerminalText(blockIndex, *arguments)
-		if !ok {
+		if state.blockType(blockIndex) != expectedBlockType || state.hasEmittedInputJSON(blockIndex) {
 			return nil
 		}
 		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
 		streamResp.Index = schemas.Ptr(blockIndex)
 		streamResp.Delta = &AnthropicStreamDelta{
 			Type:        AnthropicStreamDeltaTypeInputJSON,
-			PartialJSON: schemas.Ptr(missing),
+			PartialJSON: arguments,
 		}
 
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, schemas.ResponsesStreamResponseTypeReasoningTextDelta:
