@@ -1027,6 +1027,177 @@ func applyV1Compat(configData *ConfigData) {
 	}
 }
 
+// validateGovernanceBudgetScopes applies the API's budget scope rules to config.json:
+// every scope is known, an "mcp" scope sits only on an owner MCP tool executions
+// can be charged against, and no owner declares two budgets with the same reset
+// duration and scope.
+//
+// Budgets reach one owner from several places (governance.budgets rows by owner FK,
+// inline owner budgets, model_configs[].budget_ids and inline budgets), so they are grouped by owner
+// before the duplicate check. A duplicate made only of default-scope budgets predates
+// scopes and was always accepted from a file, so it is reported as a warning rather
+// than refusing a config that used to load.
+func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ...any)) error {
+	if configData == nil || configData.Governance == nil {
+		return nil
+	}
+	gov := configData.Governance
+	type owner struct {
+		name        string
+		holderLevel bool // covers every model on every provider, see LimitScope.NeedsAllModelsOwner
+	}
+	modelConfigOwner := func(mc *configstoreTables.TableModelConfig) owner {
+		return owner{name: "model_config " + mc.ID, holderLevel: mc.IsHolderLevel()}
+	}
+	modelConfigsByID := make(map[string]*configstoreTables.TableModelConfig, len(gov.ModelConfigs))
+	// A budget ID may be named by more than one owner, so every owner is kept and the budget is
+	// checked against each one's rule: one owner's reference must not stand in for another's.
+	budgetOwnersByID := make(map[string][]owner)
+	referenceBudget := func(id string, o owner) {
+		budgetOwnersByID[id] = append(budgetOwnersByID[id], o)
+	}
+	for i := range gov.ModelConfigs {
+		mc := &gov.ModelConfigs[i]
+		modelConfigsByID[mc.ID] = mc
+		for _, id := range mc.BudgetIDs {
+			referenceBudget(id, modelConfigOwner(mc))
+		}
+		if mc.BudgetID != nil {
+			referenceBudget(*mc.BudgetID, modelConfigOwner(mc))
+		}
+	}
+	// Singular budget_id links: a provider's governance budget never sees MCP traffic, and a
+	// customer's legacy reference belongs with that customer's inline budgets.
+	for _, provider := range gov.Providers {
+		if provider.BudgetID != nil {
+			referenceBudget(*provider.BudgetID, owner{name: "provider " + provider.Name})
+		}
+	}
+	// A customer declared without an id is given one later; until then each declaration is its own owner.
+	customerName := func(i int) string {
+		if id := gov.Customers[i].ID; id != "" {
+			return "customer " + id
+		}
+		return fmt.Sprintf("customer #%d", i+1)
+	}
+	for i, customer := range gov.Customers {
+		if customer.BudgetID != nil {
+			referenceBudget(*customer.BudgetID, owner{name: customerName(i), holderLevel: true})
+		}
+	}
+	// A provider-config budget declared at the top level and one declared inline on its virtual key
+	// belong to the same owner, so both resolve to the key and provider before duplicates are judged.
+	providerConfigOwners := make(map[uint]owner)
+	// A key declared without an id is given one later; until then each declaration is its own owner.
+	virtualKeyName := func(i int) string {
+		if id := gov.VirtualKeys[i].ID; id != "" {
+			return "virtual_key " + id
+		}
+		return fmt.Sprintf("virtual_key #%d", i+1)
+	}
+	for i, vk := range gov.VirtualKeys {
+		for _, pc := range vk.ProviderConfigs {
+			if pc.ID != 0 {
+				providerConfigOwners[pc.ID] = owner{name: fmt.Sprintf("%s provider_config %s", virtualKeyName(i), pc.Provider)}
+			}
+		}
+	}
+	byOwner := make(map[owner][]configstoreTables.TableBudget)
+	order := make([]owner, 0)
+	add := func(o owner, budgets ...configstoreTables.TableBudget) {
+		if len(budgets) == 0 {
+			return
+		}
+		if _, seen := byOwner[o]; !seen {
+			order = append(order, o)
+		}
+		byOwner[o] = append(byOwner[o], budgets...)
+	}
+	for _, b := range gov.Budgets {
+		switch {
+		case b.VirtualKeyID != nil:
+			add(owner{name: "virtual_key " + *b.VirtualKeyID, holderLevel: true}, b)
+		case b.TeamID != nil:
+			add(owner{name: "team " + *b.TeamID, holderLevel: true}, b)
+		case b.CustomerID != nil:
+			add(owner{name: "customer " + *b.CustomerID, holderLevel: true}, b)
+		case b.ProviderConfigID != nil:
+			o, ok := providerConfigOwners[*b.ProviderConfigID]
+			if !ok {
+				o = owner{name: fmt.Sprintf("provider_config %d", *b.ProviderConfigID)}
+			}
+			add(o, b)
+		case b.ModelConfigID != nil:
+			if mc := modelConfigsByID[*b.ModelConfigID]; mc != nil {
+				add(modelConfigOwner(mc), b)
+			} else {
+				add(owner{name: "model_config " + *b.ModelConfigID, holderLevel: true}, b)
+			}
+		default:
+			if owners := budgetOwnersByID[b.ID]; len(owners) > 0 {
+				for _, o := range owners {
+					add(o, b)
+				}
+			} else {
+				// Not yet attached to anything here; only the scope value itself can be checked.
+				add(owner{name: "budget " + b.ID, holderLevel: true}, b)
+			}
+		}
+	}
+	for i, vk := range gov.VirtualKeys {
+		add(owner{name: virtualKeyName(i), holderLevel: true}, vk.Budgets...)
+		for _, pc := range vk.ProviderConfigs {
+			add(owner{name: fmt.Sprintf("%s provider_config %s", virtualKeyName(i), pc.Provider)}, pc.Budgets...)
+		}
+	}
+	for i, team := range gov.Teams {
+		// A team declared without an id is given one later; until then each declaration is its own owner.
+		name := "team " + team.ID
+		if team.ID == "" {
+			name = fmt.Sprintf("team #%d", i+1)
+		}
+		add(owner{name: name, holderLevel: true}, team.Budgets...)
+	}
+	for i, customer := range gov.Customers {
+		add(owner{name: customerName(i), holderLevel: true}, customer.Budgets...)
+	}
+	for i := range gov.ModelConfigs {
+		mc := &gov.ModelConfigs[i]
+		add(modelConfigOwner(mc), mc.Budgets...)
+	}
+	// label names a budget in a message; one declared without an id is said to be so.
+	label := func(id string) string {
+		if id == "" {
+			return "(without an id)"
+		}
+		return id
+	}
+	for _, o := range order {
+		seen := make(map[string]string, len(byOwner[o]))
+		for _, b := range byOwner[o] {
+			if !b.Scope.IsValid() {
+				return fmt.Errorf("governance budget %s on %s: invalid scope %q (must be one of shared, model, mcp)", label(b.ID), o.name, b.Scope)
+			}
+			scope := b.Scope.Normalize()
+			if !o.holderLevel && scope.NeedsAllModelsOwner() {
+				return fmt.Errorf("governance budget %s on %s: scope %s is only supported on budgets that apply to all models and providers", label(b.ID), o.name, scope)
+			}
+			key := configstoreTables.LimitPeriodKey(b.ResetDuration, scope)
+			// The same budget reached twice (by ID) is one budget; budgets without an id are each
+			// their own declaration until one is assigned.
+			if otherID, dup := seen[key]; dup && (b.ID == "" || otherID != b.ID) {
+				if scope != configstoreTables.LimitScopeShared {
+					return fmt.Errorf("governance budgets %s and %s on %s: duplicate reset_duration %s for scope %s", label(otherID), label(b.ID), o.name, b.ResetDuration, scope)
+				}
+				warn("governance budgets %s and %s on %s share reset_duration %s and scope %s; each reset period should be declared once per scope", label(otherID), label(b.ID), o.name, b.ResetDuration, scope)
+				continue
+			}
+			seen[key] = b.ID
+		}
+	}
+	return nil
+}
+
 // promoteDeprecatedCalendarAligned lifts the legacy per-budget / per-rate-limit
 // calendar_aligned input to the owning VK or Team. Owner wins if already true;
 // otherwise OR across descendants (own budgets/rate-limit + every provider
@@ -1287,6 +1458,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		// predates the v1/v2 allow-list split.
 		promoteDeprecatedCalendarAligned(&configData)
 		ignoreBudgetBusinessUnitIDs(&configData, logger.Warn)
+		if err := validateGovernanceBudgetScopes(&configData, logger.Warn); err != nil {
+			return nil, err
+		}
 		// If version is 1, apply v1.4.x compatibility: empty allow-list arrays mean "allow all"
 		if configData.Version == 1 {
 			logger.Info("config version 1 detected, applying v1.4.x compatibility semantics (empty arrays = allow all)")
