@@ -259,7 +259,13 @@
             "gemini-3-flash-preview",
             "gemini-4-argon",
             "claude-opus-5-5",
-            "claude-sonnet-5-5"
+            "claude-sonnet-5-5",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-6.1-sol",
+            "gpt-6.2-sol",
+            "gpt-6.2-astra"
           ]
         },
         {
@@ -298,6 +304,23 @@
             "gemini-3.1-pro-preview",
             "gemini-3-flash-preview",
             "gemini-4-argon"
+          ]
+        },
+        {
+          "name": "Vertex Global (OpenAI)",
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "global",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          },
+          "weight": 1,
+          "models": [
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-6.1-sol",
+            "gpt-6.2-sol",
+            "gpt-6.2-astra"
           ]
         }
       ],

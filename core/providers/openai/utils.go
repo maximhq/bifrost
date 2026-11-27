@@ -110,7 +110,7 @@ func SupportsToolSearch(provider schemas.ModelProvider, model string) bool {
 
 func defaultSupportsToolSearch(provider schemas.ModelProvider, model string) bool {
 	switch provider {
-	case schemas.OpenAI, schemas.Azure, schemas.Bedrock, schemas.BedrockMantle:
+	case schemas.OpenAI, schemas.Azure, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex:
 	default:
 		return false
 	}

@@ -304,7 +304,7 @@ func responsesUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schema
 		return caps.SupportsPromptCacheBreakpoints(
 			schemas.IsAnthropicModel(model) || schemas.ModelSupportsPromptCacheBreakpoint(model),
 		)
-	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
+	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock, schemas.Vertex:
 		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
 	default:
 		return false
@@ -358,7 +358,7 @@ func isMarkableResponsesToolOutputBlock(b schemas.ResponsesMessageContentBlock) 
 // wants explicit-only caching sends prompt_cache_options itself, and it passes through.
 func responsesIsOpenAIFamilyBreakpointTarget(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
 	switch provider {
-	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
+	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock, schemas.Vertex:
 		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
 	default:
 		return false
@@ -1157,7 +1157,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// would let an unsupported value through to the upstream 400.
 			contextProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
 			if c := req.ResponsesParameters.Reasoning.Context; c != nil &&
-				(contextProvider == schemas.OpenAI || contextProvider == schemas.Azure) &&
+				(contextProvider == schemas.OpenAI || contextProvider == schemas.Azure || contextProvider == schemas.Vertex) &&
 				!slices.Contains(caps.SupportedReasoningContexts(defaultReasoningContexts(capModel)), *c) {
 				req.ResponsesParameters.Reasoning.Context = nil
 			}
@@ -1211,7 +1211,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 		// Only OpenAI hosts gate these; third-party gpt-oss hosts accept them.
 		base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
-		if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(capModel)) {
+		if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock || base == schemas.Vertex) && !isGPTOSS(capModel)) {
 			if samplingParamUnsupported(caps, schemas.FieldTemperature, capModel, effort) {
 				req.ResponsesParameters.Temperature = nil
 			}
