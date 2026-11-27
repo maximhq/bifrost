@@ -732,6 +732,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("vector_retention_days must be at most %d", configstore.MaxVectorRetentionDays))
 		return
 	}
+	if payload.ClientConfig.VectorMaxSizeMB < 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "vector_max_size_mb must not be negative (0 sets no limit)")
+		return
+	}
+	if payload.ClientConfig.VectorMaxSizeMB > configstore.MaxVectorMaxSizeMB {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("vector_max_size_mb must be at most %d", configstore.MaxVectorMaxSizeMB))
+		return
+	}
 	if limits := payload.ClientConfig.MCPCodeModeLimits; limits != nil {
 		if err := limits.Validate(); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -1085,6 +1093,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// 0 (or null) means "same as logs". The sweeps read it live, so no reload is needed.
 	if _, present := clientConfigFields["vector_retention_days"]; present {
 		updatedConfig.VectorRetentionDays = payload.ClientConfig.VectorRetentionDays
+	}
+	// The same for the storage limit: 0 (or null) means none, read live by the hourly sweep.
+	if _, present := clientConfigFields["vector_max_size_mb"]; present {
+		updatedConfig.VectorMaxSizeMB = payload.ClientConfig.VectorMaxSizeMB
 	}
 
 	if err := h.store.ConfigStore.UpdateClientConfig(ctx, updatedConfig); err != nil {

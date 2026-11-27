@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { getRequestTypeLabel, RequestTypes } from "@/lib/constants/logs";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
-import { vectorRetentionDaysSchema } from "@/lib/types/schemas";
+import { vectorMaxSizeMBSchema, vectorRetentionDaysSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { TFunction } from "i18next";
@@ -59,6 +59,7 @@ export default function LoggingView() {
 			localConfig.allow_per_request_raw_override !== config.allow_per_request_raw_override ||
 			localConfig.log_retention_days !== config.log_retention_days ||
 			(localConfig.vector_retention_days ?? 0) !== (config.vector_retention_days ?? 0) ||
+			(localConfig.vector_max_size_mb ?? 0) !== (config.vector_max_size_mb ?? 0) ||
 			localConfig.hide_deleted_virtual_keys_in_filters !== config.hide_deleted_virtual_keys_in_filters ||
 			JSON.stringify(localConfig.logging_headers || []) !== JSON.stringify(config.logging_headers || []) ||
 			!sameRequestTypes(localConfig.hidden_request_types, config.hidden_request_types)
@@ -72,6 +73,12 @@ export default function LoggingView() {
 		const result = vectorRetentionDaysSchema.safeParse(localConfig.vector_retention_days ?? 0);
 		return result.success ? null : (result.error.issues[0]?.message ?? null);
 	}, [localConfig.vector_retention_days, i18n.language]);
+
+	// The storage limit's error, the same way.
+	const vectorMaxSizeError = useMemo(() => {
+		const result = vectorMaxSizeMBSchema.safeParse(localConfig.vector_max_size_mb ?? 0);
+		return result.success ? null : (result.error.issues[0]?.message ?? null);
+	}, [localConfig.vector_max_size_mb, i18n.language]);
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean | number | string[]) => {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
@@ -98,7 +105,7 @@ export default function LoggingView() {
 			toast.error(t("logging.toastRetentionMin"));
 			return;
 		}
-		if (vectorRetentionError) {
+		if (vectorRetentionError || vectorMaxSizeError) {
 			return;
 		}
 
@@ -108,7 +115,7 @@ export default function LoggingView() {
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, localConfig, t, updateCoreConfig, vectorRetentionError]);
+	}, [bifrostConfig, localConfig, t, updateCoreConfig, vectorRetentionError, vectorMaxSizeError]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0">
@@ -317,6 +324,37 @@ export default function LoggingView() {
 
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
+						<Label htmlFor="vector-max-size-mb" className="text-sm font-medium">
+							{t("logging.vectorMaxSizeMB")}
+						</Label>
+						<p className="text-muted-foreground text-sm">{t("logging.vectorMaxSizeMBHelp")}</p>
+						{vectorMaxSizeError && (
+							<p className="text-destructive text-xs" role="alert" data-testid="workspace-vector-max-size-mb-error">
+								{vectorMaxSizeError}
+							</p>
+						)}
+					</div>
+					<Input
+						id="vector-max-size-mb"
+						data-testid="workspace-vector-max-size-mb-input"
+						type="number"
+						min="1"
+						placeholder={t("logging.vectorMaxSizeMBPlaceholder")}
+						aria-invalid={vectorMaxSizeError ? true : undefined}
+						value={localConfig.vector_max_size_mb ? localConfig.vector_max_size_mb : ""}
+						onChange={(e) => {
+							// Blank is no limit. Anything else is kept as typed, so a fraction
+							// shows its error instead of silently turning the limit off.
+							const raw = e.target.value.trim();
+							const value = raw === "" ? 0 : Number(raw);
+							handleConfigChange("vector_max_size_mb", Number.isNaN(value) ? 0 : value);
+						}}
+						className="w-32"
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
 						<label htmlFor="hide-deleted-virtual-keys-in-filters" className="text-sm font-medium">
 							{t("logging.hideDeletedVks")}
 						</label>
@@ -350,7 +388,7 @@ export default function LoggingView() {
 			</div>
 
 			<div className="bg-card sticky bottom-0 flex justify-end py-2">
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess || !!vectorRetentionError}>
+				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess || !!vectorRetentionError || !!vectorMaxSizeError}>
 					{isLoading ? t("saving") : t("saveChanges")}
 				</Button>
 			</div>

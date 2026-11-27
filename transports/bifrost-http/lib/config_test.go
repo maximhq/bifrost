@@ -3218,6 +3218,57 @@ func TestVectorRetentionDaysSchemaMaximumMatchesTheCode(t *testing.T) {
 	require.Equal(t, configstore.MaxVectorRetentionDays, schema.Properties.Client.Properties.VectorRetentionDays.Maximum)
 }
 
+func TestValidateClientConfig_VectorMaxSizeMB(t *testing.T) {
+	for _, mb := range []int{0, 1, 2048} {
+		require.NoError(t, validateClientConfig(&configstore.ClientConfig{VectorMaxSizeMB: mb}), "mb=%d", mb)
+	}
+	require.ErrorContains(t, validateClientConfig(&configstore.ClientConfig{VectorMaxSizeMB: -1}), "vector_max_size_mb")
+	// The largest whose byte count fits in an int64 is accepted; one MB more
+	// would overflow the sweep's limit into a negative number.
+	require.NoError(t, validateClientConfig(&configstore.ClientConfig{VectorMaxSizeMB: configstore.MaxVectorMaxSizeMB}))
+	require.ErrorContains(t, validateClientConfig(&configstore.ClientConfig{VectorMaxSizeMB: configstore.MaxVectorMaxSizeMB + 1}), "vector_max_size_mb")
+}
+
+// config.schema.json and the Helm chart's values.schema.json publish the same
+// vector_max_size_mb maximum the code enforces.
+func TestVectorMaxSizeMBSchemaMaximumMatchesTheCode(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "transports", "config.schema.json"))
+	require.NoError(t, err)
+	var schema struct {
+		Properties struct {
+			Client struct {
+				Properties struct {
+					VectorMaxSizeMB struct {
+						Maximum int `json:"maximum"`
+					} `json:"vector_max_size_mb"`
+				} `json:"properties"`
+			} `json:"client"`
+		} `json:"properties"`
+	}
+	require.NoError(t, json.Unmarshal(data, &schema))
+	require.Equal(t, configstore.MaxVectorMaxSizeMB, schema.Properties.Client.Properties.VectorMaxSizeMB.Maximum)
+
+	data, err = os.ReadFile(filepath.Join(repoRoot(t), "helm-charts", "bifrost", "values.schema.json"))
+	require.NoError(t, err)
+	var values struct {
+		Properties struct {
+			Bifrost struct {
+				Properties struct {
+					Client struct {
+						Properties struct {
+							VectorMaxSizeMB struct {
+								Maximum int `json:"maximum"`
+							} `json:"vectorMaxSizeMB"`
+						} `json:"properties"`
+					} `json:"client"`
+				} `json:"properties"`
+			} `json:"bifrost"`
+		} `json:"properties"`
+	}
+	require.NoError(t, json.Unmarshal(data, &values))
+	require.Equal(t, configstore.MaxVectorMaxSizeMB, values.Properties.Bifrost.Properties.Client.Properties.VectorMaxSizeMB.Maximum)
+}
+
 // TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot: an out-of-range
 // mcp_openapi_max_spec_mb in config.json fails startup instead of letting a
 // 1 GiB spec through (or a negative value fall back silently).
@@ -3253,6 +3304,26 @@ func TestLoadConfig_NegativeVectorRetentionDaysOnRestartFailsBoot(t *testing.T) 
 		second.Close(ctx)
 	}
 	require.ErrorContains(t, err, "vector_retention_days")
+}
+
+// TestLoadConfig_NegativeVectorMaxSizeMBOnRestartFailsBoot: a file that
+// changes vector_max_size_mb from 0 to a negative value between restarts is
+// refused, not hashed like 0 and passed over in favour of the stored row.
+func TestLoadConfig_NegativeVectorMaxSizeMBOnRestartFailsBoot(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+	createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{VectorMaxSizeMB: 0}})
+	first, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	first.Close(ctx)
+
+	createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{VectorMaxSizeMB: -5}})
+	second, err := LoadConfig(ctx, tempDir)
+	if second != nil {
+		second.Close(ctx)
+	}
+	require.ErrorContains(t, err, "vector_max_size_mb")
 }
 
 // TestLoadConfig_OpenAPIURLOutsideAppDirFailsBoot: PUT /api/config refuses an

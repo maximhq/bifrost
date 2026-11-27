@@ -94,6 +94,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `disable_content_logging` | boolean | `false` | Strip message content from logs |
 | `log_retention_days` | integer | `365` | Days to retain log entries |
 | `vector_retention_days` | integer | `0` | Upper bound on days to keep log-derived vector store entries; `0` = same as logs, capped at `log_retention_days`; applies alone when logs are kept forever |
+| `vector_max_size_mb` | integer | `0` | Storage limit in MB for all log-derived vectors together (estimated), oldest deleted first; `0` = no limit |
 | `logging_headers` | array | `[]` | HTTP headers to capture in log metadata |
 | `hidden_request_types` | array | `[]` | Request types hidden from Logs and Dashboard reads; logs are still stored |
 | `enforce_auth_on_inference` | boolean | `false` | Require a virtual key on every `/v1/*` request |

@@ -145,6 +145,7 @@
 		"modeIsRequired": "模式為必填",
 		"valueMustBeAPositiveWholeNumber": "必須是正整數",
 		"vectorRetentionDaysAtMost106751": "向量保留期最多為 106751 天。",
+		"vectorMaxSizeMustBeAWholeNumber": "儲存上限必須是以 MB 為單位的整數。",
 		"mustBeAJsonObject": "必須是 JSON 物件",
 		"providerCannotBePatched": "provider 用於識別項目，無法修改",
 		"customProviderNameIsRequired": "自訂供應商名稱為必填項",

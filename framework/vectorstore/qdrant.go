@@ -117,6 +117,24 @@ func (s *QdrantStore) ListNamespaces(ctx context.Context, prefix string) ([]stri
 	return namespaces, nil
 }
 
+// Count returns how many points in the collection match the queries, counted
+// exactly. A missing collection holds none.
+func (s *QdrantStore) CountVectors(ctx context.Context, namespace string, queries []Query) (int64, error) {
+	exists, err := s.client.CollectionExists(ctx, namespace)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check collection existence: %w", err)
+	}
+	if !exists {
+		return 0, nil
+	}
+	exact := true
+	count, err := s.client.Count(ctx, &qdrant.CountPoints{CollectionName: namespace, Exact: &exact, Filter: buildQdrantFilter(queries)})
+	if err != nil {
+		return 0, fmt.Errorf("failed to count points: %w", err)
+	}
+	return int64(count), nil
+}
+
 // DeleteNamespace deletes a collection from the Qdrant vector store.
 func (s *QdrantStore) DeleteNamespace(ctx context.Context, namespace string) error {
 	exists, err := s.client.CollectionExists(ctx, namespace)

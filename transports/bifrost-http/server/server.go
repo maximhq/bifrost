@@ -4095,6 +4095,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Client.SetTracer(tracer)
 	s.setSettlementTracer()
 
+	// After the routes, which build Warp, whose log index it covers.
+	s.startVectorStorageLimit(s.Ctx)
 	// Registering inference routes
 	// The pre-auth plugin phase runs immediately before the auth middlewares so a plugin can
 	// supply or translate the credentials they read (see schemas.HTTPTransportPreAuthHook).

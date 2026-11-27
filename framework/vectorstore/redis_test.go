@@ -544,6 +544,51 @@ func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testi
 	assert.False(t, sawScan, "expected executeSearch to return before scan fallback")
 }
 
+// A filtered count the engine refuses as a syntax error is counted the way
+// DeleteAll finds what to delete: through the id search, which retries without
+// DIALECT and then scans, unless the scan fallback is disabled.
+func TestRedisStore_CountFallsBackOnQuerySyntaxError(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		searchErrors  int
+		disableScan   bool
+		wantErr       bool
+		wantScan      bool
+		wantFTSearchN int
+	}{
+		{name: "the id search answers", searchErrors: 1, wantFTSearchN: 2},
+		{name: "every search refused: scan", searchErrors: 3, wantScan: true, wantFTSearchN: 3},
+		{name: "scan fallback disabled", searchErrors: 3, disableScan: true, wantErr: true, wantFTSearchN: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newFakeRedisSearchServer(t, tc.searchErrors)
+			defer func() { require.NoError(t, server.close()) }()
+			client := redis.NewClient(&redis.Options{Addr: server.addr(), Protocol: 2, DisableIdentity: true, MaxRetries: 0})
+			defer func() { require.NoError(t, client.Close()) }()
+			store := &RedisStore{
+				client: client, logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+				config:              RedisConfig{ContextTimeout: schemas.Duration(time.Second)},
+				namespaceFieldTypes: make(map[string]map[string]VectorStoreProperties),
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if tc.disableScan {
+				ctx = WithDisableScanFallback(ctx)
+			}
+			count, err := store.CountVectors(ctx, TestNamespace, []Query{{Field: "kind", Operator: QueryOperatorEqual, Value: "request"}})
+			ftSearchCalls, sawScan := server.stats()
+			assert.Equal(t, tc.wantFTSearchN, ftSearchCalls)
+			assert.Equal(t, tc.wantScan, sawScan)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Zero(t, count, "the fake holds no matching documents")
+		})
+	}
+}
+
 func TestRedisStore_ParseSearchResults_RESP3Map(t *testing.T) {
 	store := &RedisStore{}
 	resp := map[interface{}]interface{}{
@@ -2253,4 +2298,41 @@ func TestRedisStore_VectorReadGoesPastTheSearchLimit(t *testing.T) {
 		cursor = next
 	}
 	require.Len(t, seen, entries)
+}
+
+// The scan fallback matches a filterable TAG field by its value, not by the
+// hex encoding Redis holds it in: a query for the stored value finds it, one
+// for another value does not, and what is returned decodes as it does from an
+// indexed read.
+func TestRedisStore_ScanMatchesFilterableTagValues(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewRedisTestSetup(t)
+	t.Cleanup(func() { setup.Cleanup(t) })
+	ctx := setup.ctx
+	namespace := TestNamespace + "ScanTags"
+	require.NoError(t, setup.Store.CreateNamespace(ctx, namespace, RedisTestDimension, map[string]VectorStoreProperties{
+		"provider": {DataType: VectorStorePropertyTypeString, Filterable: true},
+	}))
+	t.Cleanup(func() { _ = setup.Store.DeleteNamespace(context.Background(), namespace) })
+	require.NoError(t, setup.Store.Add(ctx, namespace, "match", generateTestEmbedding(RedisTestDimension), map[string]interface{}{"provider": "openai/gpt-4o"}))
+	require.NoError(t, setup.Store.Add(ctx, namespace, "other", generateTestEmbedding(RedisTestDimension), map[string]interface{}{"provider": "anthropic"}))
+
+	found, err := setup.Store.scanAllMatchingResults(ctx, namespace, []Query{{Field: "provider", Operator: QueryOperatorEqual, Value: "openai/gpt-4o"}}, nil)
+	require.NoError(t, err)
+	require.Len(t, found, 1, "the stored value is found")
+	assert.Equal(t, "match", found[0].ID)
+	setup.Store.decodeFilterableProperties(namespace, found)
+	assert.Equal(t, "openai/gpt-4o", found[0].Properties["provider"], "returned as stored, then decoded once")
+
+	none, err := setup.Store.scanAllMatchingResults(ctx, namespace, []Query{{Field: "provider", Operator: QueryOperatorEqual, Value: "mistral"}}, nil)
+	require.NoError(t, err)
+	assert.Empty(t, none, "another value matches nothing")
+	// A read that falls back to the scan hands its caller decoded values, as an
+	// indexed read does.
+	page, _, err := setup.Store.getAllByScan(ctx, namespace, []Query{{Field: "provider", Operator: QueryOperatorEqual, Value: "openai/gpt-4o"}}, nil, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	assert.Equal(t, "openai/gpt-4o", page[0].Properties["provider"], "the scan read returns the value, not its encoding")
 }

@@ -298,3 +298,54 @@ func TestVectorStoreListNamespaces(t *testing.T) {
 		})
 	}
 }
+
+// countTestProperties adds a numeric field to the upsert schema, for the
+// timestamp filter the vector storage limit counts with.
+var countTestProperties = map[string]VectorStoreProperties{
+	"marker":    {DataType: VectorStorePropertyTypeString, Description: "count test marker"},
+	"timestamp": {DataType: VectorStorePropertyTypeInteger, Description: "unix seconds"},
+}
+
+// TestVectorStoreCount pins Count on every backend: a namespace that does not
+// exist holds none, one holds exactly what was added, and a filter counts the
+// way DeleteAll deletes. The vector storage limit picks its cutoff from these counts,
+// so an overcount deletes vectors for nothing.
+func TestVectorStoreCount(t *testing.T) {
+	for _, backend := range vectorStoreTestBackends() {
+		t.Run(backend.name, func(t *testing.T) {
+			store, ctx, shared := backend.setup(t)
+			missing, err := store.CountVectors(ctx, shared+"Missing", nil)
+			require.NoError(t, err)
+			assert.Zero(t, missing, "a namespace that does not exist holds none")
+
+			// A namespace of its own: the shared test one may already exist with
+			// another schema, which CreateNamespace leaves as it is.
+			namespace := shared + "Count"
+			require.NoError(t, store.CreateNamespace(ctx, namespace, backend.dimension, countTestProperties))
+			t.Cleanup(func() { _ = store.DeleteNamespace(ctx, namespace) })
+			ids := []string{generateUUID(), generateUUID(), generateUUID()}
+			for i, id := range ids {
+				require.NoError(t, store.Add(ctx, namespace, id, generateTestEmbedding(backend.dimension), map[string]interface{}{"marker": "count", "timestamp": int64(1000 + i)}))
+			}
+			t.Cleanup(func() {
+				for _, id := range ids {
+					_ = store.Delete(ctx, namespace, id)
+				}
+			})
+			// Several backends index asynchronously.
+			require.Eventually(t, func() bool {
+				count, err := store.CountVectors(ctx, namespace, nil)
+				return err == nil && count == int64(len(ids))
+			}, 10*time.Second, 200*time.Millisecond, "Count should reach the number of vectors added")
+
+			older := []Query{
+				{Field: "marker", Operator: QueryOperatorEqual, Value: "count"},
+				{Field: "timestamp", Operator: QueryOperatorLessThan, Value: int64(1002)},
+			}
+			require.Eventually(t, func() bool {
+				count, err := store.CountVectors(ctx, namespace, older)
+				return err == nil && count == 2
+			}, 10*time.Second, 200*time.Millisecond, "a filtered count matches what DeleteAll would delete")
+		})
+	}
+}
