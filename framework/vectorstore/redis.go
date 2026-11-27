@@ -27,8 +27,10 @@ const (
 	// RedisMaxSearchResults is the maximum number of results Redis Search returns in a single query.
 	// This is the default MAXSEARCHRESULTS configuration in Redis Search.
 	RedisMaxSearchResults = 10000
-	// redisCleanupTimeout bounds the DEL that removes an entry written outside
-	// a transaction, independently of the caller's context.
+	// redisCleanupTimeout bounds waiting for a connection for the DEL that
+	// removes an entry written outside a transaction, independently of the
+	// caller's context. Its socket I/O is bounded by the client's read and
+	// write timeouts, like every other command.
 	redisCleanupTimeout = 5 * time.Second
 )
 
