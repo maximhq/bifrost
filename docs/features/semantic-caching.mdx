@@ -54,8 +54,9 @@ A few things that trip up first-time users — read these before configuring:
 
 1. **A cache key is mandatory.** Caching only engages when a request carries a cache key (the `x-bf-cache-key` header, or the `CacheKey` context value in the Go SDK). Without one — and without a configured `default_cache_key` — the request bypasses the cache entirely. This is the single most common reason "nothing is being cached."
 2. **Direct runs before semantic.** When both paths are enabled, a direct hash hit is served first; the semantic search only runs on a direct miss. You can narrow a request to one path with the `x-bf-cache-type` header.
-3. **Writes are asynchronous.** On a cache miss, Bifrost returns the provider's response immediately and stores it in the background, so the *first* request never blocks on a cache write.
-4. **Entries persist across restarts.** Cache entries live in your vector store with a per-entry expiry (`expires_at`). They are **not** purged when Bifrost shuts down — a restart keeps serving warm cache (see [Cache lifecycle](#lifecycle--cleanup)).
+3. **Requests that use tools match exactly only.** A chat or Responses request that offers tools (including web search through `web_search_options` and MCP servers through `mcp_servers`), or carries tool calls or tool results in its input, skips the semantic search and is served only by a direct hit, because its answer depends on tools and results the embedding does not capture. With `x-bf-cache-type: semantic`, such a request bypasses the cache.
+4. **Writes are asynchronous.** On a cache miss, Bifrost returns the provider's response immediately and stores it in the background, so the *first* request never blocks on a cache write.
+5. **Entries persist across restarts.** Cache entries live in your vector store with a per-entry expiry (`expires_at`). They are **not** purged when Bifrost shuts down — a restart keeps serving warm cache (see [Cache lifecycle](#lifecycle--cleanup)).
 
 **What gets cached:** chat completions, text completions, the Responses API (including WebSocket), embeddings, transcriptions, speech, and image generation — including their streaming variants.
 

@@ -71,6 +71,7 @@ Each block lists what the cases must prove and the folders they go in (P precond
 **Semantic matching**: embeddings, the threshold, similarity, conversation handling (S):
 - A paraphrase is a semantic hit carrying `similarity` at or above `threshold`, `provider_used`, `model_used` and `input_tokens`; an unrelated prompt misses; a near-miss pair stays under the plugin's default threshold on every store (S29); the threshold header's bounds (S4 to S6).
 - A follow-up turn matches its earlier turns exactly and only its newest message by meaning, on chat and Responses (S30).
+- A request that offers tools (in `tools`, or through `web_search_options` on chat), or carries a tool call or a tool result, is matched exactly only, on chat and Responses, streamed and not: its write runs no embedding, the same request is a direct hit, a paraphrase misses, and a semantic-only lookup (`x-bf-cache-type: semantic`) is not cached and the same request is a direct miss afterwards (S22, S31). That it writes no entry under any id is a store fact, asserted in the plugin's Go test.
 - An embedding failure (an invalid key, a deleted provider) still answers and writes, and leaves a `semantic_cache` warning in the log row's `plugin_logs` (S26, S27).
 
 **Identity scoping** (G):
