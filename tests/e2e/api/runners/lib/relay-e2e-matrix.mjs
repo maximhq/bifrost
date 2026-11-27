@@ -484,6 +484,47 @@ function bodyCase(r, tag) {
 
 // ---- Where each block lands in folder 285 ----
 
+// ---- Access: a key granted some routes of a relay reaches only those ----
+
+// harness-relay-routes pins its route IDs in config.json, so these keys can grant them by ID.
+const ROUTE_RELAY = "harness-relay-routes";
+export const ROUTE_ALLOWED_ID = "5e1a7c00-0000-4000-8000-00000000a11d";
+export const ROUTE_DENIED_ID = "5e1a7c00-0000-4000-8000-00000000de1d";
+const ROUTE_KEY = "sk-bf-harness-relay-route";
+const ALL_KEY = "sk-bf-harness-relay-all";
+
+// A row with key calls the relay with that key; a row with api reads the management API.
+export const ROUTE_GRANT_CASES = [
+  { name: "a key granted one route of a relay reaches that route", label: "granted route", key: ROUTE_KEY, path: "/v1/allowed" },
+  { name: "[EXPECT-403] a key granted one route is refused on a sibling route and the upstream is never called", label: "sibling route", key: ROUTE_KEY, path: "/v1/denied", status: 403, error: "is not allowed for route POST /v1/denied" },
+  { name: "[EXPECT-403] a key granted one route is refused on a path no route matches, even under skip_route_check", label: "unmatched path", key: ROUTE_KEY, path: "/v1/unlisted", status: 403, error: "Relay 'harness-relay-routes' is not allowed" },
+  { name: "a key granted every route reaches a route another key was refused", label: "all routes: sibling", key: ALL_KEY, path: "/v1/denied" },
+  { name: "a key granted every route reaches a path no route matches under skip_route_check", label: "all routes: unmatched", key: ALL_KEY, path: "/v1/unlisted" },
+  {
+    name: "the relay API returns each route's pinned ID",
+    label: "route ids",
+    api: `/api/relays/${ROUTE_RELAY}`,
+    check: `var ids = (json().routes || []).map(function (r) { return r.id; }); pm.expect(ids, pm.response.text()).to.eql(['${ROUTE_ALLOWED_ID}', '${ROUTE_DENIED_ID}']);`,
+  },
+  {
+    name: "the virtual key API returns the routes a grant names",
+    label: "grant routes",
+    api: "/api/governance/virtual-keys/vk-harness-relay-route",
+    check: `var vk = json().virtual_key || json(); var g = (vk.relay_grants || []).filter(function (x) { return x.relay_name === '${ROUTE_RELAY}'; })[0] || {}; pm.expect(g.routes, pm.response.text()).to.eql(['${ROUTE_ALLOWED_ID}']);`,
+  },
+];
+
+function routeGrantCase(r, tag) {
+  if (r.api) {
+    return apiCall({ name: r.name, path: r.api, test: [`expectStatus(200, '${r.label}');`, `pm.test(${sq(`${r.label}: ${r.name}`)}, function () { ${r.check} });`] });
+  }
+  const test = r.status
+    ? [`expectStatus(${r.status}, '${r.label}');`, ...refusedLines(r.label, r.error)]
+    : [`expectStatus(200, '${r.label}');`];
+  return relayCall({ name: r.name, tag, relay: ROUTE_RELAY, path: r.path, headers: { "x-bf-vk": r.key, ...J }, body: "{}", test });
+}
+
+const F_ACCESS = "Access: relay grants on virtual keys";
 const F_PRICING = "Pricing: response and request measures, reported cost policy, model and tokens, non-2xx replies and method defaults";
 const F_ROUTING = "Routing: specificity, globs, encoded and dot-segment paths, disabled catch-alls, header globs and x-bf-eh matchers";
 const F_BODY = "Body overrides: every JSON type, nested paths, methods, content types, compressed and large bodies";
@@ -493,6 +534,7 @@ const F_PREVIEW = "Usage preview: unsaved configs, header matchers, disabled and
 // before names the static case (without the suffix) the block goes in front of; null appends.
 // tag prefixes the per-request id so a Relay Logs row can be traced back to its row here.
 export const RELAY_MATRIX_BLOCKS = [
+  { folder: F_ACCESS, before: null, tag: "rgrant", rows: ROUTE_GRANT_CASES, build: routeGrantCase },
   { folder: F_ROUTING, before: "[EXPECT-204] cleanup: delete the run-scoped routing relay", tag: "route", rows: ROUTING_CASES, build: routingCase },
   { folder: F_PRICING, before: "chars measures the characters of a response string: the echoed request body", tag: "price", rows: PRICING_BEFORE_CHARS, build: pricingCase },
   { folder: F_PRICING, before: "[EXPECT-204] cleanup: delete the run-scoped pricing relays", tag: "price-b", rows: PRICING_AFTER_CHARS, build: pricingCase },

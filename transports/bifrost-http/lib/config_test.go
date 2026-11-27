@@ -28161,15 +28161,31 @@ func TestLoadRelaysConfig(t *testing.T) {
 	assert.Equal(t, "changed", stored["tavily"].Description, "a changed declaration updates the row")
 }
 
-// A key's relay_grants in config.json may repeat a name or name a relay that was never stored (a
-// typo, or a declaration skipped as invalid): both would be refused by the store and fail the
-// governance sync, so they are dropped before the store call, the unknown one with a warning.
-func TestGrantableRelayNames(t *testing.T) {
+// A key's relay_grants in config.json may repeat a relay, name a relay that was never stored (a
+// typo, or a declaration skipped as invalid) or name a route the relay does not have: the store
+// would refuse each and fail the governance sync, so they are dropped first, the unknown ones with
+// a warning.
+func TestGrantableRelayGrants(t *testing.T) {
 	initTestLogger()
-	stored := map[string]bool{"tavily": true, "textract": true}
-	assert.Equal(t, []string{"tavily", "textract"}, grantableRelayNames([]string{"tavily", "tavily", "textract", "tavi1y"}, stored, "vk-1", "search"))
-	assert.Equal(t, []string{}, grantableRelayNames([]string{"missing"}, stored, "vk-1", "search"))
-	assert.Equal(t, []string{}, grantableRelayNames(nil, stored, "vk-1", "search"), "no grants stays an explicit empty replacement")
+	const search, gone = "11111111-1111-4111-8111-111111111111", "99999999-9999-4999-8999-999999999999"
+	stored := map[string][]string{"tavily": {search}, "textract": nil}
+	grant := func(name string, routes ...string) configstoreTables.TableVirtualKeyRelayGrant {
+		g := configstoreTables.TableVirtualKeyRelayGrant{RelayName: name}
+		if routes != nil {
+			g.Routes = routes
+		}
+		return g
+	}
+	got := grantableRelayGrants([]configstoreTables.TableVirtualKeyRelayGrant{
+		grant("tavily", search, gone), grant("tavily"), grant("textract"), grant("tavi1y"),
+	}, stored, "vk-1", "search")
+	assert.Equal(t, []configstoreTables.TableVirtualKeyRelayGrant{
+		{RelayName: "tavily", Routes: schemas.WhiteList{search}},
+		{RelayName: "textract", Routes: schemas.WhiteList{"*"}},
+	}, got, "an unknown route is dropped from its grant, and an omitted list means every route")
+	assert.Empty(t, grantableRelayGrants([]configstoreTables.TableVirtualKeyRelayGrant{grant("tavily", gone)}, stored, "vk-1", "search"),
+		"a grant left with no route is skipped")
+	assert.Equal(t, []configstoreTables.TableVirtualKeyRelayGrant{}, grantableRelayGrants(nil, stored, "vk-1", "search"), "no grants stays an explicit empty replacement")
 }
 
 // loadRelayGrantsConfig writes config.json into dir with the given relays and virtual keys, runs
@@ -28234,7 +28250,11 @@ func TestRelayGrantsFromConfigFile(t *testing.T) {
 		ctx := context.Background()
 		config, err := LoadConfig(ctx, dir)
 		require.NoError(t, err)
-		require.NoError(t, config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, vkID, names))
+		grants := make([]configstoreTables.TableVirtualKeyRelayGrant, len(names))
+		for i, name := range names {
+			grants[i] = configstoreTables.TableVirtualKeyRelayGrant{RelayName: name}
+		}
+		require.NoError(t, config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, vkID, grants))
 		config.Close(ctx)
 	}
 	search := vk("vk-search", "", `[{"relay_name": "tavily"}]`)

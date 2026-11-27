@@ -16,6 +16,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,11 @@ type RDBConfigStore struct {
 	logger           schemas.Logger
 	migrateOnFreshFn func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error
 	refreshPoolFn    func(ctx context.Context) error
+
+	// relayGrantTables are the grant tables beyond virtual keys whose route lists a relay edit
+	// prunes in its own transaction (see RegisterRelayGrantTable).
+	relayGrantTablesMu sync.RWMutex
+	relayGrantTables   []RelayGrantTable
 }
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.

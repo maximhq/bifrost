@@ -975,7 +975,14 @@
 			"label": "Accès aux relais",
 			"tooltip": "Autorise cette clé à appeler les relais sur <strong>/relay/&lt;name&gt;/...</strong>. Le coût de chaque appel est imputé aux budgets de la clé. Sans relais autorisé, la clé n’en peut appeler aucun.",
 			"selectRelay": "Sélectionner un relais à ajouter",
-			"remove": "Supprimer {{name}}"
+			"remove": "Supprimer {{name}}",
+			"allRoutes": "Toutes les routes",
+			"allRoutesDescription": "Toutes les routes de ce relais, y compris les appels qui ne correspondent à aucune route",
+			"selectRoutes": "Sélectionner des routes",
+			"allRoutesAllowed": "Toutes les routes autorisées",
+			"noRoutesSelected": "Aucune route sélectionnée",
+			"deletedRoute": "Route supprimée",
+			"noRoutesError": "Sélectionnez au moins une route pour {{name}}, ou retirez-le"
 		}
 	},
 	"mcpLogs": {

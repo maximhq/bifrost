@@ -309,15 +309,15 @@ func (a *Access) IsAgentAllowed(agentName string) bool {
 }
 
 // IsRelayAllowed implements schemas.Access.
-func (a *Access) IsRelayAllowed(endpointName string) bool {
+func (a *Access) IsRelayAllowed(endpointName, routeID string) bool {
 	if a == nil || endpointName == "" {
 		return false
 	}
-	base := a.callerAllows(func(p schemas.Permit) bool { return allowsRelay(p, endpointName) })
+	base := a.callerAllows(func(p schemas.Permit) bool { return allowsRelay(p, endpointName, routeID) })
 	if a.scoping == nil {
 		return base
 	}
-	return a.compose(base, allowsRelay(a.scoping, endpointName))
+	return a.compose(base, allowsRelay(a.scoping, endpointName, routeID))
 }
 
 // PermitsForModel implements schemas.Access.
@@ -806,11 +806,11 @@ func (a *Access) DeniedPermitsForAgent(agentName string) []schemas.Permit {
 }
 
 // DeniedPermitsForRelay implements schemas.Access.
-func (a *Access) DeniedPermitsForRelay(endpointName string) []schemas.Permit {
+func (a *Access) DeniedPermitsForRelay(endpointName, routeID string) []schemas.Permit {
 	if a == nil {
 		return nil
 	}
-	return a.deniedBy(func(p schemas.Permit) bool { return allowsRelay(p, endpointName) }, true)
+	return a.deniedBy(func(p schemas.Permit) bool { return allowsRelay(p, endpointName, routeID) }, true)
 }
 
 // DeniedPermitsForMCPTool implements schemas.Access.

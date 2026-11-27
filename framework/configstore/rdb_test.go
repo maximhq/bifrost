@@ -77,6 +77,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 	require.NoError(t, migrationAddAgentGatewayTables(context.Background(), db, testMigrationLogger), "Failed to migrate Agent Gateway tables")
 	require.NoError(t, migrationAddRelaysTables(context.Background(), db, testMigrationLogger), "Failed to migrate relay tables")
 	require.NoError(t, migrationAddRelayRoutesTable(context.Background(), db, testMigrationLogger), "Failed to migrate relay route table")
+	require.NoError(t, migrationAddRelayGrantRoutesColumn(context.Background(), db, testMigrationLogger), "Failed to migrate relay grant routes")
 
 	// Virtual MCP tables (separate call: the in-batch AutoMigrate above does not create
 	// enterprise_mcp_tool_groups reliably). MCP client create now cross-checks slugs against them.

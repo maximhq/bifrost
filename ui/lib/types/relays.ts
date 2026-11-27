@@ -119,6 +119,12 @@ export interface RelayJobConfig {
 	reused_id_is_new_job?: boolean;
 }
 
+/** One holder's grant on a relay: ["*"] (or unset, for older grants) allows every route, else only these route IDs. */
+export interface RelayGrant {
+	relay_name: string;
+	routes?: string[];
+}
+
 export interface RelayRouteConfig {
 	/** Stable UUID that relay grants name; the server assigns it and keeps it across edits. */
 	id?: string;

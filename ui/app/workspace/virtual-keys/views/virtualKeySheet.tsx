@@ -57,6 +57,7 @@ import {
 } from "@/lib/store";
 import { AgentGrantsEditor } from "@/components/agents/agentGrantsEditor";
 import { RelayGrantsEditor } from "@/components/relays/relayGrantsEditor";
+import { relayGrantsPayload, relayGrantWithoutRoutes } from "@/lib/utils/relayGrants";
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
 import {
 	createDeleteAfterExpire,
@@ -187,8 +188,8 @@ const formSchema = z
 		allowAllProviders: z.boolean(),
 		mcpConfigs: z.array(mcpConfigSchema).optional(),
 		agentGrants: z.array(z.string()).optional(),
-		// Relay access: the relays named, like agent grants.
-		relayGrants: z.array(z.string()).optional(),
+		// Relay access: the relays named, each with every route or chosen route IDs.
+		relayGrants: z.array(z.object({ relay_name: z.string(), routes: z.array(z.string()).optional() })).optional(),
 		entityType: z.enum(["team", "customer", "business_unit", "user", "none"]),
 		teamId: z.string().optional(),
 		customerId: z.string().optional(),
@@ -413,6 +414,7 @@ function withoutKeyGovernance<T extends CreateVirtualKeyRequest | UpdateVirtualK
 export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCancel }: VirtualKeySheetProps) {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
+	const { t: tObs } = useTranslation("observability");
 	const contentLoggingOptions = useMemo(
 		() => [
 			{ value: "inherit" as const, label: t("virtualKeys.contentLoggingInherit") },
@@ -631,7 +633,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				})) || [],
 			allowAllProviders: virtualKey?.allow_all_providers ?? false,
 			agentGrants: virtualKey?.agent_grants?.map((grant) => grant.agent_name) || [],
-			relayGrants: virtualKey?.relay_grants?.map((grant) => grant.relay_name) || [],
+			relayGrants: virtualKey?.relay_grants?.map((grant) => ({ relay_name: grant.relay_name, routes: grant.routes })) || [],
 			mcpConfigs:
 				virtualKey?.mcp_configs?.map((config) => ({
 					id: config.id,
@@ -1253,9 +1255,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				const agentGrantsPayload = form.formState.dirtyFields.agentGrants
 					? { agent_grants: (data.agentGrants ?? []).map((agent_name) => ({ agent_name })) }
 					: {};
-				const relayGrantsPayload = form.formState.dirtyFields.relayGrants
-					? { relay_grants: (data.relayGrants ?? []).map((relay_name) => ({ relay_name })) }
-					: {};
+				const relayGrantsUpdate = form.formState.dirtyFields.relayGrants ? { relay_grants: relayGrantsPayload(data.relayGrants) } : {};
 
 				const updateData: UpdateVirtualKeyRequest = {
 					name: data.name,
@@ -1273,7 +1273,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					// null apart, so this is always sent.
 					disable_content_logging: contentLoggingValue(data.contentLogging),
 					...agentGrantsPayload,
-					...relayGrantsPayload,
+					...relayGrantsUpdate,
 					// Sent only when edited, since it replaces the stored metadata as a whole ({} clears it);
 					// an untouched form copy may be older than what is stored now.
 					...virtualKeyMetadataUpdate(form.formState.defaultValues?.metadata, data.metadata),
@@ -1362,7 +1362,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					provider_configs: normalizedProviderConfigs,
 					mcp_configs: data.mcpConfigs,
 					agent_grants: (data.agentGrants ?? []).map((agent_name) => ({ agent_name })),
-					relay_grants: (data.relayGrants ?? []).map((relay_name) => ({ relay_name })),
+					relay_grants: relayGrantsPayload(data.relayGrants),
 					team_id: ownerIdFor("team", data.teamId),
 					customer_id: ownerIdFor("customer", data.customerId),
 					business_unit_id: ownerIdFor("business_unit", data.businessUnitId),
@@ -1443,6 +1443,12 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 
 	// Handle form submission
 	const onSubmit = async (data: FormData) => {
+		// A relay with no route selected grants nothing; it is refused rather than saved as every route.
+		const noRoutes = relayGrantWithoutRoutes(data.relayGrants);
+		if (noRoutes) {
+			toast.error(tObs("relayLogs.grants.noRoutesError", { name: noRoutes }));
+			return;
+		}
 		if (hasBudgetResetRelevantChanges(data)) {
 			setPendingBudgetResetData(data);
 			setPendingBudgetUsageWarning(getBudgetUsageWarning(data));

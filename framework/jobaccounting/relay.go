@@ -192,6 +192,35 @@ func HasRelayJob(ctx context.Context, store JobStore, relayName, routeKey, upstr
 	return job != nil, nil
 }
 
+// RelayJobStartRoute returns the ID of the route that started the newest job recorded for an
+// upstream id, "" when there is none or its row predates recording the start route.
+func RelayJobStartRoute(ctx context.Context, store JobStore, relayName, routeKey, upstreamID string) (string, error) {
+	if store == nil {
+		return "", nil
+	}
+	var newest *cstables.TableProviderJob
+	for gen := 1; gen <= MaxRelayJobGenerations; gen++ {
+		id, _ := RelayJobRowID(relayName, routeKey, upstreamID, gen)
+		job, err := store.GetProviderJob(ctx, id)
+		if err != nil && gen == 1 {
+			return "", err
+		}
+		// A later generation that cannot be read is treated as absent, as openRelayJob does.
+		if err != nil || job == nil {
+			break
+		}
+		newest = job
+	}
+	if newest == nil || newest.Params == nil {
+		return "", nil
+	}
+	snap, err := relay.ParseJobSnapshot(*newest.Params)
+	if err != nil {
+		return "", err
+	}
+	return snap.RouteID, nil
+}
+
 // openRelayJob is the open job row for an upstream id: the generation a start recorded and no
 // settlement has closed yet.
 func openRelayJob(ctx context.Context, store JobStore, relayName, routeKey, upstreamID string) *cstables.TableProviderJob {

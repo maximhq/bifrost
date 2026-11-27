@@ -129,3 +129,79 @@ func TestUpdateKeepsRouteIDs(t *testing.T) {
 	require.NotNil(t, live)
 	assert.Equal(t, extractID, live.cfg.Routes[0].ID, "the live relay serves the stored IDs")
 }
+
+// TestStatusCheckCarriesJobRouteIDs checks a caller's status check names the route that starts the
+// job, so a grant on that route covers checking on the job even though the call matches no route.
+func TestStatusCheckCarriesJobRouteIDs(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"RUNNING"}`)
+	}))
+	defer upstream.Close()
+	const startID = "cccccccc-0000-4000-8000-000000000001"
+	cfg := bearerConfig("jobs", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{
+		ID: startID, Method: "POST", Path: "/start",
+		Job: &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"DONE"}, Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}},
+	}}
+	m, pipeline := newTestManager(t, cfg)
+
+	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "jobs", Method: "GET", Path: "/jobs/j-1", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	require.Len(t, pipeline.pre, 1)
+	assert.Empty(t, pipeline.pre[0].RouteID, "the status check matches no route")
+	assert.Equal(t, []string{startID}, pipeline.pre[0].JobRouteIDs)
+}
+
+// TestStatusCheckNamesTheRouteThatStartedTheJob checks a status check is attributed to the start
+// route its job row recorded, not every route sharing the poll template, and falls back to all of
+// them only for a row that predates recording it.
+func TestStatusCheckNamesTheRouteThatStartedTheJob(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"RUNNING"}`)
+	}))
+	defer upstream.Close()
+	const startA, startB = "cccccccc-0000-4000-8000-00000000000a", "cccccccc-0000-4000-8000-00000000000b"
+	job := func() *schemas.RelayJobConfig {
+		return &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"DONE"}, Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}}
+	}
+	cfg := bearerConfig("jobs", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{ID: startA, Method: "POST", Path: "/start/a", Job: job()},
+		{ID: startB, Method: "POST", Path: "/start/b", Job: job()},
+	}
+	m, pipeline := newTestManager(t, cfg)
+	poll := func() []string {
+		_, bErr := m.Serve(testCtx(t), Request{Endpoint: "jobs", Method: "GET", Path: "/jobs/j-1", Headers: map[string]string{}})
+		require.Nil(t, bErr)
+		return pipeline.pre[len(pipeline.pre)-1].JobRouteIDs
+	}
+
+	assert.ElementsMatch(t, []string{startA, startB}, poll(), "without a recorded start route, every route sharing the template")
+	m.SetJobStartRouteLookup(func(context.Context, string, string, string) (string, error) { return startB, nil })
+	assert.Equal(t, []string{startB}, poll(), "the recorded start route alone")
+	m.SetJobStartRouteLookup(func(context.Context, string, string, string) (string, error) { return "", io.ErrUnexpectedEOF })
+	assert.Empty(t, poll(), "a failed lookup names no start route, so access falls back to the matched route")
+}
+
+// TestShadowRoutesCoverPathVariants checks a path variant an upstream may serve as the same
+// resource names the narrower route it would match, so access can require it.
+func TestShadowRoutesCoverPathVariants(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{}`) }))
+	defer upstream.Close()
+	const broad, admin = "dddddddd-0000-4000-8000-000000000001", "dddddddd-0000-4000-8000-000000000002"
+	cfg := bearerConfig("api", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{ID: broad, Method: "POST", Path: "/v1/**"}, {ID: admin, Method: "POST", Path: "/v1/admin"}}
+	m, pipeline := newTestManager(t, cfg)
+	for _, path := range []string{"/v1/admin/", "/v1//admin", "/v1/admin;x=1", "/v1/Admin"} {
+		_, bErr := m.Serve(testCtx(t), Request{Endpoint: "api", Method: "POST", Path: path, Headers: map[string]string{}})
+		require.Nil(t, bErr, path)
+		req := pipeline.pre[len(pipeline.pre)-1]
+		assert.Equal(t, broad, req.RouteID, "%s routes through the broad route", path)
+		assert.Equal(t, []string{admin}, req.ShadowRouteIDs, "%s names the admin route it could reach", path)
+	}
+	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "api", Method: "POST", Path: "/v1/search", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	assert.Empty(t, pipeline.pre[len(pipeline.pre)-1].ShadowRouteIDs, "a plain path has no variants")
+}

@@ -975,7 +975,14 @@
 			"label": "Relay-Zugriff",
 			"tooltip": "Erlaube diesem Schlüssel, Relays unter <strong>/relay/&lt;name&gt;/...</strong> aufzurufen. Die Kosten jedes Aufrufs werden den Budgets des Schlüssels belastet. Ohne freigegebenes Relay darf der Schlüssel keines aufrufen.",
 			"selectRelay": "Relay zum Hinzufügen auswählen",
-			"remove": "{{name}} entfernen"
+			"remove": "{{name}} entfernen",
+			"allRoutes": "Alle Routen",
+			"allRoutesDescription": "Jede Route dieses Relays, auch Aufrufe, die keiner Route entsprechen",
+			"selectRoutes": "Routen auswählen",
+			"allRoutesAllowed": "Alle Routen erlaubt",
+			"noRoutesSelected": "Keine Routen ausgewählt",
+			"deletedRoute": "Gelöschte Route",
+			"noRoutesError": "Wählen Sie mindestens eine Route für {{name}} aus oder entfernen Sie es"
 		}
 	},
 	"mcpLogs": {

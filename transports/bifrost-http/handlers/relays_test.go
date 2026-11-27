@@ -236,6 +236,36 @@ func TestRelaysHandlerReloadsGrantedKeysOnDelete(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), "the name is free to reuse at once")
 }
 
+// TestRelaysHandlerReloadsKeysWhenRoutesRemoved checks an edit that removes a route reloads the
+// keys holding grants on the relay, since the edit pruned their route lists, and an edit that
+// removes none reloads nothing.
+func TestRelaysHandlerReloadsKeysWhenRoutesRemoved(t *testing.T) {
+	_, store, _ := newRelaysTestHandler(t)
+	recorder := &relayChangeRecorder{}
+	h := NewRelaysHandler(relay.NewManager(store, nil), nil, nil, recorder)
+	create := pteRequest("POST", `{"name":"tavily","base_url":"https://api.tavily.com","auth":{"type":"none"},"routes":[{"method":"POST","path":"/search"},{"method":"POST","path":"/extract"}]}`, "")
+	h.create(create)
+	require.Equal(t, fasthttp.StatusCreated, create.Response.StatusCode(), string(create.Response.Body()))
+	stored, err := store.GetRelay(context.Background(), "tavily")
+	require.NoError(t, err)
+	extract := stored.Routes[1].ID
+	require.NoError(t, store.CreateVirtualKey(context.Background(), &tables.TableVirtualKey{ID: "vk-granted", Name: "granted", Value: *schemas.NewSecretVar("sk-bf-granted"), IsActive: schemas.Ptr(true)}))
+	require.NoError(t, store.ReplaceVirtualKeyRelayGrants(context.Background(), "vk-granted", []tables.TableVirtualKeyRelayGrant{{RelayName: "tavily", Routes: schemas.WhiteList{extract}}}))
+
+	keep := pteRequest("PUT", `{"base_url":"https://api.tavily.com","description":"kept","auth":{"type":"none"},"routes":[{"method":"POST","path":"/search"},{"method":"POST","path":"/extract"}]}`, "tavily")
+	h.update(keep)
+	require.Equal(t, fasthttp.StatusOK, keep.Response.StatusCode(), string(keep.Response.Body()))
+	assert.Empty(t, recorder.reloads, "an edit that removes no route reloads no key")
+
+	drop := pteRequest("PUT", `{"base_url":"https://api.tavily.com","auth":{"type":"none"},"routes":[{"method":"POST","path":"/search"}]}`, "tavily")
+	h.update(drop)
+	require.Equal(t, fasthttp.StatusOK, drop.Response.StatusCode(), string(drop.Response.Body()))
+	assert.Equal(t, []string{"vk-granted"}, recorder.reloads, "the key whose grant the edit pruned is reloaded")
+	ids, err := store.GetRelayGrantedVirtualKeyIDs(context.Background(), "tavily")
+	require.NoError(t, err)
+	assert.Empty(t, ids, "its only granted route is gone, so the grant is too")
+}
+
 // relayMutationRecorder stands in for a clustered server's RelayManager: it mutates locally and
 // records what it would broadcast, so the handler's delegation can be checked.
 type relayMutationRecorder struct {

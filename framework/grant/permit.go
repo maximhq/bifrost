@@ -87,7 +87,7 @@ type Permit struct {
 	agentPermits      []string
 	allowAllProviders bool
 
-	relayPermits []string
+	relayPermits []schemas.RelayPermit
 	level        int
 }
 
@@ -101,9 +101,14 @@ func WithAgentPermits(agentNames []string) PermitOption {
 	return func(p *Permit) { p.agentPermits = slices.Clone(agentNames) }
 }
 
-// WithRelayPermits grants the named relays.
-func WithRelayPermits(endpointNames []string) PermitOption {
-	return func(p *Permit) { p.relayPermits = slices.Clone(endpointNames) }
+// WithRelayPermits grants the given relays, each with the routes it allows.
+func WithRelayPermits(permits []schemas.RelayPermit) PermitOption {
+	return func(p *Permit) {
+		p.relayPermits = make([]schemas.RelayPermit, len(permits))
+		for i, rp := range permits {
+			p.relayPermits[i] = schemas.RelayPermit{Relay: rp.Relay, Routes: slices.Clone(rp.Routes)}
+		}
+	}
 }
 
 // WithAllowAllProviders grants every provider, including ones the permit holds no provider permit
@@ -252,11 +257,15 @@ func (p *Permit) Level() int {
 }
 
 // RelayPermits implements schemas.Permit. See ProviderPermits for why this returns a copy.
-func (p *Permit) RelayPermits() []string {
+func (p *Permit) RelayPermits() []schemas.RelayPermit {
 	if p == nil {
 		return nil
 	}
-	return slices.Clone(p.relayPermits)
+	out := make([]schemas.RelayPermit, len(p.relayPermits))
+	for i, rp := range p.relayPermits {
+		out[i] = schemas.RelayPermit{Relay: rp.Relay, Routes: slices.Clone(rp.Routes)}
+	}
+	return out
 }
 
 // The rules below are written against schemas.Permit rather than *Permit, so the fold asks every
@@ -300,10 +309,20 @@ func allowsAgent(p schemas.Permit, agentName string) bool {
 	return !isNilPermit(p) && slices.Contains(p.AgentPermits(), agentName)
 }
 
-// allowsRelay reports whether the permit names this relay. There is no allow-all for relays, as
-// there is none for agents: a holder reaches exactly the relays it is granted.
-func allowsRelay(p schemas.Permit, endpointName string) bool {
-	return !isNilPermit(p) && slices.Contains(p.RelayPermits(), endpointName)
+// allowsRelay reports whether the permit allows routeID on this relay. There is no allow-all
+// across relays, as there is none for agents: a holder reaches exactly the relays it is granted.
+// Within a relay, ["*"] allows every route (and calls no route matched), and a list allows only
+// those route IDs. The first permit entry for the relay decides, as for MCP clients.
+func allowsRelay(p schemas.Permit, endpointName, routeID string) bool {
+	if isNilPermit(p) {
+		return false
+	}
+	for _, rp := range p.RelayPermits() {
+		if rp.Relay == endpointName {
+			return rp.AllowsRoute(routeID)
+		}
+	}
+	return false
 }
 
 // allowsTool reports whether the permit permits toolPattern. The MCP permit that holds a client

@@ -63,6 +63,8 @@ type Manager struct {
 	// knownJob reports whether a relay started a job with this id on this job route; nil (no job
 	// store) relays no call as a status check.
 	knownJob atomic.Pointer[JobLookup]
+	// jobStartRoute names the route that started a job, for authorising its status checks.
+	jobStartRoute atomic.Pointer[JobStartRouteLookup]
 }
 
 // NewManager returns an empty manager. store may be nil, in which case endpoints can only be made
@@ -309,6 +311,15 @@ func (m *Manager) Update(ctx context.Context, name string, cfg *schemas.RelayCon
 	return stored, nil
 }
 
+// GrantedVirtualKeyIDs lists the virtual keys holding a grant on the relay. A caller reads it
+// before an update that removes routes, since the update can delete grants left naming none.
+func (m *Manager) GrantedVirtualKeyIDs(ctx context.Context, name string) ([]string, error) {
+	if m.store == nil {
+		return nil, ErrStoreDisabled
+	}
+	return m.store.GetRelayGrantedVirtualKeyIDs(ctx, name)
+}
+
 // Delete removes the stored row and takes the relay out of service. It returns the ids of the
 // virtual keys whose grants the delete cascaded away, so the caller can refresh their in-memory
 // copies; the store's not-found error passes through when there is no such relay.
@@ -385,6 +396,20 @@ func (m *Manager) Names() []string {
 // A lookup that could not answer (the store failed) returns its error, never a plain false, so a
 // real status check is not charged or refused over a blip.
 type JobLookup func(ctx context.Context, relayName, routeKey, jobID string) (bool, error)
+
+// JobStartRouteLookup returns the ID of the route that started the job relayName recorded under
+// routeKey and this upstream id, "" when its row predates recording it.
+type JobStartRouteLookup func(ctx context.Context, relayName, routeKey, jobID string) (string, error)
+
+// SetJobStartRouteLookup sets how a status check finds the route that started its job, so access
+// to the job follows that route rather than every route sharing its poll template.
+func (m *Manager) SetJobStartRouteLookup(lookup JobStartRouteLookup) {
+	if lookup == nil {
+		m.jobStartRoute.Store(nil)
+		return
+	}
+	m.jobStartRoute.Store(&lookup)
+}
 
 // errJobLookupFailed is a status check whose job could not be confirmed because the lookup failed.
 var errJobLookupFailed = errors.New("could not confirm the job this status check names; try again")
@@ -553,6 +578,10 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 		RouteIndex: p.index,
 		Billable:   p.billing,
 		Streams:    p.stream == streamOn,
+	}
+	req.ShadowRouteIDs = p.shadowIDs
+	if p.statusJobID != "" {
+		req.JobRouteIDs = m.statusCheckRouteIDs(ctx, e, p.statusJobID, p.statusMatches)
 	}
 	if p.route != nil {
 		req.RouteID = p.route.id

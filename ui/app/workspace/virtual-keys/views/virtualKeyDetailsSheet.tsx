@@ -34,6 +34,7 @@ import { Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import { getLocale } from "@/lib/i18n";
+import { RelayGrantBadges } from "@/components/relays/relayGrantBadges";
 
 function usageBarClass(pct: number, exhausted: boolean) {
 	if (exhausted) return "[&>div]:bg-red-500/70";
@@ -732,7 +733,7 @@ export default function VirtualKeyDetailSheet({
 								)}
 							</div>
 
-							{/* Relay access: the relays granted by name. */}
+							{/* Relay access: each granted relay with its routes. */}
 							<div className="space-y-4" data-testid="vk-details-relay-access">
 								<h3 className="font-semibold">{t("virtualKeys.relayAccess")}</h3>
 
@@ -741,18 +742,7 @@ export default function VirtualKeyDetailSheet({
 										{t("virtualKeys.noRelaysGranted")}
 									</span>
 								) : (
-									<div className="flex flex-wrap gap-1">
-										{virtualKey.relay_grants.map((grant) => (
-											<Badge
-												key={grant.relay_name}
-												variant="secondary"
-												className="text-xs"
-												data-testid={`vk-details-relay-grant-${grant.relay_name}`}
-											>
-												{grant.relay_name}
-											</Badge>
-										))}
-									</div>
+									<RelayGrantBadges grants={virtualKey.relay_grants} testIdPrefix="vk-details-relay-grant" />
 								)}
 							</div>
 

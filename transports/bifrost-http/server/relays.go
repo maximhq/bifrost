@@ -82,6 +82,9 @@ func (s *BifrostHTTPServer) startEndpointJobSweeper(reporter jobaccounting.Relay
 	// turned off still has free status checks, though it settles only once logs are back, as batch
 	// and video jobs do. A job the store does not have is no job; any other store error is a failed
 	// lookup, so the status check is retried rather than charged or refused.
+	s.relays.SetJobStartRouteLookup(func(ctx context.Context, relayName, routeKey, jobID string) (string, error) {
+		return jobaccounting.RelayJobStartRoute(ctx, store, relayName, routeKey, jobID)
+	})
 	s.relays.SetJobLookup(func(ctx context.Context, relayName, routeKey, jobID string) (bool, error) {
 		known, err := jobaccounting.HasRelayJob(ctx, store, relayName, routeKey, jobID)
 		if errors.Is(err, configstore.ErrNotFound) {

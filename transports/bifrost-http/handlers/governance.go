@@ -411,9 +411,11 @@ type CreateVirtualKeyRequest struct {
 	RelayGrants []relayGrantBody `json:"relay_grants,omitempty"`
 }
 
-// relayGrantBody is one relay a virtual key may call.
+// relayGrantBody is one relay a virtual key may call, and which of its routes: ["*"] for every
+// route, else the route IDs. Omitted keeps an existing grant's routes and gives a new one every route.
 type relayGrantBody struct {
-	RelayName string `json:"relay_name" validate:"required"`
+	RelayName string            `json:"relay_name" validate:"required"`
+	Routes    schemas.WhiteList `json:"routes,omitempty"`
 }
 
 // vkModelBudgetRequest is one per-model budget/rate-limit group under a provider config
@@ -2187,18 +2189,19 @@ func virtualKeyMatchesMetadataFilters(vk *configstoreTables.TableVirtualKey, fil
 	return true
 }
 
-// relayGrantNames turns the request's grants into names, refusing a name given twice.
-func relayGrantNames(grants []relayGrantBody) ([]string, error) {
+// relayGrantRows turns the request's grants into grant rows, refusing a relay given twice. The
+// store checks the relays and routes exist.
+func relayGrantRows(grants []relayGrantBody) ([]configstoreTables.TableVirtualKeyRelayGrant, error) {
 	seen := make(map[string]bool, len(grants))
-	names := make([]string, 0, len(grants))
+	rows := make([]configstoreTables.TableVirtualKeyRelayGrant, 0, len(grants))
 	for _, g := range grants {
 		if seen[g.RelayName] {
 			return nil, &badRequestError{err: fmt.Errorf("duplicate relay_name: %s", g.RelayName)}
 		}
 		seen[g.RelayName] = true
-		names = append(names, g.RelayName)
+		rows = append(rows, configstoreTables.TableVirtualKeyRelayGrant{RelayName: g.RelayName, Routes: g.Routes})
 	}
-	return names, nil
+	return rows, nil
 }
 
 func classifyRelayGrantError(err error) error {
@@ -2480,11 +2483,11 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			}
 		}
 		if req.RelayGrants != nil {
-			names, err := relayGrantNames(req.RelayGrants)
+			grants, err := relayGrantRows(req.RelayGrants)
 			if err != nil {
 				return err
 			}
-			if err := h.configStore.ReplaceVirtualKeyRelayGrants(ctx, vk.ID, names, tx); err != nil {
+			if err := h.configStore.ReplaceVirtualKeyRelayGrants(ctx, vk.ID, grants, tx); err != nil {
 				return classifyRelayGrantError(err)
 			}
 		}
@@ -3153,11 +3156,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			}
 		}
 		if req.RelayGrants != nil {
-			names, err := relayGrantNames(req.RelayGrants)
+			grants, err := relayGrantRows(req.RelayGrants)
 			if err != nil {
 				return err
 			}
-			if err := h.configStore.ReplaceVirtualKeyRelayGrants(ctx, vk.ID, names, tx); err != nil {
+			if err := h.configStore.ReplaceVirtualKeyRelayGrants(ctx, vk.ID, grants, tx); err != nil {
 				return classifyRelayGrantError(err)
 			}
 		}

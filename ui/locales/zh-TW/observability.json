@@ -970,7 +970,14 @@
 			"label": "轉送存取",
 			"tooltip": "允許此金鑰呼叫位於 <strong>/relay/&lt;name&gt;/...</strong> 的轉送。每次呼叫的成本會向該金鑰的預算收費。未授權任何轉送時，此金鑰無法呼叫任何轉送。",
 			"selectRelay": "選擇要新增的轉送",
-			"remove": "移除 {{name}}"
+			"remove": "移除 {{name}}",
+			"allRoutes": "所有路由",
+			"allRoutesDescription": "此中繼的所有路由，包括不符合任何路由的呼叫",
+			"selectRoutes": "選擇路由",
+			"allRoutesAllowed": "允許所有路由",
+			"noRoutesSelected": "未選擇路由",
+			"deletedRoute": "已刪除的路由",
+			"noRoutesError": "請為 {{name}} 至少選擇一個路由，或將其移除"
 		}
 	},
 	"mcpLogs": {

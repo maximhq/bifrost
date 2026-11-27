@@ -26,14 +26,26 @@ func newPluginForEndpoints(t testing.TB, endpoints ...string) (*GovernancePlugin
 // cases that check they never reach a relay call.
 func newPluginForEndpointsWith(t testing.TB, modelConfigs []configstoreTables.TableModelConfig, endpoints ...string) (*GovernancePlugin, *LocalGovernanceStore) {
 	t.Helper()
+	grants := make([]configstoreTables.TableVirtualKeyRelayGrant, 0, len(endpoints))
+	for _, name := range endpoints {
+		grants = append(grants, configstoreTables.TableVirtualKeyRelayGrant{RelayName: name})
+	}
+	return newPluginWithRelayGrants(t, modelConfigs, grants...)
+}
+
+// newPluginWithRelayGrants builds the plugin newPluginForEndpoints does, with the key holding exactly
+// these relay grants, routes included.
+func newPluginWithRelayGrants(t testing.TB, modelConfigs []configstoreTables.TableModelConfig, grants ...configstoreTables.TableVirtualKeyRelayGrant) (*GovernancePlugin, *LocalGovernanceStore) {
+	t.Helper()
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("pte-budget", 100.0, 0.0, "1d")
 	rl := buildRateLimit("pte-rl", 1_000_000, 1_000)
 	vk := buildVirtualKeyWithBudget("vk-pte", pteTestVKValue, "pte-vk", budget)
 	vk.RateLimit = rl
 	vk.RateLimitID = &rl.ID
-	for _, name := range endpoints {
-		vk.RelayGrants = append(vk.RelayGrants, configstoreTables.TableVirtualKeyRelayGrant{VirtualKeyID: vk.ID, RelayName: name})
+	for _, g := range grants {
+		g.VirtualKeyID = vk.ID
+		vk.RelayGrants = append(vk.RelayGrants, g)
 	}
 	cfg := &configstore.GovernanceConfig{
 		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
@@ -138,6 +150,36 @@ func TestPreRelayHookGrants(t *testing.T) {
 	_, short, err = none.PreRelayHook(anonymousA2ACtx(), endpointReq("tavily"))
 	require.NoError(t, err)
 	assert.Nil(t, short, "a request with no credential and no mandatory key is unrestricted, as for MCP tools")
+}
+
+// TestPreRelayHookRouteGrants covers a key granted some routes of a relay: those routes pass, a
+// sibling route and an unmatched call are refused, and a status check passes when its job was
+// started on a granted route.
+func TestPreRelayHookRouteGrants(t *testing.T) {
+	const search, extract = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+	p, _ := newPluginWithRelayGrants(t, nil, configstoreTables.TableVirtualKeyRelayGrant{RelayName: "tavily", Routes: schemas.WhiteList{search}})
+	var shadow []string
+	call := func(routeID, routePath string, jobRouteIDs ...string) *schemas.RelayPluginShortCircuit {
+		req := endpointReq("tavily")
+		req.RouteID, req.RoutePath, req.JobRouteIDs, req.ShadowRouteIDs = routeID, routePath, jobRouteIDs, shadow
+		_, short, err := p.PreRelayHook(a2aVKCtx(pteTestVKValue), req)
+		require.NoError(t, err)
+		return short
+	}
+
+	assert.Nil(t, call(search, "/search"), "a granted route is allowed")
+	refused := call(extract, "/extract")
+	require.NotNil(t, refused, "a route the grant does not name is refused")
+	assert.Equal(t, 403, *refused.Error.StatusCode)
+	assert.Contains(t, refused.Error.Error.Message, "Relay 'tavily' is not allowed for route POST /extract")
+	assert.NotNil(t, call("", ""), "a call no route matched needs every route")
+	assert.Nil(t, call("", "", search), "a status check on a job started on a granted route is allowed")
+	assert.NotNil(t, call("", "", extract), "a status check on a job started elsewhere is refused")
+
+	shadow = []string{extract}
+	assert.NotNil(t, call(search, "/search"), "a path variant that could reach an ungranted route is refused")
+	shadow = []string{search}
+	assert.Nil(t, call(search, "/search"), "a variant reaching a granted route is allowed")
 }
 
 func TestPostRelayHookChargesOverallLimits(t *testing.T) {

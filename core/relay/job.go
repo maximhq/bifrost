@@ -27,6 +27,7 @@ import (
 // endpoint route started, captured at start so an endpoint config edited later does not change
 // how a job already running is settled. It rides on the job row's params column as JSON.
 type JobSnapshot struct {
+	RouteID            string                    `json:"route_id,omitempty"` // the start route, so a status check is authorised against the route that started the job
 	Job                schemas.RelayJobConfig    `json:"job"`
 	Usage              *schemas.RelayUsageConfig `json:"usage,omitempty"`                // the mapping the terminal poll response is priced with, fully merged
 	IgnoreUpstreamCost bool                      `json:"ignore_upstream_cost,omitempty"` // the endpoint's ignore_upstream_cost at start
@@ -232,6 +233,7 @@ func jobSnapshotFor(cfg *schemas.RelayConfig, route schemas.RelayRouteConfig, ig
 		return "", nil
 	}
 	snap := JobSnapshot{
+		RouteID:            route.ID,
 		Job:                *route.Job,
 		Usage:              mergeUsageConfig(mergeUsageConfig(cfg.Usage, route.Usage), route.Job.Usage),
 		IgnoreUpstreamCost: ignoreUpstreamCost,
@@ -323,6 +325,51 @@ func (e *endpoint) statusCheckCandidates(ctx context.Context, req *schemas.Bifro
 			poll := job.Poll
 			poll.Headers = maps.Clone(job.Poll.Headers)
 			out = append(out, statusCandidate{id: id, match: schemas.RelayJobMatch{RouteKey: e.routes[i].jobRouteKey, Poll: poll}})
+		}
+	}
+	return out
+}
+
+// jobRouteIDs returns the IDs of the job routes using the status check routeKey names, in job
+// order. Routes sharing one poll template share a key, so each of them is named: it is the
+// fallback for a job whose row predates recording its start route.
+func (e *endpoint) jobRouteIDs(routeKey string) []string {
+	var out []string
+	for _, i := range e.jobOrder {
+		route := e.routes[i]
+		if route.id != "" && route.jobRouteKey == routeKey && !slices.Contains(out, route.id) {
+			out = append(out, route.id)
+		}
+	}
+	return out
+}
+
+// statusCheckRouteIDs names the routes that started the job a confirmed status check reads, one
+// per matched template: the start route its row recorded, or for an older row every route sharing
+// the template. A lookup error names none, so access falls back to the route the call matched.
+func (m *Manager) statusCheckRouteIDs(ctx context.Context, e *endpoint, jobID string, matches []schemas.RelayJobMatch) []string {
+	lookup := m.jobStartRoute.Load()
+	var out []string
+	for _, match := range matches {
+		startID := ""
+		if lookup != nil {
+			id, err := (*lookup)(ctx, e.cfg.Name, match.RouteKey, jobID)
+			if err != nil {
+				if m.logger != nil {
+					m.logger.Warn("relay %s: could not read the start route of job %s: %v", e.cfg.Name, jobID, err)
+				}
+				return nil
+			}
+			startID = id
+		}
+		ids := []string{startID}
+		if startID == "" {
+			ids = e.jobRouteIDs(match.RouteKey)
+		}
+		for _, id := range ids {
+			if !slices.Contains(out, id) {
+				out = append(out, id)
+			}
 		}
 	}
 	return out

@@ -119,6 +119,7 @@ type plan struct {
 	statusJobID   string
 	statusMatches []schemas.RelayJobMatch // the started jobs' routes whose templates the status check matched
 	statusKey     string                  // the candidate set the job lookup ran on
+	shadowIDs     []string                // routes a variant of the path matches instead; see BifrostRelayRequest.ShadowRouteIDs
 }
 
 // readsReplyBody reports whether a billable call reads something from its reply's body: a priced
@@ -165,6 +166,7 @@ func (e *endpoint) plan(method, path string, headers map[string]string) plan {
 		p.usage, p.billing, p.body = route.usage, route.billable, route.bodyOverrides
 		p.index = route.configIndex
 	}
+	p.shadowIDs = e.shadowRouteIDs(method, path, headers, route)
 	p.stream = e.streamMode(route, path)
 	return p
 }

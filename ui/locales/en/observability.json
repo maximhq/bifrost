@@ -975,7 +975,14 @@
 			"label": "Relay access",
 			"tooltip": "Let this key call relays at <strong>/relay/&lt;name&gt;/...</strong>. Each call's cost is charged to the key's budgets. With no relay granted the key may call none.",
 			"selectRelay": "Select a relay to add",
-			"remove": "Remove {{name}}"
+			"remove": "Remove {{name}}",
+			"allRoutes": "All routes",
+			"allRoutesDescription": "Every route of this relay, including calls no route matches",
+			"selectRoutes": "Select routes",
+			"allRoutesAllowed": "All routes allowed",
+			"noRoutesSelected": "No routes selected",
+			"deletedRoute": "Deleted route",
+			"noRoutesError": "Select at least one route for {{name}}, or remove it"
 		}
 	},
 	"mcpLogs": {
