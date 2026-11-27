@@ -38990,7 +38990,7 @@
     },
     {
       "name": "13. OpenRouter Prompt Caching (cache_control)",
-      "description": "Sends OpenAI-format chat requests through the OpenRouter provider with Anthropic-style cache_control breakpoints on content blocks and tools. OpenRouter forwards cache_control to Claude/Gemini (explicit caching) and harmlessly ignores it for implicit-caching models (OpenAI/DeepSeek) — these must NOT 400. Bifrost preserves cache_control only when the provider is OpenRouter (stripped for native OpenAI).",
+      "description": "Sends OpenAI-format chat requests through the OpenRouter provider with Anthropic-style cache_control breakpoints on content blocks and tools. OpenRouter forwards cache_control to Claude/Gemini (explicit caching) and harmlessly ignores it for implicit-caching models (OpenAI/DeepSeek) \u2014 these must NOT 400. Bifrost preserves cache_control only when the provider is OpenRouter (stripped for native OpenAI).",
       "item": [
         {
           "name": "OpenRouter Anthropic Claude: cache_control on system block",
@@ -45010,9 +45010,9 @@
                   "});",
                   "",
                   "// The row asks for raw_request capture, so an upstream rejection would carry the",
-                  "// attempted payload here. Its absence is therefore evidence of a local refusal",
-                  "// rather than an artefact of capture being switched off.",
-                  "pm.test('nothing was sent upstream (no raw_request recorded for a pre-egress refusal)', function () {",
+              "// attempted payload here. Its absence is therefore evidence of a local refusal",
+              "// rather than an artefact of capture being switched off.",
+              "pm.test('nothing was sent upstream (no raw_request recorded for a pre-egress refusal)', function () {",
                   "  var rr = (body.extra_fields || {}).raw_request;",
                   "  var shown = rr === undefined ? 'undefined' : JSON.stringify(rr).slice(0, 300);",
                   "  pm.expect(!rr, 'raw_request present, so the request reached DeepSeek: ' + shown).to.be.true;",
@@ -184743,7 +184743,8 @@
               ]
             }
           }
-        },
+        }
+,
         {
           "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages per-message effort on a text-bearing system item stays native - per-message-effort",
           "event": [
@@ -184895,7 +184896,8 @@
               ]
             }
           }
-        },
+        }
+,
         {
           "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort on the first member of a system group stays native - per-message-effort",
           "event": [
@@ -185046,7 +185048,8 @@
               ]
             }
           }
-        },
+        }
+,
         {
           "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort without a client anthropic-beta header (gateway injects the beta) - per-message-effort",
           "event": [
@@ -190036,30 +190039,26 @@
         {
           "name": "openai inference-auth-setup status exposes independent enforcement - PR #5767",
           "request": {
-            "auth": {
-              "type": "noauth"
-            },
+            "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/session/is-auth-enabled"
           },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('inference-auth-setup reports independent auth states', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "  var body = pm.response.json();",
-                  "  pm.expect(body.is_auth_enabled).to.be.a('boolean');",
-                  "  pm.expect(body.has_valid_token).to.be.a('boolean');",
-                  "  pm.expect(body.inference_auth_enforced).to.be.a('boolean');",
-                  "});"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('inference-auth-setup reports independent auth states', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                "  var body = pm.response.json();",
+                "  pm.expect(body.is_auth_enabled).to.be.a('boolean');",
+                "  pm.expect(body.has_valid_token).to.be.a('boolean');",
+                "  pm.expect(body.inference_auth_enforced).to.be.a('boolean');",
+                "});"
+              ]
             }
-          ]
+          }]
         }
       ]
     },
@@ -294310,7 +294309,8 @@
           }
         }
       ]
-    },
+    }
+,
     {
       "name": "285. Relays: access, governance and pricing against a local upstream (relays-e2e) [SERIAL]",
       "description": "End-to-end coverage for Relays (/relay/{name}/{path}), raw HTTP relays to non-LLM APIs. Every relay in the shared profile (tests/integrations/python/config.json, harness-relay-*) points at the local upstream fixture tests/e2e/api/runners/relay-upstream-fixture.mjs on 127.0.0.1:8783, which make run-provider-harness-test starts before the gateway. No third-party API is called, so the folder costs nothing to run. To run the fixture elsewhere, change the harness-relay-* base_url entries in that profile and pass the same address as --env-var relayUpstreamUrl=...; the variable alone only moves where the scripts read hit counts, not where the gateway sends traffic.\n\nEach relay request mints its own id in its pre-request script and sends it as x-request-id, which the Relay Logs row records as request_id (read back through GET /api/relay-logs?request_id=), and as ?tag=, which the fixture counts, so a refused call can be proven never to have reached the upstream.\n\nFixtures: harness-relay-pricing (bearer credential, $0.001 fee + usage.credits x $0.008, route overrides, header matchers on x-tier, a stream, a disabled route), harness-relay-alpha (header credential X-Upstream-Key, $0.002 fee), harness-relay-beta (query credential api_key, skip_route_check, $0.003 fee). Keys: vk-harness-relay-none (no relay access), vk-harness-relay-all (granted all three harness relays), vk-harness-relay-alpha (granted harness-relay-alpha only), vk-harness-relay-budget (granted harness-relay-pricing, one daily budget of $0.05). The rate-limit rows create and delete their own key, since a config-declared request window cannot be reset between runs; the budget rows reset the config key's budget usage first.\n\n[SERIAL]: the rows run in order (budget and rate-limit counters, log polling) and name no provider, so no provider fork would select them; the serial pass runs them alone against the gateway. Run with FEATURE=relays-e2e.",
@@ -307543,7 +307543,8 @@
           }
         }
       ]
-    },
+    }
+  ,
     {
       "name": "308. OpenAI zero-token-usage survives completion wire serialization (#8749 / PR #8763)",
       "description": "Local regression for #8749 using a Custom OpenAI-compatible provider. Eight zero-usage cases cover Chat/Text on /v1 and /openai/v1, both unary and SSE. Representative controls pin total-only usage, nonzero counts and absent usage; Embedding zero-count omission is a known follow-up and is not pinned here. The full missing/null/partial-zero matrix lives in Go tests. Async Chat/Text cases poll the persisted result; reasoning.mode cases cover Chat-to-Responses conversion on native and SDK routes. One folder-level script checks every response; no paid provider calls.\n\nStart the fixture in a fresh directory: node tests/e2e/api/runners/run-zero-token-usage-fixture.mjs /tmp/bifrost-zero-token-usage. In another terminal: make dev PORT=3022 APP_DIR=/tmp/bifrost-zero-token-usage. Verify port 3022 is free beforehand and wait for /health. Log in at POST /api/session/login with username usage-fixture and password fixture-only-password; export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\" for the management preflight. Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"zero-token-usage\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3022. Stop the gateway and fixture afterward. PREVIEW excludes these fixture cases from paid sweeps.",
@@ -338625,8 +338626,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Anthropic-shaped SSE carries no raw_request echo, so this case cannot see the outgoing body. It pins that the stream is accepted, which needs the derived beta (the field 400s without it). Forwarding on the streaming builder is pinned by the /v1/chat/completions stream case below (raw_request on the final frame) and by the native-stream route in TestThinkingBlockBindingRequestBuilders.",
-                  "var txt = pm.response.text() || '';",
+                                    "// Anthropic-shaped SSE carries no raw_request echo, so this case cannot see the outgoing body. It pins that the stream is accepted, which needs the derived beta (the field 400s without it). Forwarding on the streaming builder is pinned by the /v1/chat/completions stream case below (raw_request on the final frame) and by the native-stream route in TestThinkingBlockBindingRequestBuilders.",
+"var txt = pm.response.text() || '';",
                   "pm.test('anthropic/claude-sonnet-5-5 /anthropic/v1/messages stream thinking.block_binding completes - thinking block binding: no block_binding rejection', function () {",
                   "  pm.expect(txt, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
                   "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
@@ -345060,8 +345061,8 @@
               "    var e; try { e = JSON.parse(line.slice(5)); } catch (err) { if (line.slice(5).trim() !== '[DONE]') { errors.push(line); } return; }",
               "    if (e.type === 'error' || e.error) { errors.push(e); }",
               "    if (e.type === 'message_start' && e.message && typeof e.message === 'object') { started = true; }",
-              "    if (e.type === 'content_block_start' && e.content_block && (e.content_block.type === 'tool_use' || (e.content_block.type === 'text' && e.content_block.text))) { hasOutput = true; }",
-              "    if (e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta' && e.delta.text) { hasOutput = true; }",
+                  "    if (e.type === 'content_block_start' && e.content_block && (e.content_block.type === 'tool_use' || (e.content_block.type === 'text' && e.content_block.text))) { hasOutput = true; }",
+                  "    if (e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta' && e.delta.text) { hasOutput = true; }",
               "    if (e.type === 'message_delta' && started && !stopped && e.delta && e.delta.stop_reason) { stopReason = e.delta.stop_reason; }",
               "    var part = e.type === 'message_start' ? ((e.message || {}).usage || {}) : (e.type === 'message_delta' ? (e.usage || {}) : null);",
               "    if (part) { Object.keys(part).forEach(function (k) { if (typeof part[k] === 'number' && (u[k] === undefined || part[k] > u[k])) { u[k] = part[k]; } }); }",
@@ -345073,7 +345074,7 @@
               "    pm.expect(stopReason, 'no closing message_delta with a stop_reason before message_stop: ' + txt.slice(0, 1500)).to.be.a('string');",
               "    pm.expect(stopReason, 'the model refused the turn: ' + txt.slice(0, 1500)).to.not.eql('refusal');",
               "    pm.expect(stopped, 'no message_stop: ' + txt.slice(0, 1500)).to.eql(true);",
-              "    pm.expect(hasOutput, 'the stream carried no text and no tool call (thinking only): ' + txt.slice(0, 1500)).to.eql(true);",
+                  "    pm.expect(hasOutput, 'the stream carried no text and no tool call (thinking only): ' + txt.slice(0, 1500)).to.eql(true);",
               "  });",
               "  read = u.cache_read_input_tokens || 0; write = u.cache_creation_input_tokens || 0; prompt = read + write + (u.input_tokens || 0);",
               "} else {",
@@ -345097,10 +345098,10 @@
               "  } else if (route === 'responses') {",
               "    var out = Array.isArray(body.output) ? body.output : [];",
               "    var parts = [];",
-              "    out.forEach(function (o) { if (o && o.type === 'message' && Array.isArray(o.content)) { parts = parts.concat(o.content); } });",
-              "    var refused = parts.some(function (p) { return p && p.type === 'refusal'; });",
-              "    var hasText = parts.some(function (p) { return p && p.type === 'output_text' && typeof p.text === 'string' && p.text.length > 0; });",
-              "    ok = body.status === 'completed' && !refused && (hasText || out.some(function (o) { return o && o.type === 'function_call'; }));",
+                  "    out.forEach(function (o) { if (o && o.type === 'message' && Array.isArray(o.content)) { parts = parts.concat(o.content); } });",
+                  "    var refused = parts.some(function (p) { return p && p.type === 'refusal'; });",
+                  "    var hasText = parts.some(function (p) { return p && p.type === 'output_text' && typeof p.text === 'string' && p.text.length > 0; });",
+                  "    ok = body.status === 'completed' && !refused && (hasText || out.some(function (o) { return o && o.type === 'function_call'; }));",
               "    outcome = 'status=' + body.status + ' incomplete=' + JSON.stringify(body.incomplete_details || null) + ' output=' + JSON.stringify(out.map(function (o) { return o && o.type; })) + ' message parts=' + JSON.stringify(parts.map(function (p) { return p && p.type; }));",
               "  } else {",
               "    var ch = (body.choices || [])[0] || {}, msg = ch.message || {};",
@@ -352428,11 +352429,11 @@
       ]
     },
     {
-      "name": "393. FastAPI detail error message propagation (fastapi-detail-error) (#10182)",
-      "description": "Local fixture regression, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run make run-provider-harness-test with PROVIDER_ERROR_FIXTURE=1 (or providerErrorFixture=1, or ENV_FILE=/path/to/env.json containing {\"values\":[{\"key\":\"providerErrorFixture\",\"value\":\"1\",\"enabled\":true}]}); every case is skipped otherwise. Sends chat completions requests targeting openai/upstream-400-detail, which answers HTTP 400 {\"detail\": \"...\"}, and asserts error.message preserves the complete FastAPI detail string.",
+      "name": "407. FastAPI detail error message propagation (fastapi-detail-error) (#10182)",
+      "description": "Local fixture regression, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run make run-provider-harness-test with PROVIDER_ERROR_FIXTURE=1 (or providerErrorFixture=1, or ENV_FILE=/path/to/env.json containing {\"values\":[{\"key\":\"providerErrorFixture\",\"value\":\"1\",\"enabled\":true}]}); every case is skipped otherwise. Sends chat completions and responses requests targeting openai/upstream-400-detail, which answers HTTP 400 {\"detail\": \"...\"}, and asserts error.message preserves the complete FastAPI detail string.",
       "item": [
         {
-          "name": "[EXPECT-400] 393.1 openai/upstream-400-detail POST /v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
+          "name": "[EXPECT-400] 407.1 openai/upstream-400-detail POST /v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
           "event": [
             {
               "listen": "prerequest",
@@ -352488,7 +352489,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] 393.2 openai/upstream-400-detail POST /openai/v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
+          "name": "[EXPECT-400] 407.2 openai/upstream-400-detail POST /openai/v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
           "event": [
             {
               "listen": "prerequest",
@@ -352540,6 +352541,61 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 407.3 openai/upstream-400-detail POST /v1/responses propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "var expectedDetail = 'Error: 400 - Bad Request - {\"object\":\"error\",\"message\":\"The input exceeds context length.\",\"type\":\"BadRequestError\",\"code\":400}';",
+                  "pm.test('FastAPI detail error propagates completely into error.message', function () {",
+                  "  pm.expect(j.error, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(j.error.message, pm.response.text()).to.be.a('string');",
+                  "  pm.expect(j.error.message.trim(), pm.response.text()).to.eql(expectedDetail);",
+                  "  pm.expect(j.error.message, pm.response.text()).to.not.include('provider API error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-400-detail\",\n  \"input\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }
