@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -384,6 +385,130 @@ func TestClampMaxTokensRecognisesAliasedProfile(t *testing.T) {
 		caps := schemas.ResolveModelCaps(schemas.Bedrock, "3dnkdwuaalc7")
 		if got := clampMaxTokens(ctx, &given, caps); got == nil || *got != 1 {
 			t.Errorf("got %v, want 1 (nothing identifies the model)", got)
+		}
+	})
+}
+
+// capsForBounds is capsFor with both output-token bounds, for the ceiling tests.
+func capsForBounds(t *testing.T, model string, min, max *int) schemas.ModelCaps {
+	t.Helper()
+	if min != nil || max != nil {
+		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if m != model {
+				return nil
+			}
+			return &schemas.ModelCapabilities{MinOutputTokens: min, MaxOutputTokens: max}
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	}
+	return schemas.ResolveModelCaps(schemas.Bedrock, model)
+}
+
+// ---- max_output_tokens ceiling (#8060) ----
+
+// A routing rule that retargets a request sized for Opus (Claude Code sends
+// max_tokens > 64000) onto claude-haiku-4-5 forwarded the value unchanged and
+// Bedrock answered 400. #7732 fixed this on the Anthropic-family builders only;
+// Converse builds its own body, so it needs its own clamp.
+func TestClampMaxTokensCeilingFromStaticClaudeTable(t *testing.T) {
+	cases := []struct {
+		model string
+		given int
+		want  int
+	}{
+		// Lowered to the ceiling.
+		{"anthropic.claude-haiku-4-5", 100000, 64000},
+		{"us.anthropic.claude-haiku-4-5", 100000, 64000},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", 200000, 64000},
+		// At or below the ceiling - untouched.
+		{"anthropic.claude-haiku-4-5", 64000, 64000},
+		{"anthropic.claude-haiku-4-5", 8192, 8192},
+		// Not in the Claude table: no ceiling to apply.
+		{"amazon.nova-pro-v1:0", 100000, 100000},
+		{"meta.llama3-70b-instruct-v1:0", 100000, 100000},
+	}
+	for _, tc := range cases {
+		caps := capsFor(t, tc.model, nil)
+		got := clampMaxTokens(surfaceTestCtx(), &tc.given, caps)
+		if got == nil || *got != tc.want {
+			t.Errorf("clampMaxTokens(%d, %q) = %v, want %d", tc.given, tc.model, got, tc.want)
+		}
+	}
+}
+
+// The datasheet row is authoritative over the static table, in both directions.
+func TestClampMaxTokensCeilingDatasheetOverridesTable(t *testing.T) {
+	t.Run("lowers below what the table would allow", func(t *testing.T) {
+		ceiling := 4096
+		caps := capsForBounds(t, "anthropic.claude-haiku-4-5", nil, &ceiling)
+		given := 100000
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 4096 {
+			t.Errorf("got %v, want 4096", got)
+		}
+	})
+	t.Run("raises the ceiling the table would impose", func(t *testing.T) {
+		ceiling := 128000
+		caps := capsForBounds(t, "anthropic.claude-haiku-4-5", nil, &ceiling)
+		given := 100000
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 100000 {
+			t.Errorf("got %v, want 100000 (datasheet ceiling is higher)", got)
+		}
+	})
+	t.Run("a model with no ceiling anywhere is forwarded as-is", func(t *testing.T) {
+		caps := capsFor(t, "amazon.nova-pro-v1:0", nil)
+		given := 1000000
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 1000000 {
+			t.Errorf("got %v, want 1000000", got)
+		}
+	})
+}
+
+// A row publishing both bounds must land the value inside the range, not at
+// whichever bound happens to be checked last.
+func TestClampMaxTokensCeilingAndFloorTogether(t *testing.T) {
+	floor, ceiling := 16, 4096
+	caps := capsForBounds(t, "openai.gpt-5.6-luna", &floor, &ceiling)
+	t.Run("above the ceiling comes down", func(t *testing.T) {
+		given := 99999
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 4096 {
+			t.Errorf("got %v, want 4096", got)
+		}
+	})
+	t.Run("below the floor goes up", func(t *testing.T) {
+		given := 1
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 16 {
+			t.Errorf("got %v, want 16", got)
+		}
+	})
+	t.Run("inside the range is untouched", func(t *testing.T) {
+		given := 1024
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 1024 {
+			t.Errorf("got %v, want 1024", got)
+		}
+	})
+}
+
+// The guard that keeps this change honest. An application inference profile
+// whose model_id is an opaque resource id identifies no model, so no ceiling is
+// known and the request is forwarded unchanged. The floor may lean on the alias
+// chain -- a wrong floor only under-requests and the model still answers -- but
+// a ceiling taken from the alias *key* would be a claim about which model the
+// profile really serves. Guessing high reintroduces the 400; guessing low
+// truncates a legitimate request.
+func TestClampMaxTokensOpaqueProfileGetsNoCeiling(t *testing.T) {
+	given := 100000
+	t.Run("opaque id with no alias", func(t *testing.T) {
+		ctx := surfaceTestCtx()
+		caps := schemas.ResolveModelCaps(schemas.Bedrock, "3dnkdwuaalc7")
+		if got := clampMaxTokens(ctx, &given, caps); got == nil || *got != 100000 {
+			t.Errorf("got %v, want 100000 (nothing identifies the model)", got)
+		}
+	})
+	t.Run("a claude-named alias key is not read as the target model", func(t *testing.T) {
+		ctx := withAlias("claude-haiku-4-5", "3dnkdwuaalc7", appProfileARN)
+		caps := schemas.ResolveModelCaps(schemas.Bedrock, schemas.ResolveCanonicalModel(ctx, "3dnkdwuaalc7"))
+		if got := clampMaxTokens(ctx, &given, caps); got == nil || *got != 100000 {
+			t.Errorf("got %v, want 100000 (the alias key must not supply a ceiling)", got)
 		}
 	})
 }
@@ -830,5 +955,129 @@ func TestSupportsResponsesNamespaceToolsDatasheetRow(t *testing.T) {
 	// Cross-region id pins Converse; neither row applies.
 	if provider.SupportsResponsesNamespaceTools(surfaceTestCtx(), schemas.Key{}, "global.openai.gpt-5.6-luna") {
 		t.Error("a Converse-routed attempt must answer false regardless of rows")
+	}
+}
+
+// ---- the clamped total and an explicit thinking budget (#8060 follow-up) ----
+
+// Converse requires budget_tokens strictly below max_tokens, so lowering the
+// total to the model ceiling while leaving an explicit budget above it simply
+// trades one Bedrock 400 for another. The direct Anthropic path already refits
+// (fitThinkingBudget); this is the Converse twin.
+func TestToBedrockResponsesRequestRefitsThinkingBudgetUnderTheClampedTotal(t *testing.T) {
+	// claude-haiku-4-5 has a 64000 ceiling, so the 100000 total is clamped and
+	// the caller's 65000 budget no longer fits beneath it.
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-haiku-4-5",
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(100000),
+			Reasoning:       &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(65000)},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(surfaceTestCtx(), bifrostReq)
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	if bedrockReq.InferenceConfig == nil || bedrockReq.InferenceConfig.MaxTokens == nil {
+		t.Fatalf("expected an inference config carrying max_tokens, got %+v", bedrockReq.InferenceConfig)
+	}
+	total := *bedrockReq.InferenceConfig.MaxTokens
+	if total != 64000 {
+		t.Fatalf("precondition: max_tokens should be clamped to the 64000 ceiling, got %d", total)
+	}
+
+	raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+	if !ok {
+		t.Fatalf("expected a `thinking` field, got none")
+	}
+	thinking, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected `thinking` to be a map, got %T: %+v", raw, raw)
+	}
+	budget, ok := thinking["budget_tokens"].(int)
+	if !ok {
+		t.Fatalf("expected an int budget_tokens, got %T: %+v", thinking["budget_tokens"], thinking)
+	}
+
+	// The assertion that matters: strictly below, not merely lowered.
+	if budget >= total {
+		t.Errorf("budget_tokens %d is not below the clamped max_tokens %d, so Bedrock still answers 400",
+			budget, total)
+	}
+	if budget < anthropic.MinimumReasoningMaxTokens {
+		t.Errorf("budget_tokens %d fell below the anthropic minimum %d",
+			budget, anthropic.MinimumReasoningMaxTokens)
+	}
+}
+
+// effort "none" alongside an explicit budget must still refit. It maps through
+// to a budget of 0, so a refit that forwarded the caller's effort verbatim would
+// fail its own guard and leave the oversized budget in place -- the 400 this PR
+// exists to stop.
+func TestToBedrockResponsesRequestRefitsThinkingBudgetWithEffortNone(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-haiku-4-5",
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(100000),
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				MaxTokens: schemas.Ptr(65000),
+				Effort:    schemas.Ptr("none"),
+			},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(surfaceTestCtx(), bifrostReq)
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	total := *bedrockReq.InferenceConfig.MaxTokens
+	raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+	if !ok {
+		t.Fatalf("expected a `thinking` field, got none")
+	}
+	thinking, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected `thinking` to be a map, got %T: %+v", raw, raw)
+	}
+	budget, ok := thinking["budget_tokens"].(int)
+	if !ok {
+		t.Fatalf("expected an int budget_tokens, got %T: %+v", thinking["budget_tokens"], thinking)
+	}
+	if budget >= total {
+		t.Errorf("budget_tokens %d is not below the clamped max_tokens %d with effort \"none\"",
+			budget, total)
+	}
+	if budget < anthropic.MinimumReasoningMaxTokens {
+		t.Errorf("budget_tokens %d fell below the anthropic minimum %d",
+			budget, anthropic.MinimumReasoningMaxTokens)
+	}
+}
+
+// The control: a budget that already fits is passed through untouched, so the
+// refit cannot be quietly rewriting every request.
+func TestToBedrockResponsesRequestLeavesAFittingThinkingBudgetAlone(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-haiku-4-5",
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(32000),
+			Reasoning:       &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(8000)},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(surfaceTestCtx(), bifrostReq)
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	raw, _ := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+	thinking, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected `thinking` to be a map, got %T: %+v", raw, raw)
+	}
+	if got := thinking["budget_tokens"]; got != 8000 {
+		t.Errorf("a budget that already fits under max_tokens was rewritten: want 8000, got %v", got)
 	}
 }
