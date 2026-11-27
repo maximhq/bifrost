@@ -1364,8 +1364,12 @@ type TokenEndpointError struct {
 	Body       string
 }
 
+func is2xxStatus(status int) bool {
+	return status >= http.StatusOK && status < http.StatusMultipleChoices
+}
+
 func (e *TokenEndpointError) Error() string {
-	if e.StatusCode == http.StatusOK {
+	if is2xxStatus(e.StatusCode) {
 		return "token response missing access_token, body: " + e.Body
 	}
 	return fmt.Sprintf("token request failed with status %d: %s", e.StatusCode, e.Body)
@@ -1446,7 +1450,7 @@ func classifyTokenRejection(status int, body []byte) tokenRejection {
 		return rejectionClient
 	case status >= 500, status == http.StatusTooManyRequests, status == http.StatusRequestTimeout:
 		return rejectionTransient
-	case status == http.StatusOK, status == http.StatusBadRequest, code != "":
+	case is2xxStatus(status), status == http.StatusBadRequest, code != "":
 		return rejectionRequest
 	default:
 		// An unexplained 4xx such as a proxy's 403 page: retry, as before.
@@ -1582,7 +1586,7 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 			continue
 		}
 
-		if resp.StatusCode == http.StatusOK {
+		if is2xxStatus(resp.StatusCode) {
 			// Try to parse as JSON first
 			var tokenResponse schemas.OAuth2TokenExchangeResponse
 			if err := json.Unmarshal(body, &tokenResponse); err != nil {
