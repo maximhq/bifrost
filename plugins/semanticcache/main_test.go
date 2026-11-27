@@ -785,3 +785,244 @@ func dropSharedTestNamespace() {
 		}()
 	}
 }
+
+// TestAgentTurnsUseExactMatchOnly checks that a request offering tools, or carrying tool calls or tool
+// results, never runs a similarity search, while a plain chat request still does.
+func TestAgentTurnsUseExactMatchOnly(t *testing.T) {
+	// Every builder takes the subtest's t, so a fixture that fails to build fails only its own case.
+	plainChat := func(_ *testing.T) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest("Name the tallest mountain in Africa.", 0.7, 50)}
+	}
+	withTools := func(t *testing.T) *schemas.BifrostRequest {
+		req := plainChat(t)
+		req.ChatRequest.Params.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "read_file"}}}
+		return req
+	}
+	withWebSearch := func(t *testing.T) *schemas.BifrostRequest {
+		req := plainChat(t)
+		req.ChatRequest.Params.WebSearchOptions = &schemas.ChatWebSearchOptions{}
+		return req
+	}
+	withMCPServers := func(t *testing.T) *schemas.BifrostRequest {
+		req := plainChat(t)
+		req.ChatRequest.Params.MCPServers = []schemas.ChatMCPServer{{}}
+		return req
+	}
+	withToolResult := func(t *testing.T) *schemas.BifrostRequest {
+		req := plainChat(t)
+		req.ChatRequest.Input = append(req.ChatRequest.Input, schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("file contents")},
+		})
+		return req
+	}
+	responsesToolOutput := func(t *testing.T) *schemas.BifrostRequest {
+		req := responsesTurn("Name the tallest mountain in Africa.")
+		req.ResponsesRequest.Input = append(req.ResponsesRequest.Input, schemas.ResponsesMessage{
+			Type: bifrost.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: bifrost.Ptr("call-1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: bifrost.Ptr("Kilimanjaro")},
+			},
+		})
+		return req
+	}
+
+	// responsesItem puts one input item, decoded from its wire form, ahead of the user message of a
+	// plain Responses request.
+	responsesItem := func(raw string) func(t *testing.T) *schemas.BifrostRequest {
+		return func(t *testing.T) *schemas.BifrostRequest {
+			var item schemas.ResponsesMessage
+			if err := sonic.Unmarshal([]byte(raw), &item); err != nil {
+				t.Fatalf("decode input item: %v", err)
+			}
+			req := responsesTurn("Name the tallest mountain in Africa.")
+			req.ResponsesRequest.Input = append([]schemas.ResponsesMessage{item}, req.ResponsesRequest.Input...)
+			return req
+		}
+	}
+
+	cases := []struct {
+		name     string
+		build    func(t *testing.T) *schemas.BifrostRequest
+		semantic bool
+	}{
+		{"plain chat", plainChat, true},
+		{"plain responses", func(_ *testing.T) *schemas.BifrostRequest {
+			return responsesTurn("Name the tallest mountain in Africa.")
+		}, true},
+		{"responses with a reasoning item", responsesItem(`{"type":"reasoning","id":"rs_1","summary":[]}`), true},
+		{"chat offering tools", withTools, false},
+		{"chat with web search enabled", withWebSearch, false},
+		{"chat with mcp servers", withMCPServers, false},
+		{"chat with a tool result", withToolResult, false},
+		{"responses with a tool output", responsesToolOutput, false},
+		{"responses declaring tools in an input item", responsesItem(`{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}]}`), false},
+		{"responses with a tool search call", responsesItem(`{"type":"tool_search_call","id":"ts_1","status":"completed","arguments":{"query":"files"}}`), false},
+		{"responses with a tool search output", responsesItem(`{"type":"tool_search_output","id":"tso_1","status":"completed","tools":[{"type":"function","name":"read_file"}]}`), false},
+		{"responses with a web search call", responsesItem(`{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"kilimanjaro"}}`), false},
+		{"responses with a web fetch call", responsesItem(`{"type":"web_fetch_call","id":"wf_1","status":"completed"}`), false},
+		{"responses with a file search call", responsesItem(`{"type":"file_search_call","id":"fs_1","status":"completed","queries":["kilimanjaro"]}`), false},
+		{"responses with a code interpreter call", responsesItem(`{"type":"code_interpreter_call","id":"ci_1","status":"completed","container_id":"c_1","code":"1+1"}`), false},
+		{"responses with an image generation call", responsesItem(`{"type":"image_generation_call","id":"ig_1","status":"completed","result":"aGk="}`), false},
+		{"responses with an mcp tool list", responsesItem(`{"type":"mcp_list_tools","id":"ml_1","server_label":"files","tools":[{"name":"read_file","input_schema":{"type":"object"}}]}`), false},
+		{"responses with an mcp approval response", responsesItem(`{"type":"mcp_approval_response","approval_request_id":"mar_1","approve":true}`), false},
+		{"responses with an advisor call", responsesItem(`{"type":"advisor_call","id":"ad_1","status":"completed"}`), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := &semanticFilterStore{observableStore: newObservableStore()}
+			plugin := identityScopeTestPlugin(t, store, `{"provider": "openai", "embedding_model": "text-embedding-3-small", "dimension": 3}`)
+			embedded := 0
+			plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+				embedded++
+				return &schemas.BifrostEmbeddingResponse{
+					Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}}}},
+				}, nil
+			})
+			cacheHits(t, plugin, CreateContextWithCacheKey(t, ""), c.build(t))
+			store.mu.Lock()
+			searched := len(store.searches) > 0
+			store.mu.Unlock()
+			if searched != c.semantic || (embedded > 0) != c.semantic {
+				t.Fatalf("similarity search ran = %t, embedding requested = %t, want both %t", searched, embedded > 0, c.semantic)
+			}
+		})
+	}
+}
+
+// TestAgentTurnSemanticOnlySkipsCache checks that a semantic-only lookup for a request that uses tools
+// skips the cache: it runs no lookup, keeps no request state and writes no entry for the response.
+func TestAgentTurnSemanticOnlySkipsCache(t *testing.T) {
+	offersTools := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest("List the files.", 0.7, 50)}
+	offersTools.ChatRequest.Params.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "list_files"}}}
+	carriesToolResult := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest("List the files.", 0.7, 50)}
+	carriesToolResult.ChatRequest.Input = append(carriesToolResult.ChatRequest.Input, schemas.ChatMessage{
+		Role:    schemas.ChatMessageRoleTool,
+		Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("main.go")},
+	})
+	for name, req := range map[string]*schemas.BifrostRequest{"offers tools": offersTools, "carries a tool result": carriesToolResult} {
+		t.Run(name, func(t *testing.T) {
+			store := &semanticFilterStore{observableStore: newObservableStore()}
+			plugin := identityScopeTestPlugin(t, store, `{"provider": "openai", "embedding_model": "text-embedding-3-small", "dimension": 3}`)
+			plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+				return &schemas.BifrostEmbeddingResponse{
+					Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}}}},
+				}, nil
+			})
+			ctx := CreateContextWithCacheKeyAndType(t, "", CacheTypeSemantic)
+			requestID := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+			if err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+			if shortCircuit != nil {
+				t.Fatal("a semantic-only lookup for a request that uses tools must not hit")
+			}
+			if lookup, ok := schemas.CacheLookupFromContext(ctx); ok {
+				t.Fatalf("expected no lookup to be recorded, got %+v", lookup)
+			}
+			if state := plugin.getCacheState(requestID); state != nil {
+				t.Fatalf("expected no request state to be kept, got %+v", state)
+			}
+
+			if _, _, err := plugin.PostLLMHook(ctx, identityTestChatResponse("answer"), nil); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+			plugin.WaitForPendingOperations()
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			if len(store.searches) != 0 {
+				t.Fatalf("expected no similarity search, got %d", len(store.searches))
+			}
+			if len(store.addIDs) != 0 {
+				t.Fatalf("expected no cache write, got entries %v", store.addIDs)
+			}
+		})
+	}
+}
+
+// BenchmarkAgentTurnCheck measures the tool scan a semantic lookup runs on every request: the scan
+// alone over each request shape, and a whole PreLLMHook lookup that includes it.
+func BenchmarkAgentTurnCheck(b *testing.B) {
+	const prompt = "Name the tallest mountain in Africa."
+	chat := func(turns int, tools bool) *schemas.BifrostRequest {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest(prompt, 0.7, 50)}
+		for len(req.ChatRequest.Input) < turns {
+			role := schemas.ChatMessageRoleAssistant
+			if len(req.ChatRequest.Input)%2 == 0 {
+				role = schemas.ChatMessageRoleUser
+			}
+			req.ChatRequest.Input = append(req.ChatRequest.Input, schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr(prompt)}})
+		}
+		if tools {
+			req.ChatRequest.Params.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "read_file"}}}
+		}
+		return req
+	}
+	responses := func(turns int, declaresTools bool) *schemas.BifrostRequest {
+		texts := make([]string, turns)
+		for i := range texts {
+			texts[i] = prompt
+		}
+		req := responsesTurn(texts...)
+		if declaresTools {
+			req.ResponsesRequest.Input = append(req.ResponsesRequest.Input, schemas.ResponsesMessage{Type: bifrost.Ptr(schemas.ResponsesMessageTypeAdditionalTools)})
+		}
+		return req
+	}
+	shapes := []struct {
+		name string
+		req  *schemas.BifrostRequest
+	}{
+		{"chat/plain", chat(1, false)},
+		{"chat/plain-41-turns", chat(41, false)},
+		{"chat/tools", chat(1, true)},
+		{"responses/plain", responses(1, false)},
+		{"responses/plain-41-turns", responses(41, false)},
+		{"responses/tools-in-last-item", responses(41, true)},
+	}
+	for _, shape := range shapes {
+		b.Run("scan/"+shape.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				isAgentTurn(shape.req)
+			}
+		})
+	}
+
+	plugin := &Plugin{
+		store: newObservableStore(),
+		config: &Config{
+			Provider:                     schemas.OpenAI,
+			EmbeddingModel:               "text-embedding-3-small",
+			Dimension:                    3,
+			TTL:                          5 * time.Minute,
+			Threshold:                    DefaultCacheThreshold,
+			ConversationHistoryThreshold: DefaultConversationHistoryThreshold,
+		},
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+		stopCh: make(chan struct{}),
+	}
+	embedding := &schemas.BifrostEmbeddingResponse{
+		Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}}}},
+	}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embedding, nil
+	})
+	for _, shape := range []int{0, 2} {
+		shape := shapes[shape]
+		b.Run("hook/"+shape.name, func(b *testing.B) {
+			ctx := CreateContextWithCacheKey(b, "")
+			requestID := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, err := plugin.PreLLMHook(ctx, shape.req); err != nil {
+					b.Fatal(err)
+				}
+				plugin.clearCacheState(requestID)
+			}
+		})
+	}
+}
