@@ -101,6 +101,7 @@ Sarvam's Token Factory v2 chat completions endpoint is OpenAI-compatible, so Bif
 | `glm5.3-flash` | 1,048,576 | Faster, lower-cost reasoning model |
 | `gemma4` | 262,144 | Google Gemma 4; reasoning available, off by default |
 | `deepseekv4.1-flash-1017` | 1,048,576 | DeepSeek V4.1 Flash; reasoning model |
+| `deepseekv4.1-flash-1017-interactive` | 1,048,576 | Interactive variant of DeepSeek V4.1 Flash; reasoning model |
 
 <Note>
 **Breaking change.** `sarvam-30b` is not served by Token Factory v2; a request for it returns 404. Replace it with `sarvam-105b`.
@@ -116,7 +117,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 <Note>
-**Reasoning models.** `sarvam-105b`, `glm5.3`, `glm5.3-flash`, and `deepseekv4.1-flash-1017` reason by default; `gemma4` supports reasoning but leaves it off unless requested. Reasoning tokens count toward `max_tokens`; with a small budget the response can return empty `content` and `finish_reason: "length"`. Use at least 1024 output tokens for reasoning models. Set `reasoning_effort` to `low`, `high`, or `max`; GLM models reject `medium` and `xhigh`.
+**Reasoning models.** `sarvam-105b`, `glm5.3`, `glm5.3-flash`, `deepseekv4.1-flash-1017`, and `deepseekv4.1-flash-1017-interactive` reason by default; `gemma4` supports reasoning but leaves it off unless requested. Reasoning tokens count toward `max_tokens`; with a small budget the response can return empty `content` and `finish_reason: "length"`. Use at least 1024 output tokens for reasoning models. Set `reasoning_effort` to `low`, `high`, or `max`; GLM models reject `medium` and `xhigh`.
 </Note>
 
 ---
@@ -260,7 +261,7 @@ Bifrost applies the correct header per operation automatically.
 <Accordion title="Reasoning models need a larger output budget">
 **Severity**: Medium
 **Behavior**: Reasoning tokens count toward `max_tokens`. A small cap can leave `content` empty with `finish_reason: "length"`.
-**Impact**: Use at least 1024 output tokens for `sarvam-105b`, `glm5.3`, `glm5.3-flash`, and `deepseekv4.1-flash-1017`, or set `reasoning_effort` to `low`.
+**Impact**: Use at least 1024 output tokens for `sarvam-105b`, `glm5.3`, `glm5.3-flash`, `deepseekv4.1-flash-1017`, and `deepseekv4.1-flash-1017-interactive`, or set `reasoning_effort` to `low`.
 </Accordion>
 
 <Accordion title="Model-specific parameter limits">
