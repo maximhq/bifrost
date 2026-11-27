@@ -1029,12 +1029,15 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if provider.disableStore {
 		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
+	if bifrostErr := provider.rewriteLargePayloadToolSchemas(ctx); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 
 	return HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionRequest),
-		request,
+		provider.normalizeChatToolSchemas(request),
 		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -1265,13 +1268,16 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	if provider.disableStore {
 		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
+	if bifrostErr := provider.rewriteLargePayloadToolSchemas(ctx); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 
 	// Use shared streaming logic
 	return HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionStreamRequest),
-		request,
+		provider.normalizeChatToolSchemas(request),
 		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
@@ -2113,12 +2119,15 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	if provider.disableStore {
 		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
+	if bifrostErr := provider.rewriteLargePayloadToolSchemas(ctx); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 
 	return HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesRequest),
-		request,
+		provider.normalizeResponsesToolSchemas(request),
 		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -2307,13 +2316,16 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if provider.disableStore {
 		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
+	if bifrostErr := provider.rewriteLargePayloadToolSchemas(ctx); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 
 	// Use shared streaming logic
 	return HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest),
-		request,
+		provider.normalizeResponsesToolSchemas(request),
 		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
