@@ -97,6 +97,7 @@ export function ConnectPanel({
 	const [canCreateProjects, setCanCreateProjects] = useState(true);
 	const [logContent, setLogContent] = useState(true);
 	const [canReadPrompts, setCanReadPrompts] = useState(false);
+	const [canUseDatasets, setCanUseDatasets] = useState(false);
 	const [newKeyValue, setNewKeyValue] = useState<string | null>(null);
 
 	const keys = keysData?.keys ?? [];
@@ -127,6 +128,7 @@ export function ConnectPanel({
 				can_create_projects: canCreateProjects,
 				log_content: logContent,
 				can_read_prompts: canReadPrompts,
+				can_use_datasets: canUseDatasets,
 			}).unwrap();
 			setNewKeyValue(result.value);
 			setKeyName("");
@@ -148,6 +150,7 @@ export function ConnectPanel({
 					log_content: key.log_content,
 					can_create_projects: key.can_create_projects,
 					can_read_prompts: key.can_read_prompts,
+					can_use_datasets: key.can_use_datasets,
 					enabled: !key.enabled,
 				},
 			}).unwrap();
@@ -256,6 +259,10 @@ export function ConnectPanel({
 							<label className="flex items-center gap-2 text-sm md:col-span-2">
 								<Switch checked={canReadPrompts} onCheckedChange={setCanReadPrompts} data-testid="tracing-key-read-prompts-switch" />
 								{t("tracing.connect.canReadPrompts")}
+							</label>
+							<label className="flex items-center gap-2 text-sm md:col-span-2">
+								<Switch checked={canUseDatasets} onCheckedChange={setCanUseDatasets} data-testid="tracing-key-use-datasets-switch" />
+								{t("tracing.connect.canUseDatasets")}
 							</label>
 							<div className="md:col-span-2">
 								<Button
