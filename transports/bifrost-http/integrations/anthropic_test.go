@@ -544,6 +544,146 @@ func TestCheckAnthropicPassthrough_OAuthHeaderRouting(t *testing.T) {
 	}
 }
 
+// TestCheckAnthropicPassthrough_APIKeyPreservesExtraHeaders verifies that the API-key
+// passthrough branch merges passthroughSafeHeaders into any BifrostContextKeyExtraHeaders
+// already collected by ConvertToBifrostContext (via header_filter_config.allowlist or
+// x-bf-eh-*) instead of overwriting the map and dropping headers like user-agent.
+func TestCheckAnthropicPassthrough_APIKeyPreservesExtraHeaders(t *testing.T) {
+	lookup := func(m map[string][]string, name string) []string {
+		for k, v := range m {
+			if strings.EqualFold(k, name) {
+				return v
+			}
+		}
+		return nil
+	}
+
+	t.Run("merges safe passthrough headers without clobbering existing extra headers", func(t *testing.T) {
+		reqCtx := &fasthttp.RequestCtx{}
+		reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+		reqCtx.Request.Header.Set("user-agent", "claude-cli/2.1.0 (external, cli)")
+		reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+		reqCtx.Request.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+		reqCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+		reqCtx.Request.Header.Set("x-bf-vk", "sk-bf-must-not-leak")
+		reqCtx.Request.Header.Set("x-forwarded-for", "10.30.10.147")
+		reqCtx.Request.Header.Set("x-claude-code-session-id", "sess-1")
+
+		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		existing := map[string][]string{
+			"user-agent":       {"claude-cli/2.1.0 (external, cli)"},
+			"my-custom-header": {"kept"},
+		}
+		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, existing)
+
+		req := &anthropic.AnthropicMessageRequest{Model: "claude-opus-5-5", MaxTokens: 1024}
+		require.NoError(t, checkAnthropicPassthrough(reqCtx, bifrostCtx, req))
+
+		extra, ok := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		require.True(t, ok)
+
+		// Pre-existing forwarded headers must survive.
+		require.Equal(t, []string{"claude-cli/2.1.0 (external, cli)"}, lookup(extra, "user-agent"))
+		require.Equal(t, []string{"kept"}, lookup(extra, "my-custom-header"))
+
+		// Whitelisted Anthropic headers from the request are merged in.
+		require.Equal(t, []string{"interleaved-thinking-2025-05-14"}, lookup(extra, "anthropic-beta"))
+		require.Equal(t, []string{"2023-06-01"}, lookup(extra, "anthropic-version"))
+
+		// Unlisted raw headers must not leak into BifrostContextKeyExtraHeaders.
+		for _, leaked := range []string{"x-api-key", "x-bf-vk", "x-forwarded-for", "x-claude-code-session-id"} {
+			require.Nil(t, lookup(extra, leaked), "%q must not leak into BifrostContextKeyExtraHeaders", leaked)
+		}
+
+		// Original map passed via context must not be mutated in place.
+		require.Nil(t, existing["anthropic-beta"])
+		require.Nil(t, existing["anthropic-version"])
+	})
+
+	t.Run("does not duplicate or overwrite existing safe header case-insensitively", func(t *testing.T) {
+		reqCtx := &fasthttp.RequestCtx{}
+		reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+		reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
+		reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+		reqCtx.Request.Header.Set("anthropic-beta", "raw-beta")
+		reqCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+
+		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			"Anthropic-Beta": {"explicit-extra-beta"},
+			"user-agent":     {"claude-code/1.0"},
+		})
+
+		req := &anthropic.AnthropicMessageRequest{Model: "claude-opus-5-5", MaxTokens: 1024}
+		require.NoError(t, checkAnthropicPassthrough(reqCtx, bifrostCtx, req))
+
+		extra, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		require.Equal(t, []string{"explicit-extra-beta"}, extra["Anthropic-Beta"])
+		require.Nil(t, extra["anthropic-beta"])
+		require.Equal(t, []string{"2023-06-01"}, extra["anthropic-version"])
+		require.Equal(t, []string{"claude-code/1.0"}, extra["user-agent"])
+	})
+
+	t.Run("populates safe passthrough headers when no extra headers were pre-populated", func(t *testing.T) {
+		reqCtx := &fasthttp.RequestCtx{}
+		reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+		reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
+		reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+		reqCtx.Request.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+		reqCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+
+		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		req := &anthropic.AnthropicMessageRequest{Model: "claude-opus-5-5", MaxTokens: 1024}
+		require.NoError(t, checkAnthropicPassthrough(reqCtx, bifrostCtx, req))
+
+		extra, ok := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		require.True(t, ok)
+		require.Equal(t, []string{"interleaved-thinking-2025-05-14"}, lookup(extra, "anthropic-beta"))
+		require.Equal(t, []string{"2023-06-01"}, lookup(extra, "anthropic-version"))
+		require.Nil(t, lookup(extra, "user-agent"))
+	})
+}
+
+func BenchmarkCheckAnthropicPassthrough_APIKey(b *testing.B) {
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	reqCtx.Request.Header.Set("user-agent", "claude-cli/2.1.0 (external, cli)")
+	reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+	reqCtx.Request.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+	reqCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+	req := &anthropic.AnthropicMessageRequest{Model: "claude-opus-5-5", MaxTokens: 1024}
+
+	b.Run("without_existing_extra_headers", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("with_existing_extra_headers", func(b *testing.B) {
+		existing := map[string][]string{
+			"user-agent":       {"claude-cli/2.1.0 (external, cli)"},
+			"my-custom-header": {"kept"},
+		}
+		b.ReportAllocs()
+		for b.Loop() {
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, existing)
+			if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 // TestIsClaudeModel_MultiFamilyProvidersResolveFamily locks in that the response-side raw
 // passthrough decision resolves the model family instead of sniffing names. An alias labelled
 // "claude-opus" on Bedrock Mantle may point at an OpenAI model; forwarding that provider's

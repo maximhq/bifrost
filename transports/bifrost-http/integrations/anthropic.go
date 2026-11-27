@@ -328,6 +328,18 @@ func extractPassthroughHeaders(allHeaders map[string][]string) map[string][]stri
 	return filtered
 }
 
+func hasHeaderKeyFold(headers map[string][]string, target string) bool {
+	if _, ok := headers[target]; ok {
+		return true
+	}
+	for k := range headers {
+		if strings.EqualFold(k, target) {
+			return true
+		}
+	}
+	return false
+}
+
 func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	return []RouteConfig{
 		{
@@ -426,10 +438,25 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			// So if you are changing the behaviour of this key, make sure to change IsClaudeCodeMaxMode as well
 			bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 		} else {
-			// API key flow: pass only whitelisted safe headers (like anthropic-beta for feature detection)
+			// API key flow: merge whitelisted safe headers (like anthropic-beta for feature detection)
+			// into any extra headers already collected by ConvertToBifrostContext (x-bf-eh-* or
+			// header_filter_config.allowlist) so caller-forwarded headers such as User-Agent survive.
 			passthroughHeaders := extractPassthroughHeaders(headers)
 			if len(passthroughHeaders) > 0 {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
+				if existing, ok := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok && len(existing) > 0 {
+					merged := make(map[string][]string, len(existing)+len(passthroughHeaders))
+					for k, v := range existing {
+						merged[k] = v
+					}
+					for k, v := range passthroughHeaders {
+						if !hasHeaderKeyFold(merged, k) {
+							merged[k] = v
+						}
+					}
+					bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, merged)
+				} else {
+					bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
+				}
 			}
 		}
 		// These providers convert output_config.format through Bifrost, including
