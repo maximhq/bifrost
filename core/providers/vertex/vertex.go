@@ -1593,6 +1593,8 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		return response, nil
+	} else if isOpenAIPublisherModel(ctx, request.Model) {
+		return provider.openAIPublisherResponses(ctx, key, request)
 	} else {
 		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 		if err != nil {
@@ -1788,6 +1790,8 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			provider.logger,
 			postHookSpanFinalizer,
 		)
+	} else if isOpenAIPublisherModel(ctx, request.Model) {
+		return provider.openAIPublisherResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	} else {
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 		return provider.ChatCompletionStream(

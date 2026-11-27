@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"context"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -40,7 +41,7 @@ func openAIEndpointURL(ctx *schemas.BifrostContext, key schemas.Key, endpoint *s
 
 func (provider *VertexProvider) openAIEndpointAuth(key schemas.Key) (map[string]string, *schemas.BifrostError) {
 	if key.VertexKeyConfig == nil {
-		return nil, providerUtils.NewConfigurationError("vertex key config is required for a Vertex custom endpoint")
+		return nil, providerUtils.NewConfigurationError("vertex key config is required")
 	}
 	source, err := provider.getAuthTokenSource(key)
 	if err != nil {
@@ -97,6 +98,74 @@ func (provider *VertexProvider) openAIChatCompletionStream(ctx *schemas.BifrostC
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(), postHookRunner, nil, nil, provider.openAIEndpointError(key), nil, nil, nil,
+		provider.logger, postHookSpanFinalizer,
+	)
+}
+
+// isOpenAIPublisherModel reports whether model is served by the openai publisher's
+// Responses endpoint (GPT-6 and later). gpt-oss stays on the openapi MaaS endpoint.
+func isOpenAIPublisherModel(ctx *schemas.BifrostContext, model string) bool {
+	return schemas.IsOpenAIModelFamily(ctx, model) &&
+		!strings.Contains(strings.ToLower(schemas.ResolveCanonicalModel(ctx, model)), "gpt-oss")
+}
+
+// openAIPublisherResponsesURL is the openai publisher's native Responses endpoint.
+func openAIPublisherResponsesURL(ctx *schemas.BifrostContext, key schemas.Key) (string, *schemas.BifrostError) {
+	projectID := resolveVertexProjectID(ctx, key)
+	if projectID == "" {
+		return "", providerUtils.NewConfigurationError("project ID is not set")
+	}
+	region := resolveVertexRegion(ctx, key)
+	if region == "" {
+		return "", providerUtils.NewConfigurationError("region is not set in key config")
+	}
+	return getVertexProjectLocationURL(region, "v1", projectID) + "/publishers/openai/v1/responses", nil
+}
+
+// withBareOpenAIModel strips an "openai/" prefix, since the endpoint takes the bare model
+// name. The caller's request is copied rather than changed.
+func withBareOpenAIModel(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	model, ok := strings.CutPrefix(request.Model, "openai/")
+	if !ok {
+		return request
+	}
+	bare := *request
+	bare.Model = model
+	return &bare
+}
+
+func (provider *VertexProvider) openAIPublisherResponses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	url, err := openAIPublisherResponsesURL(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	headers, err := provider.openAIEndpointAuth(key)
+	if err != nil {
+		return nil, err
+	}
+	return openai.HandleOpenAIResponsesRequest(
+		ctx, provider.client, url, withBareOpenAIModel(request), headers, provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(), nil, provider.openAIEndpointError(key), nil, provider.logger,
+	)
+}
+
+func (provider *VertexProvider) openAIPublisherResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	url, err := openAIPublisherResponsesURL(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	headers, err := provider.openAIEndpointAuth(key)
+	if err != nil {
+		return nil, err
+	}
+	return openai.HandleOpenAIResponsesStreaming(
+		ctx, provider.streamingClient, url, withBareOpenAIModel(request), headers, provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(), postHookRunner, nil, provider.openAIEndpointError(key), nil, nil, nil,
 		provider.logger, postHookSpanFinalizer,
 	)
 }

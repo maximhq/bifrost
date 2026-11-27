@@ -352624,6 +352624,1661 @@
           }
         }
       ]
+    },
+    {
+      "name": "385. Vertex serves GPT-6 on the openai publisher Responses endpoint (vertex openai responses)",
+      "description": "Pins Vertex routing of OpenAI GPT-6 models on the native Responses route (isOpenAIPublisherModel / openAIPublisherResponses in core/providers/vertex/openai.go).\n\nVertex serves GPT-6 (gpt-6.2-sol, gpt-6.2-astra, ...) only on the openai publisher's native Responses endpoint: POST /v1/projects/{p}/locations/global/publishers/openai/v1/responses with an unmodified OpenAI Responses body and the bare model name. Its /publishers/openai/v1/chat/completions answers 404 and a regional location answers 500.\n\nBefore: Vertex converted every non-Gemini, non-Claude Responses request to chat and sent it to /v1beta1/.../endpoints/openapi/chat/completions (the gpt-oss MaaS endpoint), which rejects these models. After: they go to the publisher Responses endpoint, and the OpenAI Responses converter drops temperature for these reasoning models as it does on OpenAI, Azure and Bedrock.\n\nCases: 385.1-385.3 pin the route itself (unary, streaming usage on response.completed, temperature dropped). 385.4 onward cover what users reach it with: Responses capabilities on /v1/responses (instructions and multi-turn, forced and parallel function calls, function_call_output round trip, streamed function calls, json_schema output, reasoning summary, verbosity and prompt_cache_key, image and PDF URLs which Bifrost downloads and inlines, previous_response_id against the stored response, and Vertex's 400 for hosted tools); the other routes that become a Responses request (/openai/v1/responses, /litellm/v1/responses, /anthropic/v1/messages, /genai generateContent and streamGenerateContent); and /v1/chat/completions, which the compat plugin (convert_chat_to_responses, forced here with x-bf-compat) converts to Responses because the datasheet lists no chat endpoint for these models. Needs a Vertex key at location global whose project has the GPT-6 models enabled in Model Garden.",
+      "item": [
+        {
+          "name": "385.1 vertex/gpt-6.2-sol /v1/responses reaches the openai publisher Responses endpoint - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"input\":\"Reply with the single word pong and nothing else.\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":256}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol responses: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var text = (j.output || []).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('native Responses reply with text and usage - vertex openai responses', function () {",
+                  "  pm.expect(j.object, 'expected a Responses object: ' + pm.response.text().slice(0, 600)).to.equal('response');",
+                  "  pm.expect(text.toLowerCase(), 'no output text: ' + pm.response.text().slice(0, 600)).to.include('pong');",
+                  "  pm.expect((j.usage || {}).input_tokens, 'usage.input_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "  pm.expect((j.usage || {}).output_tokens, 'usage.output_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.2 vertex/gpt-6.2-sol /v1/responses streaming reaches the openai publisher Responses endpoint - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"input\":\"Reply with the single word pong and nothing else.\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":256,\"stream\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol responses stream: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var text = '';",
+                  "var completed = null;",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  var ev; try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.type === 'response.output_text.delta') { text += ev.delta || ''; }",
+                  "  if (ev.type === 'response.completed') { completed = ev.response || {}; }",
+                  "});",
+                  "pm.test('native Responses events with text and usage on response.completed - vertex openai responses', function () {",
+                  "  pm.expect(text.toLowerCase(), 'no output_text deltas: ' + body.slice(0, 600)).to.include('pong');",
+                  "  pm.expect(completed, 'no response.completed event: ' + body.slice(-600)).to.not.equal(null);",
+                  "  pm.expect(((completed || {}).usage || {}).output_tokens, 'usage missing on response.completed: ' + JSON.stringify((completed || {}).usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.3 vertex/gpt-6.2-sol /v1/responses with temperature succeeds (temperature dropped for the reasoning model) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"input\":\"Reply with the single word pong and nothing else.\",\"reasoning\":{\"effort\":\"low\"},\"temperature\":0.7,\"max_output_tokens\":256}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol responses with temperature: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var text = (j.output || []).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('native Responses reply with text and usage - vertex openai responses', function () {",
+                  "  pm.expect(j.object, 'expected a Responses object: ' + pm.response.text().slice(0, 600)).to.equal('response');",
+                  "  pm.expect(text.toLowerCase(), 'no output text: ' + pm.response.text().slice(0, 600)).to.include('pong');",
+                  "  pm.expect((j.usage || {}).input_tokens, 'usage.input_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "  pm.expect((j.usage || {}).output_tokens, 'usage.output_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.4 vertex/gpt-6.2-sol /v1/responses instructions and multi-turn input - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"instructions\":\"Always answer in uppercase letters.\",\"input\":[{\"role\":\"user\",\"content\":\"My favourite colour is teal. Remember it.\"},{\"role\":\"assistant\",\"content\":\"Noted, teal.\"},{\"role\":\"user\",\"content\":\"What is my favourite colour? One word.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol instructions + multi-turn: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('earlier turns and instructions reach the model - vertex openai responses', function () {",
+                  "  pm.expect(text, 'no output text: ' + pm.response.text().slice(0, 600)).to.include('TEAL');",
+                  "  pm.expect((j.usage || {}).input_tokens, 'usage.input_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "  pm.expect((j.usage || {}).output_tokens, 'usage.output_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.5 vertex/gpt-6.2-sol /v1/responses function tool call with forced tool_choice - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false},\"strict\":true}],\"tool_choice\":{\"type\":\"function\",\"name\":\"get_weather\"},\"input\":\"What is the weather in Paris?\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol forced function call: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('function_call for get_weather with a city argument - vertex openai responses', function () {",
+                  "  pm.expect(calls.length, 'no function_call item: ' + pm.response.text().slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(calls[0].name).to.equal('get_weather');",
+                  "  pm.expect(calls[0].call_id, 'call_id missing').to.be.a('string').and.not.empty;",
+                  "  pm.expect(JSON.parse(calls[0].arguments || '{}').city || '', 'city argument: ' + calls[0].arguments).to.match(/paris/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.6 vertex/gpt-6.2-sol /v1/responses function_call_output round trip - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false},\"strict\":true}],\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris?\"},{\"type\":\"function_call\",\"call_id\":\"call_harness_385\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_harness_385\",\"output\":\"{\\\"temp_c\\\":21,\\\"sky\\\":\\\"sunny\\\"}\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol tool result round trip: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('answer uses the tool output - vertex openai responses', function () {",
+                  "  pm.expect(text, 'no output text: ' + pm.response.text().slice(0, 600)).to.match(/21|sunny/i);",
+                  "  pm.expect((j.usage || {}).input_tokens, 'usage.input_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "  pm.expect((j.usage || {}).output_tokens, 'usage.output_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.7 vertex/gpt-6.2-sol /v1/responses streaming function call - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"stream\":true,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false},\"strict\":true}],\"tool_choice\":\"required\",\"input\":\"What is the weather in Berlin?\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol streaming function call: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var events = [];",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(data)); } catch (e) {}",
+                  "});",
+                  "var argDeltas = events.filter(function (e) { return e.type === 'response.function_call_arguments.delta'; });",
+                  "var doneItem = events.filter(function (e) { return e.type === 'response.output_item.done' && e.item && e.item.type === 'function_call'; })[0];",
+                  "var completed = events.filter(function (e) { return e.type === 'response.completed'; })[0];",
+                  "pm.test('argument deltas, a done function_call item and usage - vertex openai responses', function () {",
+                  "  pm.expect(argDeltas.length, 'no function_call_arguments.delta: ' + body.slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(doneItem, 'no output_item.done for the function_call: ' + body.slice(-800)).to.exist;",
+                  "  pm.expect(doneItem.item.name).to.equal('get_weather');",
+                  "  pm.expect(JSON.parse(doneItem.item.arguments || '{}').city || '', 'city: ' + doneItem.item.arguments).to.match(/berlin/i);",
+                  "  pm.expect(((completed || {}).response || {}).usage, 'usage missing on response.completed').to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.8 vertex/gpt-6.2-sol /v1/responses parallel tool calls - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"parallel_tool_calls\":true,\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false},\"strict\":true}],\"input\":\"Get the weather in Paris and in London. Call the tool for both cities at once.\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol parallel tool calls: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('two function_call items in one turn - vertex openai responses', function () {",
+                  "  pm.expect(calls.length, 'function calls: ' + pm.response.text().slice(0, 800)).to.be.at.least(2);",
+                  "  var cities = calls.map(function (c) { return (JSON.parse(c.arguments || '{}').city || '').toLowerCase(); }).join(' ');",
+                  "  pm.expect(cities).to.include('paris');",
+                  "  pm.expect(cities).to.include('london');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.9 vertex/gpt-6.2-sol /v1/responses structured output json_schema - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"input\":\"Give the capital of France.\",\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"capital\",\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\"},\"capital\":{\"type\":\"string\"}},\"required\":[\"country\",\"capital\"],\"additionalProperties\":false}}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol json_schema: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('output text is JSON matching the schema - vertex openai responses', function () {",
+                  "  var parsed = null; try { parsed = JSON.parse(text); } catch (e) {}",
+                  "  pm.expect(parsed, 'output is not JSON: ' + text).to.be.an('object');",
+                  "  pm.expect(parsed.capital || '').to.match(/paris/i);",
+                  "  pm.expect(parsed).to.have.property('country');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.10 vertex/gpt-6.2-sol /v1/responses reasoning effort medium with summary auto - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"medium\",\"summary\":\"auto\"},\"max_output_tokens\":2048,\"input\":\"Is 8633 a prime number? Answer yes or no.\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol reasoning summary: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "var reasoning = out.filter(function (o) { return o.type === 'reasoning'; });",
+                  "pm.test('reasoning item and reasoning tokens come back - vertex openai responses', function () {",
+                  "  pm.expect(reasoning.length, 'no reasoning item: ' + pm.response.text().slice(0, 800)).to.be.above(0);",
+                  "  pm.expect((((j.usage || {}).output_tokens_details) || {}).reasoning_tokens, 'reasoning_tokens: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "  pm.expect(text.toLowerCase(), 'no answer: ' + pm.response.text().slice(0, 600)).to.match(/yes|no/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.11 vertex/gpt-6.2-sol /v1/responses text verbosity and prompt_cache_key accepted - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"text\":{\"verbosity\":\"low\"},\"prompt_cache_key\":\"harness-vertex-gpt6\",\"input\":\"Reply with the single word pong and nothing else.\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol verbosity + prompt_cache_key: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('reply with text and usage - vertex openai responses', function () {",
+                  "  pm.expect(text.toLowerCase(), 'no output text: ' + pm.response.text().slice(0, 600)).to.include('pong');",
+                  "  pm.expect((j.usage || {}).input_tokens, 'usage.input_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "  pm.expect((j.usage || {}).output_tokens, 'usage.output_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.12 vertex/gpt-6.2-sol /v1/responses image input from a URL - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"What food is in this image? One word.\"},{\"type\":\"input_image\",\"image_url\":\"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol image URL: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('the image reaches the model - vertex openai responses', function () {",
+                  "  pm.expect(text, 'no output text: ' + pm.response.text().slice(0, 600)).to.not.be.empty;",
+                  "  pm.expect((j.usage || {}).input_tokens, 'image tokens not counted: ' + JSON.stringify(j.usage)).to.be.above(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.13 vertex/gpt-6.2-sol /v1/responses PDF input_file from a URL - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"What is the title text of this PDF? Short.\"},{\"type\":\"input_file\",\"file_url\":\"https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol PDF URL: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('the PDF text reaches the model - vertex openai responses', function () {",
+                  "  pm.expect(text, 'no output text: ' + pm.response.text().slice(0, 600)).to.match(/dummy/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.14 vertex/gpt-6.2-sol /v1/responses first turn for previous_response_id - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"input\":\"My code word is HERON. Reply OK.\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol previous_response_id producer: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('stored response id - vertex openai responses', function () {",
+                  "  pm.expect(j.id, 'no response id: ' + pm.response.text().slice(0, 600)).to.match(/^resp_/);",
+                  "});",
+                  "pm.collectionVariables.set('vertexGpt6PrevResponseId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.15 vertex/gpt-6.2-sol /v1/responses previous_response_id continues the stored turn - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"previous_response_id\":\"{{vertexGpt6PrevResponseId}}\",\"input\":\"What is my code word? One word.\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol previous_response_id: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('the earlier turn is recalled from the stored response - vertex openai responses', function () {",
+                  "  pm.expect(text, 'no output text: ' + pm.response.text().slice(0, 600)).to.match(/heron/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.16 vertex/gpt-6.2-sol /v1/responses hosted web_search tool [EXPECT-400] - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"tools\":[{\"type\":\"web_search\"}],\"input\":\"One headline from today.\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol hosted tool rejected upstream: 400 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(400);",
+                  "});",
+                  "if (pm.response.code !== 400) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "pm.test('Vertex rejection is surfaced as a client error - vertex openai responses', function () {",
+                  "  pm.expect(((j.error || {}).message || ''), 'error: ' + pm.response.text().slice(0, 600)).to.match(/hosted tools/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.17 vertex/gpt-6.2-sol /openai/v1/responses (OpenAI SDK route) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"input\":\"Reply with the single word pong and nothing else.\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol /openai/v1/responses: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('Responses reply with text and usage - vertex openai responses', function () {",
+                  "  pm.expect(j.object, 'expected a Responses object: ' + pm.response.text().slice(0, 600)).to.equal('response');",
+                  "  pm.expect(text.toLowerCase(), 'no output text: ' + pm.response.text().slice(0, 600)).to.include('pong');",
+                  "  pm.expect((j.usage || {}).input_tokens, 'usage.input_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "  pm.expect((j.usage || {}).output_tokens, 'usage.output_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.18 vertex/gpt-6.2-sol /openai/v1/responses streaming (OpenAI SDK route) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"stream\":true,\"input\":\"Reply with the single word pong and nothing else.\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol /openai/v1/responses stream: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var events = [];",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(data)); } catch (e) {}",
+                  "});",
+                  "var text = events.filter(function (e) { return e.type === 'response.output_text.delta'; }).map(function (e) { return e.delta || ''; }).join('');",
+                  "var completed = events.filter(function (e) { return e.type === 'response.completed'; })[0];",
+                  "pm.test('Responses events with text and usage - vertex openai responses', function () {",
+                  "  pm.expect(text.toLowerCase(), 'no output_text deltas: ' + body.slice(0, 600)).to.include('pong');",
+                  "  pm.expect((((completed || {}).response || {}).usage || {}).output_tokens, 'usage missing on response.completed').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.19 vertex/gpt-6.2-sol /litellm/v1/responses (LiteLLM route) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/litellm/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"input\":\"Reply with the single word pong and nothing else.\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol /litellm/v1/responses: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var text = out.map(function (o) { return o.type === 'message' ? (o.content || []).map(function (c) { return c.text || ''; }).join('') : ''; }).join('');",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('Responses reply with text and usage - vertex openai responses', function () {",
+                  "  pm.expect(j.object, 'expected a Responses object: ' + pm.response.text().slice(0, 600)).to.equal('response');",
+                  "  pm.expect(text.toLowerCase(), 'no output text: ' + pm.response.text().slice(0, 600)).to.include('pong');",
+                  "  pm.expect((j.usage || {}).input_tokens, 'usage.input_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "  pm.expect((j.usage || {}).output_tokens, 'usage.output_tokens missing: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.20 vertex/gpt-6.2-sol /anthropic/v1/messages (Anthropic SDK route) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word pong and nothing else.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol /anthropic/v1/messages: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var text = (j.content || []).map(function (b) { return b.text || ''; }).join('');",
+                  "pm.test('Anthropic Messages reply with text and usage - vertex openai responses', function () {",
+                  "  pm.expect(j.type, 'expected a message: ' + pm.response.text().slice(0, 600)).to.equal('message');",
+                  "  pm.expect(text.toLowerCase(), 'no text block: ' + pm.response.text().slice(0, 600)).to.include('pong');",
+                  "  pm.expect(j.stop_reason).to.equal('end_turn');",
+                  "  pm.expect((j.usage || {}).output_tokens, 'usage: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.21 vertex/gpt-6.2-sol /anthropic/v1/messages streaming (Anthropic SDK route) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"max_tokens\":512,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word pong and nothing else.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol /anthropic/v1/messages stream: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var events = [];",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(data)); } catch (e) {}",
+                  "});",
+                  "var text = events.filter(function (e) { return e.type === 'content_block_delta'; }).map(function (e) { return (e.delta || {}).text || ''; }).join('');",
+                  "var types = events.map(function (e) { return e.type; });",
+                  "var delta = events.filter(function (e) { return e.type === 'message_delta'; })[0] || {};",
+                  "pm.test('Anthropic stream events with text and usage - vertex openai responses', function () {",
+                  "  pm.expect(types, 'events: ' + body.slice(0, 600)).to.include.members(['message_start', 'content_block_delta', 'message_delta', 'message_stop']);",
+                  "  pm.expect(text.toLowerCase(), 'no text deltas: ' + body.slice(0, 600)).to.include('pong');",
+                  "  pm.expect((delta.usage || {}).output_tokens, 'usage on message_delta: ' + JSON.stringify(delta)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.22 vertex/gpt-6.2-sol /anthropic/v1/messages tool_use (Anthropic SDK route) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"max_tokens\":512,\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":{\"type\":\"any\"},\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Rome?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol /anthropic/v1/messages tool_use: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var uses = (j.content || []).filter(function (b) { return b.type === 'tool_use'; });",
+                  "pm.test('tool_use block with the city - vertex openai responses', function () {",
+                  "  pm.expect(uses.length, 'no tool_use: ' + pm.response.text().slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(uses[0].name).to.equal('get_weather');",
+                  "  pm.expect((uses[0].input || {}).city || '').to.match(/rome/i);",
+                  "  pm.expect(j.stop_reason).to.equal('tool_use');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.23 vertex/gpt-6.2-sol /genai generateContent (GenAI SDK route) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gpt-6.2-sol:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gpt-6.2-sol:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word pong and nothing else.\"}]}],\"generationConfig\":{\"maxOutputTokens\":512}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol /genai generateContent: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var parts = (((j.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "var text = parts.map(function (p) { return p.text || ''; }).join('');",
+                  "pm.test('GenAI reply with text and usageMetadata - vertex openai responses', function () {",
+                  "  pm.expect(text.toLowerCase(), 'no text part: ' + pm.response.text().slice(0, 600)).to.include('pong');",
+                  "  pm.expect((j.usageMetadata || {}).totalTokenCount, 'usageMetadata: ' + JSON.stringify(j.usageMetadata)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.24 vertex/gpt-6.2-sol /genai streamGenerateContent (GenAI SDK route) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gpt-6.2-sol:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gpt-6.2-sol:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word pong and nothing else.\"}]}],\"generationConfig\":{\"maxOutputTokens\":512}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol /genai streamGenerateContent: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var events = [];",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(data)); } catch (e) {}",
+                  "});",
+                  "var text = events.map(function (e) { return ((((e.candidates || [])[0] || {}).content || {}).parts || []).map(function (p) { return p.text || ''; }).join(''); }).join('');",
+                  "var last = events[events.length - 1] || {};",
+                  "pm.test('GenAI stream chunks with text and usageMetadata - vertex openai responses', function () {",
+                  "  pm.expect(text.toLowerCase(), 'no text parts: ' + body.slice(0, 600)).to.include('pong');",
+                  "  pm.expect((last.usageMetadata || {}).totalTokenCount, 'usageMetadata on the last chunk: ' + body.slice(-600)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.25 vertex/gpt-6.2-sol /genai generateContent function call (GenAI SDK route) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gpt-6.2-sol:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gpt-6.2-sol:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"What is the weather in Rome?\"}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"ANY\"}},\"generationConfig\":{\"maxOutputTokens\":512}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol /genai function call: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var parts = (((j.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "var fc = parts.filter(function (p) { return p.functionCall; }).map(function (p) { return p.functionCall; })[0];",
+                  "pm.test('functionCall part with the city - vertex openai responses', function () {",
+                  "  pm.expect(fc, 'no functionCall part: ' + pm.response.text().slice(0, 600)).to.exist;",
+                  "  pm.expect(fc.name).to.equal('get_weather');",
+                  "  pm.expect((fc.args || {}).city || '').to.match(/rome/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.26 vertex/gpt-6.2-sol /v1/chat/completions converted to Responses (compat) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"max_completion_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word pong and nothing else.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol chat via Responses: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var msg = (((j.choices || [])[0]) || {}).message || {};",
+                  "pm.test('chat completion shape served through the Responses endpoint - vertex openai responses', function () {",
+                  "  pm.expect(j.object, 'expected chat.completion: ' + pm.response.text().slice(0, 600)).to.equal('chat.completion');",
+                  "  pm.expect((msg.content || '').toLowerCase()).to.include('pong');",
+                  "  pm.expect(j.choices[0].finish_reason).to.equal('stop');",
+                  "  pm.expect((j.extra_fields || {}).converted_request_type, 'not converted: ' + JSON.stringify(j.extra_fields || {}).slice(0, 400)).to.equal('responses');",
+                  "  pm.expect((j.usage || {}).total_tokens, 'usage: ' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.27 vertex/gpt-6.2-sol /v1/chat/completions streaming converted to Responses (compat) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"max_completion_tokens\":512,\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word pong and nothing else.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol chat stream via Responses: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var events = [];",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(data)); } catch (e) {}",
+                  "});",
+                  "var text = events.map(function (e) { return ((((e.choices || [])[0]) || {}).delta || {}).content || ''; }).join('');",
+                  "var roles = events.map(function (e) { return ((((e.choices || [])[0]) || {}).delta || {}).role; }).filter(Boolean);",
+                  "var finish = events.map(function (e) { return (((e.choices || [])[0]) || {}).finish_reason; }).filter(Boolean);",
+                  "var usage = events.filter(function (e) { return e.usage; }).map(function (e) { return e.usage; })[0];",
+                  "pm.test('chat chunks with one assistant role, text, finish and usage - vertex openai responses', function () {",
+                  "  pm.expect(events.length, 'no chunks: ' + body.slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(events[0].object).to.equal('chat.completion.chunk');",
+                  "  pm.expect(roles, 'roles').to.deep.equal(['assistant']);",
+                  "  pm.expect(text.toLowerCase(), 'no content deltas: ' + body.slice(0, 600)).to.include('pong');",
+                  "  pm.expect(finish).to.include('stop');",
+                  "  pm.expect((usage || {}).total_tokens, 'usage chunk: ' + body.slice(-600)).to.be.above(0);",
+                  "  pm.expect(body.indexOf('data: [DONE]'), 'no [DONE]').to.be.above(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.28 vertex/gpt-6.2-sol /v1/chat/completions tool call converted to Responses (compat) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"max_completion_tokens\":512,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"required\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Oslo?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol chat tool call via Responses: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var choice = (j.choices || [])[0] || {};",
+                  "var tc = ((choice.message || {}).tool_calls || [])[0];",
+                  "pm.test('chat tool_calls with the city - vertex openai responses', function () {",
+                  "  pm.expect(tc, 'no tool_calls: ' + pm.response.text().slice(0, 600)).to.exist;",
+                  "  pm.expect(tc.function.name).to.equal('get_weather');",
+                  "  pm.expect(JSON.parse(tc.function.arguments || '{}').city || '').to.match(/oslo/i);",
+                  "  pm.expect(choice.finish_reason).to.equal('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "385.29 vertex/gpt-6.2-sol /v1/chat/completions streaming tool call converted to Responses (compat) - vertex openai responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gpt-6.2-sol\",\"max_completion_tokens\":512,\"stream\":true,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"required\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Oslo?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex gpt-6.2-sol chat tool stream via Responses: 200 - vertex openai responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var events = [];",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(data)); } catch (e) {}",
+                  "});",
+                  "var tcs = []; events.forEach(function (e) { (((((e.choices || [])[0]) || {}).delta || {}).tool_calls || []).forEach(function (t) { tcs.push(t); }); });",
+                  "var name = tcs.map(function (t) { return (t.function || {}).name || ''; }).join('');",
+                  "var args = tcs.map(function (t) { return (t.function || {}).arguments || ''; }).join('');",
+                  "var finish = events.map(function (e) { return (((e.choices || [])[0]) || {}).finish_reason; }).filter(Boolean);",
+                  "pm.test('streamed tool_call deltas assemble into one call - vertex openai responses', function () {",
+                  "  pm.expect(name, 'no tool_call name: ' + body.slice(0, 800)).to.equal('get_weather');",
+                  "  pm.expect(JSON.parse(args || '{}').city || '', 'arguments: ' + args).to.match(/oslo/i);",
+                  "  pm.expect(tcs.map(function (t) { return t.index; }).filter(function (i, k, a) { return a.indexOf(i) === k; })).to.deep.equal([0]);",
+                  "  pm.expect(finish).to.include('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

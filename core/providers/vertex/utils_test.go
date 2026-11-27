@@ -121,6 +121,23 @@ func BenchmarkVertexChatCompletionCommonCase(b *testing.B) {
 	}
 }
 
+func BenchmarkVertexResponsesCommonCase(b *testing.B) {
+	provider, key := vertexOpenAIEndpointTestProvider(b, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}`)
+	}))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := &schemas.BifrostResponsesRequest{Provider: schemas.Vertex, Model: "gemini-2.5-flash", Input: []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := provider.Responses(ctx, key, request); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestVertexEndpointResponsesAndStreaming(t *testing.T) {
 	for _, method := range []schemas.VertexEndpointMethod{schemas.VertexEndpointRawPredict, schemas.VertexEndpointChatCompletions} {
 		for _, route := range []string{"chat-stream", "responses", "responses-stream"} {
@@ -230,6 +247,123 @@ func TestVertexEndpointResponsesAndStreaming(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestVertexOpenAIPublisherResponses pins GPT-6 on Vertex to the openai publisher's native
+// Responses endpoint, the only surface Vertex serves them on (chat/completions answers 404).
+// gpt-oss stays on the openapi MaaS endpoint.
+func TestVertexOpenAIPublisherResponses(t *testing.T) {
+	const completed = `{"type":"response.completed","sequence_number":3,"response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-6.2-sol","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hi!","annotations":[]}]}],"usage":{"extra_properties":{"google":{"traffic_type":"ON_DEMAND"}},"input_tokens":7,"input_tokens_details":{"cached_tokens":0},"output_tokens":11,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":18}}}`
+	for _, tc := range []struct {
+		name, model, region, wantHost, wantPath, wantModel string
+		stream                                             bool
+	}{
+		{"global", "gpt-6.2-sol", "global", "aiplatform.googleapis.com", "/v1/projects/project-123/locations/global/publishers/openai/v1/responses", "gpt-6.2-sol", false},
+		{"global stream", "gpt-6.2-sol", "global", "aiplatform.googleapis.com", "/v1/projects/project-123/locations/global/publishers/openai/v1/responses", "gpt-6.2-sol", true},
+		{"openai prefix", "openai/gpt-6.2-astra", "global", "aiplatform.googleapis.com", "/v1/projects/project-123/locations/global/publishers/openai/v1/responses", "gpt-6.2-astra", false},
+		{"regional key", "gpt-6.2-sol", "us-west1", "us-west1-aiplatform.googleapis.com", "/v1/projects/project-123/locations/us-west1/publishers/openai/v1/responses", "gpt-6.2-sol", true},
+		{"gpt-oss stays on openapi", "openai/gpt-oss-120b-maas", "global", "aiplatform.googleapis.com", "/v1beta1/projects/project-123/locations/global/endpoints/openapi/chat/completions", "openai/gpt-oss-120b-maas", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			type sent struct{ host, path, auth, body string }
+			received := make(chan sent, 1)
+			provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				data, _ := io.ReadAll(r.Body)
+				received <- sent{r.Host, r.URL.RequestURI(), r.Header.Get("Authorization"), string(data)}
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/chat/completions"):
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-oss-120b-maas","choices":[{"index":0,"message":{"role":"assistant","content":"Hi!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":11,"total_tokens":18}}`)
+				case tc.stream:
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"gpt-6.2-sol\",\"output\":[]}}\n\n")
+					_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hi!\"}\n\n")
+					_, _ = io.WriteString(w, "event: response.completed\ndata: "+completed+"\n\n")
+				default:
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, gjson.Get(completed, "response").Raw)
+				}
+			}))
+			key.VertexKeyConfig.Region = *schemas.NewSecretVar(tc.region)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			request := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Vertex, Model: tc.model,
+				Input:  []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+				Params: &schemas.ResponsesParameters{Temperature: new(0.7)},
+			}
+
+			var text string
+			var totalTokens int
+			if tc.stream {
+				noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return result, err
+				}
+				stream, bifrostErr := provider.ResponsesStream(ctx, noHooks, nil, key, request)
+				if bifrostErr != nil {
+					t.Fatalf("ResponsesStream: %s", bifrostErr.GetErrorString())
+				}
+				timer := time.NewTimer(5 * time.Second)
+				defer timer.Stop()
+			loop:
+				for {
+					select {
+					case chunk, ok := <-stream:
+						if !ok {
+							break loop
+						}
+						if chunk.BifrostError != nil {
+							t.Fatalf("stream error: %s", chunk.BifrostError.GetErrorString())
+						}
+						event := chunk.BifrostResponsesStreamResponse
+						if event == nil {
+							t.Fatalf("expected Responses events, got %+v", chunk)
+						}
+						if event.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && event.Delta != nil {
+							text += *event.Delta
+						}
+						if event.Response != nil && event.Response.Usage != nil {
+							totalTokens = event.Response.Usage.TotalTokens
+						}
+					case <-timer.C:
+						t.Fatal("stream did not finish")
+					}
+				}
+			} else {
+				response, bifrostErr := provider.Responses(ctx, key, request)
+				if bifrostErr != nil {
+					t.Fatalf("Responses: %s", bifrostErr.GetErrorString())
+				}
+				if len(response.Output) > 0 && response.Output[0].Content != nil && len(response.Output[0].Content.ContentBlocks) > 0 && response.Output[0].Content.ContentBlocks[0].Text != nil {
+					text = *response.Output[0].Content.ContentBlocks[0].Text
+				}
+				if response.Usage != nil {
+					totalTokens = response.Usage.TotalTokens
+				}
+			}
+
+			call := <-received
+			if call.host != tc.wantHost || call.path != tc.wantPath || call.auth != "Bearer test-token" {
+				t.Fatalf("upstream = %s%s (%s), want %s%s with OAuth", call.host, call.path, call.auth, tc.wantHost, tc.wantPath)
+			}
+			if got := gjson.Get(call.body, "model").String(); got != tc.wantModel {
+				t.Fatalf("body model = %q, want %q: %s", got, tc.wantModel, call.body)
+			}
+			if text != "Hi!" || totalTokens != 18 {
+				t.Fatalf("text=%q total_tokens=%d, want Hi! and 18", text, totalTokens)
+			}
+			if strings.HasSuffix(tc.wantPath, "/responses") {
+				if !gjson.Get(call.body, "input").Exists() || gjson.Get(call.body, "messages").Exists() {
+					t.Fatalf("expected a native Responses body, got %s", call.body)
+				}
+				if gjson.Get(call.body, "temperature").Exists() {
+					t.Fatalf("temperature must be dropped for a GPT-6 reasoning model: %s", call.body)
+				}
+				if gjson.Get(call.body, "stream").Bool() != tc.stream {
+					t.Fatalf("stream flag = %v, want %v: %s", gjson.Get(call.body, "stream").Bool(), tc.stream, call.body)
+				}
+			}
+		})
 	}
 }
 
