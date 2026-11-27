@@ -1525,6 +1525,11 @@ func applyOutputFieldsToEntry(
 	upstreamLatency, overheadLatency *int64,
 	attemptTrail []schemas.KeyAttemptRecord,
 ) {
+	// Core clears the selected key on a final error; the trail's last record is the key that ran.
+	if selectedKeyID == "" && len(attemptTrail) > 0 {
+		last := attemptTrail[len(attemptTrail)-1]
+		selectedKeyID, selectedKeyName = last.KeyID, last.KeyName
+	}
 	entry.SelectedKeyID = selectedKeyID
 	entry.SelectedKeyName = selectedKeyName
 	if virtualKeyID != "" {
