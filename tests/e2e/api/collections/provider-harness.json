@@ -352259,7 +352259,177 @@
       ]
     },
     {
-      "name": "392. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
+      "name": "392. Anthropic user message between parallel tool results (interleaved tool results) (PR #10579)",
+      "description": "Regression for PR #10579. A Responses input can carry a user message between the outputs of one assistant turn's parallel tool calls: a client that attaches the file the first call read sends call A, call B, output A, user attachment, output B. convertBifrostMessagesToAnthropicMessages wrote that in input order, so the user turn after the tool_use held only the first tool_result and Anthropic rejected the request with \"tool_use ids were found without tool_result blocks immediately after\". The converter now holds the user message until the turn's remaining outputs arrive, so both tool_result blocks lead the next message and the user content follows. Both cases read the outbound request through x-bf-send-back-raw-request. 392.1 pins the base shape. 392.2 uses call ids with a slash, which Bifrost rewrites to Anthropic-safe tool_use ids, and pins that the hold-back still matches the later output to its call. No streaming case: the request conversion is the same code for both. No reasoning case: a signed thinking block cannot be written by hand.",
+      "item": [
+        {
+          "name": "392.1 anthropic/claude-sonnet-4-5 /v1/responses interleaved tool results: user attachment between parallel function_call_outputs follows both tool_results - PR #10579",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 80,\n  \"tools\": [\n    { \"type\": \"function\", \"name\": \"read_file\", \"description\": \"Read a file.\", \"parameters\": { \"type\": \"object\", \"properties\": { \"file_path\": { \"type\": \"string\" } }, \"required\": [\"file_path\"] } }\n  ],\n  \"input\": [\n    { \"role\": \"user\", \"content\": \"Read a.pdf and notes.txt, then summarize both in one sentence.\" },\n    { \"type\": \"function_call\", \"call_id\": \"call_a_10579\", \"name\": \"read_file\", \"arguments\": \"{\\\"file_path\\\":\\\"a.pdf\\\"}\" },\n    { \"type\": \"function_call\", \"call_id\": \"call_b_10579\", \"name\": \"read_file\", \"arguments\": \"{\\\"file_path\\\":\\\"notes.txt\\\"}\" },\n    { \"type\": \"function_call_output\", \"call_id\": \"call_a_10579\", \"output\": \"Binary content provided (1 item(s)).\" },\n    { \"role\": \"user\", \"content\": [ { \"type\": \"input_text\", \"text\": \"ATTACHED-10579: a.pdf says the launch is on Friday.\" } ] },\n    { \"type\": \"function_call_output\", \"call_id\": \"call_b_10579\", \"output\": \"notes.txt says bring the demo laptop.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "// A client attached the file the first call read, so a user message sits between the two outputs of",
+                  "// one parallel tool turn. Written in input order, the first tool_result went out alone and Anthropic",
+                  "// 400'd: \"tool_use ids were found without tool_result blocks immediately after\".",
+                  "pm.test('anthropic interleaved tool results: 200', function () {",
+                  "  pm.expect(txt, 'tool_result ordering 400 resurfaced').to.not.include('without `tool_result` blocks immediately after');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic interleaved tool results: the turn after the tool_use opens with both tool_results', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var msgs = rr.messages || [];",
+                  "  var shape = JSON.stringify(msgs.map(function (m) {",
+                  "    var blocks = typeof m.content === 'string' ? [{ type: 'text' }] : (m.content || []);",
+                  "    return m.role + ':' + blocks.map(function (b) { return b.type; }).join('+');",
+                  "  }));",
+                  "  var useIdx = -1;",
+                  "  msgs.forEach(function (m, i) {",
+                  "    if (Array.isArray(m.content) && m.content.some(function (b) { return b.type === 'tool_use'; })) { useIdx = i; }",
+                  "  });",
+                  "  pm.expect(useIdx, 'no tool_use turn on the wire: ' + shape).to.be.at.least(0);",
+                  "  var next = msgs[useIdx + 1];",
+                  "  pm.expect(next && next.role, 'no user turn right after the tool_use: ' + shape).to.eql('user');",
+                  "  var blocks = Array.isArray(next.content) ? next.content : [];",
+                  "  pm.expect(blocks.length, 'message order: ' + shape).to.be.at.least(2);",
+                  "  pm.expect(blocks[0].type, 'message order: ' + shape).to.eql('tool_result');",
+                  "  pm.expect(blocks[1].type, 'message order: ' + shape).to.eql('tool_result');",
+                  "  pm.expect(String(blocks[0].tool_use_id), 'first result id: ' + shape).to.include('call_a_10579');",
+                  "  pm.expect(String(blocks[1].tool_use_id), 'second result id: ' + shape).to.include('call_b_10579');",
+                  "  var uses = msgs[useIdx].content.filter(function (b) { return b.type === 'tool_use'; }).map(function (b) { return b.id; });",
+                  "  pm.expect([blocks[0].tool_use_id, blocks[1].tool_use_id], 'results must answer the tool_use ids: ' + shape).to.eql(uses);",
+                  "});",
+                  "pm.test('anthropic interleaved tool results: the user content follows the results', function () {",
+                  "  var msgs = (rr && rr.messages) || [];",
+                  "  var flat = JSON.stringify(msgs);",
+                  "  pm.expect(flat, 'attached user text missing').to.include('ATTACHED-10579');",
+                  "  pm.expect(flat.indexOf('ATTACHED-10579'), 'user text must come after the last tool_result').to.be.above(flat.lastIndexOf('\"tool_result\"'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "392.2 anthropic/claude-sonnet-4-5 /v1/responses interleaved tool results: call ids rewritten for Anthropic still hold the user attachment - PR #10579",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 80,\n  \"tools\": [\n    { \"type\": \"function\", \"name\": \"read_file\", \"description\": \"Read a file.\", \"parameters\": { \"type\": \"object\", \"properties\": { \"file_path\": { \"type\": \"string\" } }, \"required\": [\"file_path\"] } }\n  ],\n  \"input\": [\n    { \"role\": \"user\", \"content\": \"Read a.pdf and notes.txt, then summarize both in one sentence.\" },\n    { \"type\": \"function_call\", \"call_id\": \"call/a-10579\", \"name\": \"read_file\", \"arguments\": \"{\\\"file_path\\\":\\\"a.pdf\\\"}\" },\n    { \"type\": \"function_call\", \"call_id\": \"call/b-10579\", \"name\": \"read_file\", \"arguments\": \"{\\\"file_path\\\":\\\"notes.txt\\\"}\" },\n    { \"type\": \"function_call_output\", \"call_id\": \"call/a-10579\", \"output\": \"Binary content provided (1 item(s)).\" },\n    { \"role\": \"user\", \"content\": [ { \"type\": \"input_text\", \"text\": \"ATTACHED-10579: a.pdf says the launch is on Friday.\" } ] },\n    { \"type\": \"function_call_output\", \"call_id\": \"call/b-10579\", \"output\": \"notes.txt says bring the demo laptop.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "// A client attached the file the first call read, so a user message sits between the two outputs of",
+                  "// one parallel tool turn. Written in input order, the first tool_result went out alone and Anthropic",
+                  "// 400'd: \"tool_use ids were found without tool_result blocks immediately after\".",
+                  "pm.test('anthropic interleaved tool results rewritten ids: 200', function () {",
+                  "  pm.expect(txt, 'tool_result ordering 400 resurfaced').to.not.include('without `tool_result` blocks immediately after');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic interleaved tool results rewritten ids: the turn after the tool_use opens with both tool_results', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var msgs = rr.messages || [];",
+                  "  var shape = JSON.stringify(msgs.map(function (m) {",
+                  "    var blocks = typeof m.content === 'string' ? [{ type: 'text' }] : (m.content || []);",
+                  "    return m.role + ':' + blocks.map(function (b) { return b.type; }).join('+');",
+                  "  }));",
+                  "  var useIdx = -1;",
+                  "  msgs.forEach(function (m, i) {",
+                  "    if (Array.isArray(m.content) && m.content.some(function (b) { return b.type === 'tool_use'; })) { useIdx = i; }",
+                  "  });",
+                  "  pm.expect(useIdx, 'no tool_use turn on the wire: ' + shape).to.be.at.least(0);",
+                  "  var next = msgs[useIdx + 1];",
+                  "  pm.expect(next && next.role, 'no user turn right after the tool_use: ' + shape).to.eql('user');",
+                  "  var blocks = Array.isArray(next.content) ? next.content : [];",
+                  "  pm.expect(blocks.length, 'message order: ' + shape).to.be.at.least(2);",
+                  "  pm.expect(blocks[0].type, 'message order: ' + shape).to.eql('tool_result');",
+                  "  pm.expect(blocks[1].type, 'message order: ' + shape).to.eql('tool_result');",
+                  "  pm.expect(String(blocks[0].tool_use_id), 'first result id: ' + shape).to.include('call_a-10579');",
+                  "  pm.expect(String(blocks[1].tool_use_id), 'second result id: ' + shape).to.include('call_b-10579');",
+                  "  var uses = msgs[useIdx].content.filter(function (b) { return b.type === 'tool_use'; }).map(function (b) { return b.id; });",
+                  "  pm.expect([blocks[0].tool_use_id, blocks[1].tool_use_id], 'results must answer the tool_use ids: ' + shape).to.eql(uses);",
+                  "});",
+                  "pm.test('anthropic interleaved tool results rewritten ids: the user content follows the results', function () {",
+                  "  var msgs = (rr && rr.messages) || [];",
+                  "  var flat = JSON.stringify(msgs);",
+                  "  pm.expect(flat, 'attached user text missing').to.include('ATTACHED-10579');",
+                  "  pm.expect(flat.indexOf('ATTACHED-10579'), 'user text must come after the last tool_result').to.be.above(flat.lastIndexOf('\"tool_result\"'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "393. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
       "description": "Gemini omits `args` for a function call to a tool that takes no parameters. The chat completion converters (final response and stream) left the tool call arguments as an empty string, which OpenAI-shaped clients cannot json-parse; the Responses path already defaulted them to {}. Both rows force a call to a tool declared without parameters and pin that the arguments the client receives parse as a JSON object.",
       "item": [
         {
