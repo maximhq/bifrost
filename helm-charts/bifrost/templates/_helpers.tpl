@@ -509,6 +509,9 @@ false
 {{- if hasKey .Values.bifrost.client "mcpDisableAutoToolInject" }}
 {{- $_ := set $client "mcp_disable_auto_tool_inject" .Values.bifrost.client.mcpDisableAutoToolInject }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "mcpAllowFreeCallsWhenBudgetExhausted" }}
+{{- $_ := set $client "mcp_allow_free_calls_when_budget_exhausted" .Values.bifrost.client.mcpAllowFreeCallsWhenBudgetExhausted }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "mcpEnableTempTokenAuth" }}
 {{- $_ := set $client "mcp_enable_temp_token_auth" .Values.bifrost.client.mcpEnableTempTokenAuth }}
 {{- end }}

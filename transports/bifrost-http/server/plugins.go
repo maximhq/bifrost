@@ -143,9 +143,17 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
 		// A copy, so the caller's config is left as it was; the log timestamp precision is always
-		// the transport's log store's.
-		withPrecision := *governanceConfig
+		// the transport's log store's. A reload may hand no config at all.
+		var withPrecision governance.Config
+		if governanceConfig != nil {
+			withPrecision = *governanceConfig
+		}
 		withPrecision.LogTimestampPrecision = GovernanceLogTimestampPrecision(bifrostConfig)
+		// The callback is json:"-", so a config decoded from the plugins API carries none. Without
+		// this a reload would refuse free MCP calls over budget until the next restart.
+		if withPrecision.MCPAllowFreeCallsWhenBudgetExhausted == nil {
+			withPrecision.MCPAllowFreeCallsWhenBudgetExhausted = bifrostConfig.ShouldAllowFreeMCPCallsWhenBudgetExhausted
+		}
 		governancePlugin, err := governance.Init(ctx, &withPrecision, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.LiveStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
 		if err != nil {
@@ -305,7 +313,8 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 			RequiredHeaders:       &s.Config.ClientConfig.RequiredHeaders,
 			DisableAutoToolInject: &s.Config.ClientConfig.MCPDisableAutoToolInject,
 
-			ObjectOwnershipEnforced: s.Config.ShouldEnforceVKObjectOwnership,
+			ObjectOwnershipEnforced:              s.Config.ShouldEnforceVKObjectOwnership,
+			MCPAllowFreeCallsWhenBudgetExhausted: s.Config.ShouldAllowFreeMCPCallsWhenBudgetExhausted,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {
