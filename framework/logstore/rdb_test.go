@@ -17,8 +17,8 @@ import (
 )
 
 // TestModelRoutingColumnsFilter pins that a log records the model router that
-// took it, and that the router filters the log list from the raw table rather
-// than the hourly view, which does not carry it.
+// took it, that a list row names it, and that the router filters the log list
+// from the raw table rather than the hourly view, which does not carry it.
 func TestModelRoutingColumnsFilter(t *testing.T) {
 	store, _ := newFanoutTestStore(t)
 	ctx := context.Background()
@@ -61,15 +61,16 @@ func TestModelRoutingColumnsFilter(t *testing.T) {
 	res, err := store.SearchLogs(ctx, byRouter, PaginationOptions{Limit: 1})
 	require.NoError(t, err)
 	require.Len(t, res.Logs, 1)
-	// The router columns are detail-only: the list row leaves them out and
-	// the by-id read returns them.
-	assert.Nil(t, res.Logs[0].ModelRouterName, "/api/logs leaves model_router_name to the detail read")
+	// The logs table shows the router, so a list row carries its id and name,
+	// as the by-id read does.
+	require.NotNil(t, res.Logs[0].ModelRouterName, "/api/logs names the router on a list row")
+	assert.Equal(t, "Support", *res.Logs[0].ModelRouterName)
 	got, err := store.FindByID(ctx, res.Logs[0].ID)
 	require.NoError(t, err)
 	require.NotNil(t, got.ModelRouterName)
 	assert.Equal(t, "Support", *got.ModelRouterName)
 
-	assert.False(t, canUseMatViewFilters(byRouter), "a router filter must not be served from the hourly view")
+	assert.False(t, canUseMatViewFilters(byRouter), "a router filter must not be served from the hourly view, which does not carry routers")
 
 	// The Model Routers page ranks requests by router.
 	assert.True(t, ValidRankingDimensions[RankingDimensionModelRouter], "the rankings endpoint accepts model_router")
@@ -92,6 +93,90 @@ func TestModelRoutingColumnsFilter(t *testing.T) {
 		tierCounts[entry.ID] = entry.TotalRequests
 	}
 	assert.Equal(t, map[string]int64{"SIMPLE": 1, "COMPLEX": 1}, tierCounts, "another router's tiers are not counted")
+}
+
+// TestModelRouterReadsLogsFromBeforeRouters pins how a log written before model routers replaced
+// routing rules (or by a node still on that release) reads: a row with no router is listed under
+// its routing rule, which the router it became kept as its id or lists in its meta. Nothing is
+// written to the logs table; a row that has both keeps its router.
+func TestModelRouterReadsLogsFromBeforeRouters(t *testing.T) {
+	store, _ := newFanoutTestStore(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Truncate(time.Second)
+	cost := 1.0
+	row := func(id string, cols map[string]any) {
+		require.NoError(t, store.Create(ctx, &Log{
+			ID: id, Timestamp: base, CreatedAt: base, Object: "chat_completion", Provider: "openai", Model: "m",
+			Status: "success", Cost: &cost, TotalTokens: 10,
+		}))
+		// The routing rule columns are read only, so the release before routers is played by SQL.
+		for column, value := range cols {
+			require.NoError(t, store.db.Exec("UPDATE logs SET "+column+" = ? WHERE id = ?", value, id).Error)
+		}
+	}
+	// Written by the release before routers: the rule only.
+	row("req-1001", map[string]any{"routing_rule_id": "eu-azure", "routing_rule_name": "EU to Azure"})
+	row("req-1002", map[string]any{"routing_rule_id": "tier-medium", "routing_rule_name": "Medium tier"})
+	// A rule and a v2.6 router both acted: the router decided last.
+	row("req-1003", map[string]any{"routing_rule_id": "eu-azure", "routing_rule_name": "EU to Azure", "model_router_id": "support", "model_router_name": "Support desk"})
+	// Written since: the router only.
+	row("req-2001", map[string]any{"model_router_id": "tier-simple", "model_router_name": "Simple tier"})
+	row("req-2002", map[string]any{"model_router_id": "eu-azure", "model_router_name": "EU to Azure"})
+
+	start, end := base.Add(-time.Hour), base.Add(time.Hour)
+	search := func(routers, ruleIDs []string) []string {
+		res, err := store.SearchLogs(ctx, SearchFilters{StartTime: &start, EndTime: &end, ModelRouterIDs: routers, RoutingRuleIDs: ruleIDs}, PaginationOptions{Limit: 10})
+		require.NoError(t, err)
+		ids := make([]string, 0, len(res.Logs))
+		for _, l := range res.Logs {
+			ids = append(ids, l.ID)
+		}
+		return ids
+	}
+	// The caller names each router with the rules in its meta, which hold its own id when it kept one.
+	assert.ElementsMatch(t, []string{"req-1001", "req-2002"}, search([]string{"eu-azure"}, []string{"eu-azure"}), "a rule that kept its id: its old rows and the router's new ones")
+	assert.ElementsMatch(t, []string{"req-1002", "req-2001"}, search([]string{"tier-simple"}, []string{"tier-simple", "tier-medium"}),
+		"a merged router takes the rows of every rule in its meta")
+	assert.ElementsMatch(t, []string{"req-1003"}, search([]string{"support"}, nil), "a router never made from a rule: its rows only")
+	assert.ElementsMatch(t, []string{"req-1002"}, search(nil, []string{"tier-medium"}), "a rule on its own matches the rows that name it")
+
+	// A row with no router reads as its rule, on the list and by id; the rule columns are never written.
+	got, err := store.FindByID(ctx, "req-1002")
+	require.NoError(t, err)
+	require.NotNil(t, got.ModelRouterID)
+	assert.Equal(t, "tier-medium", *got.ModelRouterID)
+	assert.Equal(t, "Medium tier", *got.ModelRouterName)
+	res, err := store.SearchLogs(ctx, SearchFilters{StartTime: &start, EndTime: &end, RoutingRuleIDs: []string{"tier-medium"}}, PaginationOptions{Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, res.Logs, 1)
+	assert.Equal(t, "tier-medium", *res.Logs[0].ModelRouterID, "a list row reads the same")
+	require.NoError(t, store.Update(ctx, "req-1002", map[string]any{"status": "success"}))
+	var stored struct{ ModelRouterID *string }
+	require.NoError(t, store.db.Model(&Log{}).Select("model_router_id").Where("id = ?", "req-1002").Scan(&stored).Error)
+	assert.Nil(t, stored.ModelRouterID, "reading a row never writes its router")
+	mistake := "written-by-mistake"
+	require.NoError(t, store.Create(ctx, &Log{ID: "req-3001", Timestamp: base, CreatedAt: base, Object: "chat_completion", Provider: "openai", Model: "m", Status: "success",
+		RoutingRuleID: &mistake}))
+	var rule struct{ RoutingRuleID *string }
+	require.NoError(t, store.db.Model(&Log{}).Select("routing_rule_id").Where("id = ?", "req-3001").Scan(&rule).Error)
+	assert.Nil(t, rule.RoutingRuleID, "the routing rule columns are read only")
+
+	// The router ranking and the filter list read the same way.
+	rankings, err := store.GetDimensionRankings(ctx, SearchFilters{StartTime: &start, EndTime: &end}, RankingDimensionModelRouter)
+	require.NoError(t, err)
+	counts := map[string]int64{}
+	for _, entry := range rankings.Rankings {
+		counts[entry.ID] = entry.TotalRequests
+	}
+	assert.Equal(t, map[string]int64{"eu-azure": 2, "tier-medium": 1, "support": 1, "tier-simple": 1}, counts,
+		"ranked by router, else rule; the handler adds a merged rule's rows to its router")
+	pairs, err := store.GetDistinctKeyPairs(ctx, ModelRouterOrRuleID, ModelRouterOrRuleName, 10, "")
+	require.NoError(t, err)
+	listed := map[string]string{}
+	for _, p := range pairs {
+		listed[p.ID] = p.Name
+	}
+	assert.Equal(t, map[string]string{"eu-azure": "EU to Azure", "tier-medium": "Medium tier", "support": "Support desk", "tier-simple": "Simple tier"}, listed)
 }
 
 // seedExpiredLogs inserts total rows where every keepEvery-th is fresh and the

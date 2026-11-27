@@ -74,7 +74,6 @@ func TestListProjectionIncludesBillingScalars(t *testing.T) {
 var listDetailOnlyColumns = []string{
 	"alias_model_family", "server_side_fallback_model", "served_model",
 	"routing_engines_used", "complexity_mechanism",
-	"model_router_id", "model_router_name",
 	"video_generation_input", "cache_debug",
 }
 
@@ -89,6 +88,8 @@ func TestListProjectionLeavesOutDetailOnlyColumns(t *testing.T) {
 		"is_passthrough":    "the logs table tags passthrough rows",
 		"alias":             "Warp's log search tool reports it",
 		"complexity_tier":   "Warp's log search tool reports it",
+		"model_router_id":   "the logs table and Warp's log search tool name the router",
+		"model_router_name": "the logs table and Warp's log search tool name the router",
 		"selected_key_name": "the handler attaches selected_key only when the name is set",
 		"content_hidden":    "Warp skips hidden rows before hydrating them",
 		"guardrail_debug":   "agent logs and the Guardrail Incidents view read it",

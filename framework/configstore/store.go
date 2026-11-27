@@ -383,6 +383,9 @@ type ConfigStore interface {
 
 	// Model routers CRUD.
 	GetModelRouters(ctx context.Context) ([]ModelRouter, error)
+	// GetModelRouterNames returns the current name of each router in ids that
+	// exists, by id, for naming the routers logs record.
+	GetModelRouterNames(ctx context.Context, ids []string) (map[string]string, error)
 	GetModelRouter(ctx context.Context, id string) (*ModelRouter, error)
 	CreateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error
 	UpdateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error

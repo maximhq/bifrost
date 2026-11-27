@@ -311,7 +311,6 @@ func (p *LoggerPlugin) applyLiveContextFields(ctx *schemas.BifrostContext, entry
 	applyOutputFieldsToEntry(entry,
 		get(schemas.BifrostContextKeySelectedKeyID), get(schemas.BifrostContextKeySelectedKeyName),
 		get(schemas.BifrostContextKeyGovernanceVirtualKeyID), get(schemas.BifrostContextKeyGovernanceVirtualKeyName),
-		get(schemas.BifrostContextKeyGovernanceRoutingRuleID), get(schemas.BifrostContextKeyGovernanceRoutingRuleName),
 		get(schemas.BifrostContextKeySelectedPromptID), get(schemas.BifrostContextKeySelectedPromptName), get(schemas.BifrostContextKeySelectedPromptVersion),
 		get(schemas.BifrostContextKeyGovernanceTeamID), get(schemas.BifrostContextKeyGovernanceTeamName),
 		get(schemas.BifrostContextKeyGovernanceCustomerID), get(schemas.BifrostContextKeyGovernanceCustomerName),
@@ -319,6 +318,7 @@ func (p *LoggerPlugin) applyLiveContextFields(ctx *schemas.BifrostContext, entry
 		get(schemas.BifrostContextKeyGovernanceBusinessUnitID), get(schemas.BifrostContextKeyGovernanceBusinessUnitName),
 		get(schemas.BifrostContextKeyGovernanceProjectID), get(schemas.BifrostContextKeyGovernanceProjectName),
 		0, latency, nil, nil, nil)
+	applyModelRoutingFields(ctx, entry)
 	applyUserEmail(ctx, entry)
 	if sessionID := get(schemas.BifrostContextKeySessionID); sessionID != "" {
 		entry.SessionID = &sessionID

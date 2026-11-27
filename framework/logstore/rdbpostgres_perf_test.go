@@ -126,8 +126,8 @@ type logOpts struct {
 	VirtualKeyName     string
 	SelectedKeyID      string
 	SelectedKeyName    string
-	RoutingRuleID      string
-	RoutingRuleName    string
+	ModelRouterID      string
+	ModelRouterName    string
 	StopReason         string
 }
 
@@ -147,13 +147,13 @@ func insertPerfLog(t *testing.T, db *gorm.DB, opts logOpts) {
 		INSERT INTO logs (id, timestamp, object_type, provider, model, status,
 			routing_engines_used, metadata, content_summary,
 			virtual_key_id, virtual_key_name, selected_key_id, selected_key_name,
-			routing_rule_id, routing_rule_name, stop_reason, created_at, latency, cost,
+			model_router_id, model_router_name, stop_reason, created_at, latency, cost,
 			prompt_tokens, completion_tokens, total_tokens)
 		VALUES (?, ?, 'chat_completion', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 100, 0.01, 10, 5, 15)
 	`, id, opts.Timestamp, opts.Provider, opts.Model, opts.Status,
 		opts.RoutingEnginesUsed, opts.Metadata, opts.ContentSummary,
 		opts.VirtualKeyID, opts.VirtualKeyName, opts.SelectedKeyID, opts.SelectedKeyName,
-		opts.RoutingRuleID, opts.RoutingRuleName, opts.StopReason, opts.Timestamp).Error
+		opts.ModelRouterID, opts.ModelRouterName, opts.StopReason, opts.Timestamp).Error
 	require.NoError(t, err, "Failed to insert test log")
 }
 

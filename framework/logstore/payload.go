@@ -1039,8 +1039,8 @@ func BuildTags(l *Log) map[string]string {
 	if l.SelectedKeyID != "" {
 		tags["selected_key_id"] = truncateTag(l.SelectedKeyID, 256)
 	}
-	if l.RoutingRuleID != nil && *l.RoutingRuleID != "" {
-		tags["routing_rule_id"] = truncateTag(*l.RoutingRuleID, 256)
+	if l.ModelRouterID != nil && *l.ModelRouterID != "" {
+		tags["model_router_id"] = truncateTag(*l.ModelRouterID, 256)
 	}
 	if l.Stream {
 		tags["stream"] = "true"

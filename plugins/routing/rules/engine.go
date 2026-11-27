@@ -316,8 +316,6 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 
 		// Accumulate: last match wins for all fields.
 		finalDecision = stepDecision
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, stepDecision.MatchedRuleID)
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, stepDecision.MatchedRuleName)
 
 		ttftSuffix := ""
 		if stepDecision.TTFTTimeout > 0 {

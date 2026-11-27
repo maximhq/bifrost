@@ -1333,8 +1333,10 @@ const (
 	AttrBifrostVirtualKeyName      = "bifrost.virtual_key.name"
 	AttrBifrostSelectedKeyID       = "bifrost.selected_key.id"
 	AttrBifrostSelectedKeyName     = "bifrost.selected_key.name"
-	AttrBifrostRoutingRuleID       = "bifrost.routing_rule.id"
-	AttrBifrostRoutingRuleName     = "bifrost.routing_rule.name"
+	AttrBifrostModelRouterID       = "bifrost.model_router.id"
+	AttrBifrostModelRouterName     = "bifrost.model_router.name"
+	AttrBifrostRoutingRuleID       = "bifrost.routing_rule.id"   // Deprecated: AttrBifrostModelRouterID's old name, same value
+	AttrBifrostRoutingRuleName     = "bifrost.routing_rule.name" // Deprecated: AttrBifrostModelRouterName's old name, same value
 	AttrBifrostTeamID              = "bifrost.team.id"
 	AttrBifrostTeamName            = "bifrost.team.name"
 	AttrBifrostCustomerID          = "bifrost.customer.id"

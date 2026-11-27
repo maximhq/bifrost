@@ -207,7 +207,7 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 	return attrs
 }
 
-// PopulateContextAttributes extracts context-related attributes (virtual keys, retries, routing rules, etc.)
+// PopulateContextAttributes extracts context-related attributes (virtual keys, retries, model routers, etc.)
 //
 // Deprecated: has no callers. Superseded by the span-based context enrichment in
 // core (applyContextSpanAttributes), which writes the same dimensions straight
@@ -216,7 +216,7 @@ func PopulateContextAttributes(
 	attrs map[string]any,
 	virtualKeyID, virtualKeyName string,
 	selectedKeyID, selectedKeyName string,
-	routingRuleID, routingRuleName string,
+	modelRouterID, modelRouterName string,
 	teamID, teamName string,
 	customerID, customerName string,
 	businessUnitID, businessUnitName string,
@@ -232,9 +232,11 @@ func PopulateContextAttributes(
 		attrs[schemas.AttrBifrostSelectedKeyID] = selectedKeyID
 		attrs[schemas.AttrBifrostSelectedKeyName] = selectedKeyName
 	}
-	if routingRuleID != "" {
-		attrs[schemas.AttrBifrostRoutingRuleID] = routingRuleID
-		attrs[schemas.AttrBifrostRoutingRuleName] = routingRuleName
+	if modelRouterID != "" {
+		attrs[schemas.AttrBifrostModelRouterID] = modelRouterID
+		attrs[schemas.AttrBifrostModelRouterName] = modelRouterName
+		attrs[schemas.AttrBifrostRoutingRuleID] = modelRouterID
+		attrs[schemas.AttrBifrostRoutingRuleName] = modelRouterName
 	}
 	if teamID != "" {
 		attrs[schemas.AttrBifrostTeamID] = teamID

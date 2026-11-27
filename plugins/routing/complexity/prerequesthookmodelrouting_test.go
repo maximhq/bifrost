@@ -195,7 +195,7 @@ func TestModelRouterRoutesByTier(t *testing.T) {
 	assert.Equal(t, "Support", ctx.Value(schemas.BifrostContextKeyModelRouterName))
 	engines, _ := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
 	assert.Contains(t, engines, schemas.RoutingEngineModelRouter)
-	assert.Contains(t, routingLogs(ctx), "Model router 'Support' tier=COMPLEX → provider=anthropic, model=claude-opus")
+	assert.Contains(t, routingLogs(ctx), "Model router 'Support' → matched, tier=COMPLEX, selected target (weight=1.00): provider=anthropic, model=claude-opus, fallbacks=[]")
 }
 
 // TestModelRoutersMatchInOrder pins how the router that takes a request is
@@ -1019,7 +1019,7 @@ func TestConditionalRouterRoutesWithoutClassifying(t *testing.T) {
 		assert.Equal(t, "fast-lane", ctx.Value(schemas.BifrostContextKeyModelRouterID))
 		assert.Equal(t, "Fast lane", ctx.Value(schemas.BifrostContextKeyModelRouterName))
 		assert.Contains(t, enginesUsed(ctx), schemas.RoutingEngineModelRouter)
-		assert.Contains(t, routingLogs(ctx), "Model router 'Fast lane' → provider=anthropic, model=claude-haiku")
+		assert.Contains(t, routingLogs(ctx), `Model router 'Fast lane' [model == "gpt-4o"] → matched, selected target (weight=1.00): provider=anthropic, model=claude-haiku, fallbacks=[]`)
 	})
 
 	t.Run("it splits by weight across its targets", func(t *testing.T) {
@@ -1116,7 +1116,8 @@ func TestModelRouterChain(t *testing.T) {
 		assert.Equal(t, "claude-opus", model)
 		assert.Equal(t, "reroute", ctx.Value(schemas.BifrostContextKeyModelRouterID), "the last router to take the request is the one recorded")
 		logs := routingLogs(ctx)
-		assert.Contains(t, logs, "Model router 'Upgrade' → provider=openai, model=gpt-4o-large [chain, continuing]")
+		assert.Contains(t, logs, `Model router 'Reroute' [model == "gpt-4o-large"] → no match (model="gpt-4o", provider="openai", request_type="chat_completion", budget_used=0.0%, tokens_used=0.0%, request=0.0%)`)
+		assert.Contains(t, logs, `Model router 'Upgrade' [model == "gpt-4o"] → matched, selected target (weight=1.00): provider=openai, model=gpt-4o-large, fallbacks=[] [chain, continuing]`)
 		assert.Contains(t, logs, "Chain step 1: re-evaluating with provider=openai, model=gpt-4o-large")
 	})
 
@@ -1206,6 +1207,10 @@ func TestModelRouterChain(t *testing.T) {
 		assert.Equal(t, 900*time.Millisecond, ctx.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout))
 		assert.Equal(t, []schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o"}}, fallbacks,
 			"a fallback that names no model keeps the model the request arrived with, not one a chained router chose")
+		// The trail says what each router's choice brought, as a matched routing rule's line did.
+		logs := routingLogs(ctx)
+		assert.Contains(t, logs, `Model router 'First' [model == "gpt-4o"] → matched, selected target (weight=1.00): provider=openai, model=step, fallbacks=[anthropic/claude-sonnet], ttft_timeout=1.5s [chain, continuing]`)
+		assert.Contains(t, logs, `Model router 'Last' [model == "step"] → matched, selected target (weight=1.00): provider=openai, model=final, fallbacks=[azure/], ttft_timeout=900ms`)
 	})
 }
 
@@ -1221,6 +1226,7 @@ func TestModelRouterTargetFirstTokenDeadline(t *testing.T) {
 	streaming := newRequestContext()
 	require.NoError(t, plugin.PreRequestHook(streaming, streamRequest(complexText)))
 	assert.Equal(t, 1500*time.Millisecond, streaming.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout))
+	assert.Contains(t, routingLogs(streaming), "→ matched, tier=COMPLEX, selected target (weight=1.00): provider=anthropic, model=claude-opus, fallbacks=[], ttft_timeout=1.5s")
 
 	whole := newRequestContext()
 	runPreRequest(t, plugin, whole, complexText)

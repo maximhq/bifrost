@@ -1546,13 +1546,13 @@ const governanceVirtualKeyMetadataContextKey schemas.BifrostContextKey = "bifros
 // realtimeMiddlewareKeys lists the BifrostContext keys that TransportInterceptorMiddleware
 // copies from the governance plugin's context onto individual fasthttp UserValue slots.
 // We snapshot exactly these keys before the WebSocket upgrade so the long-lived session
-// has access to routing rule info, virtual key resolution, routing engine logs, etc.
+// has access to model router info, virtual key resolution, routing engine logs, etc.
 var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyGovernanceVirtualKeyID,
 	schemas.BifrostContextKeyGovernanceVirtualKeyName,
 	governanceVirtualKeyMetadataContextKey,
-	schemas.BifrostContextKeyGovernanceRoutingRuleID,
-	schemas.BifrostContextKeyGovernanceRoutingRuleName,
+	schemas.BifrostContextKeyModelRouterID,
+	schemas.BifrostContextKeyModelRouterName,
 	schemas.BifrostContextKeyGovernanceCustomerID,
 	schemas.BifrostContextKeyGovernanceCustomerName,
 	schemas.BifrostContextKeyGovernanceTeamID,

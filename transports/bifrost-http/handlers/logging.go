@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
@@ -169,7 +170,7 @@ var filterDataMatViewBackedDims = map[string]struct{}{
 	filterDimAliases:        {},
 	filterDimSelectedKeys:   {},
 	filterDimVirtualKeys:    {},
-	filterDimRoutingRules:   {},
+	filterDimModelRouters:   {},
 	filterDimRoutingEngines: {},
 	filterDimStopReasons:    {},
 	filterDimToolCallNames:  {},
@@ -255,7 +256,7 @@ const (
 	filterDimAliases        = "aliases"
 	filterDimSelectedKeys   = "selected_keys"
 	filterDimVirtualKeys    = "virtual_keys"
-	filterDimRoutingRules   = "routing_rules"
+	filterDimModelRouters   = "model_routers"
 	filterDimRoutingEngines = "routing_engines"
 	filterDimStopReasons    = "stop_reasons"
 	filterDimToolCallNames  = "tool_call_names"
@@ -286,7 +287,7 @@ const (
 
 var allFilterDimensions = []string{
 	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
-	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimToolCallNames, filterDimApps,
+	filterDimModelRouters, filterDimRoutingEngines, filterDimStopReasons, filterDimToolCallNames, filterDimApps,
 	filterDimUserAgents, filterDimTeams, filterDimCustomers, filterDimUsers,
 	filterDimBusinessUnits, filterDimProjects, filterDimTopics, filterDimMetadataKeys,
 }
@@ -433,7 +434,6 @@ func parseParentRequestIDFilter(ctx *fasthttp.RequestCtx) string {
 type RedactedKeysManager interface {
 	GetAllRedactedKeys(ctx context.Context, ids []string) []schemas.Key
 	GetAllRedactedVirtualKeys(ctx context.Context, ids []string) []tables.TableVirtualKey
-	GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule
 }
 
 // LogRedactionMappingResolver optionally exposes decoded redaction mappings on log-detail responses.
@@ -718,16 +718,12 @@ func (h *LoggingHandler) getLogSessionByID(ctx *fasthttp.RequestCtx) {
 
 	selectedKeyIDs := make(map[string]struct{})
 	virtualKeyIDs := make(map[string]struct{})
-	routingRuleIDs := make(map[string]struct{})
 	for _, log := range result.Logs {
 		if log.SelectedKeyID != "" {
 			selectedKeyIDs[log.SelectedKeyID] = struct{}{}
 		}
 		if log.VirtualKeyID != nil && *log.VirtualKeyID != "" {
 			virtualKeyIDs[*log.VirtualKeyID] = struct{}{}
-		}
-		if log.RoutingRuleID != nil && *log.RoutingRuleID != "" {
-			routingRuleIDs[*log.RoutingRuleID] = struct{}{}
 		}
 	}
 
@@ -752,10 +748,6 @@ func (h *LoggingHandler) getLogSessionByID(ctx *fasthttp.RequestCtx) {
 	if len(virtualKeyIDs) > 0 {
 		redactedVirtualKeys = h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
 	}
-	var redactedRoutingRules []tables.TableRoutingRule
-	if len(routingRuleIDs) > 0 {
-		redactedRoutingRules = h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
-	}
 
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
@@ -763,9 +755,6 @@ func (h *LoggingHandler) getLogSessionByID(ctx *fasthttp.RequestCtx) {
 		}
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
-		}
-		if log.RoutingRuleID != nil && log.RoutingRuleName != nil && *log.RoutingRuleID != "" && *log.RoutingRuleName != "" {
-			result.Logs[i].RoutingRule = findRedactedRoutingRule(redactedRoutingRules, *log.RoutingRuleID, *log.RoutingRuleName)
 		}
 	}
 
@@ -820,9 +809,6 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
-	}
-	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
-		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if teamIDs := string(ctx.QueryArgs().Peek("team_ids")); teamIDs != "" {
 		filters.TeamIDs = parseCommaSeparated(teamIDs)
@@ -976,7 +962,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	result, err := h.logManager.Search(ctx, filters, pagination)
+	result, err := h.logManager.Search(ctx, h.withRouterRules(filters), pagination)
 	if err != nil {
 		logger.Error("failed to search logs: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Search failed: %v", err))
@@ -985,16 +971,12 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 
 	selectedKeyIDs := make(map[string]struct{})
 	virtualKeyIDs := make(map[string]struct{})
-	routingRuleIDs := make(map[string]struct{})
 	for _, log := range result.Logs {
 		if log.SelectedKeyID != "" {
 			selectedKeyIDs[log.SelectedKeyID] = struct{}{}
 		}
 		if log.VirtualKeyID != nil && *log.VirtualKeyID != "" {
 			virtualKeyIDs[*log.VirtualKeyID] = struct{}{}
-		}
-		if log.RoutingRuleID != nil && *log.RoutingRuleID != "" {
-			routingRuleIDs[*log.RoutingRuleID] = struct{}{}
 		}
 	}
 
@@ -1019,21 +1001,14 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if len(virtualKeyIDs) > 0 {
 		redactedVirtualKeys = h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
 	}
-	var redactedRoutingRules []tables.TableRoutingRule
-	if len(routingRuleIDs) > 0 {
-		redactedRoutingRules = h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
-	}
 
-	// Add selected key, virtual key, and routing rule to the result
+	// Add selected key and virtual key to the result
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
 			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, &log)
 		}
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
-		}
-		if log.RoutingRuleID != nil && log.RoutingRuleName != nil && *log.RoutingRuleID != "" && *log.RoutingRuleName != "" {
-			result.Logs[i].RoutingRule = findRedactedRoutingRule(redactedRoutingRules, *log.RoutingRuleID, *log.RoutingRuleName)
 		}
 	}
 
@@ -1153,7 +1128,7 @@ func parseLogSearchBound(v string) error {
 var logSearchParams = map[string]bool{
 	"query": true, "limit": true,
 	"providers": true, "models": true, "aliases": true, "status": true, "objects": true,
-	"selected_key_ids": true, "virtual_key_ids": true, "routing_rule_ids": true, "team_ids": true,
+	"selected_key_ids": true, "virtual_key_ids": true, "model_router_ids": true, "team_ids": true,
 	"customer_ids": true, "user_ids": true, "business_unit_ids": true, "project_ids": true,
 	"topic_ids": true, "routing_engine_used": true, "stop_reasons": true, "user_agents": true,
 	"apps": true, "session_id": true, "start_time": true, "end_time": true, "period": true,
@@ -1169,7 +1144,7 @@ var logSearchParams = map[string]bool{
 var logSearchListParams = map[string]func(string) []string{
 	"providers": parseCommaSeparated, "models": parseCommaSeparated, "aliases": parseCommaSeparated,
 	"status": parseCommaSeparated, "objects": parseCommaSeparated, "selected_key_ids": parseCommaSeparated,
-	"virtual_key_ids": parseCommaSeparated, "routing_rule_ids": parseCommaSeparated, "team_ids": parseCommaSeparated,
+	"virtual_key_ids": parseCommaSeparated, "model_router_ids": parseCommaSeparated, "team_ids": parseCommaSeparated,
 	"customer_ids": parseCommaSeparated, "user_ids": parseCommaSeparated, "business_unit_ids": parseCommaSeparated,
 	"project_ids": parseCommaSeparated, "routing_engine_used": parseCommaSeparated, "stop_reasons": parseCommaSeparated,
 	"cache_hit_types": parseCommaSeparated, "user_agents": parseStringArrayParam, "apps": parseStringArrayParam,
@@ -1297,7 +1272,7 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// Assemble virtual key, selected key, and routing rule objects (gorm:"-" fields not
+	// Assemble virtual key and selected key objects (gorm:"-" fields not
 	// populated by GetLog) so the detail view receives the same structure as the list endpoint.
 	if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
 		redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, []string{log.SelectedKeyID})
@@ -1306,10 +1281,6 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 	if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 		redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, []string{*log.VirtualKeyID})
 		log.VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
-	}
-	if log.RoutingRuleID != nil && log.RoutingRuleName != nil && *log.RoutingRuleID != "" && *log.RoutingRuleName != "" {
-		redactedRoutingRules := h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, []string{*log.RoutingRuleID})
-		log.RoutingRule = findRedactedRoutingRule(redactedRoutingRules, *log.RoutingRuleID, *log.RoutingRuleName)
 	}
 
 	SendJSON(ctx, log)
@@ -1344,9 +1315,6 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
-	}
-	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
-		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if teamIDs := string(ctx.QueryArgs().Peek("team_ids")); teamIDs != "" {
 		filters.TeamIDs = parseCommaSeparated(teamIDs)
@@ -1447,6 +1415,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 		filters.RequestID = requestID
 	}
 	parseMetadataFilters(ctx, filters)
+	h.withRouterRules(filters)
 
 	stats, err := h.logManager.GetStats(ctx, filters)
 	if err != nil {
@@ -1529,7 +1498,7 @@ func previousPeriodFilters(filters *logstore.SearchFilters) *logstore.SearchFilt
 
 // getLogsHistogram handles GET /api/logs/histogram - Get time-bucketed request counts
 func (h *LoggingHandler) getLogsHistogram(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1589,6 +1558,48 @@ func parseAgentCorrelationIDFilter(ctx *fasthttp.RequestCtx, filters *logstore.S
 	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
 }
 
+// withRouterRules resolves a router filter for the log store and returns filters. Logs written
+// before model routers replaced routing rules (or by a node still on that release) name a routing
+// rule and no router, and the router made from a rule names it in its meta, as its own id when it
+// kept the rule's. So every router asked for also asks for the rules in its meta, and a routing
+// rule asked for by an old link is asked for as the router made from it, which lists its rows
+// together with the router's own. A rule no router names stays a rule filter.
+func (h *LoggingHandler) withRouterRules(filters *logstore.SearchFilters) *logstore.SearchFilters {
+	if h.config == nil {
+		return filters
+	}
+	return WithRouterRules(h.config.LiveStore, filters)
+}
+
+// WithRouterRules is withRouterRules for a handler outside this package that filters logs by router,
+// reading the routers from live.
+func WithRouterRules(live *livestore.Store, filters *logstore.SearchFilters) *logstore.SearchFilters {
+	if filters == nil || (len(filters.ModelRouterIDs) == 0 && len(filters.RoutingRuleIDs) == 0) || live == nil {
+		return filters
+	}
+	asked := filters.ModelRouterIDs
+	var rules []string
+	live.Collections.ModelRouters.Range(func(r *registry.ModelRouter) bool {
+		if r.Router.Meta == nil {
+			return true
+		}
+		if slices.Contains(filters.ModelRouterIDs, r.Router.ID) || slices.ContainsFunc(r.Router.Meta.RoutingRuleIDs, func(rule string) bool { return slices.Contains(filters.RoutingRuleIDs, rule) }) {
+			if !slices.Contains(asked, r.Router.ID) {
+				asked = append(asked, r.Router.ID)
+			}
+			rules = append(rules, r.Router.Meta.RoutingRuleIDs...)
+		}
+		return true
+	})
+	for _, rule := range filters.RoutingRuleIDs {
+		if !slices.Contains(rules, rule) {
+			rules = append(rules, rule)
+		}
+	}
+	filters.ModelRouterIDs, filters.RoutingRuleIDs = asked, rules
+	return filters
+}
+
 // parseComplexityFilters extracts the structured complexity and model routing
 // filters shared by log search, aggregate, and histogram endpoints.
 func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
@@ -1600,6 +1611,10 @@ func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFi
 	}
 	if modelRouterIDs := string(ctx.QueryArgs().Peek("model_router_ids")); modelRouterIDs != "" {
 		filters.ModelRouterIDs = parseCommaSeparated(modelRouterIDs)
+	}
+	// Deprecated: links from before model routers replaced routing rules (see withRouterRules).
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 }
 
@@ -1646,6 +1661,12 @@ func parseTopicIDsFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilte
 	return true
 }
 
+// parseHistogramFilters is parseHistogramFilters with the router filter resolved (see
+// withRouterRules).
+func (h *LoggingHandler) parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
+	return h.withRouterRules(parseHistogramFilters(ctx))
+}
+
 // parseHistogramFilters extracts common filter parameters from query args. It
 // returns nil after writing a 400 when a parameter is unusable.
 func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
@@ -1674,9 +1695,6 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
-	}
-	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
-		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if teamIDs := string(ctx.QueryArgs().Peek("team_ids")); teamIDs != "" {
 		filters.TeamIDs = parseCommaSeparated(teamIDs)
@@ -1783,7 +1801,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 
 // getLogsTokenHistogram handles GET /api/logs/histogram/tokens - Get time-bucketed token usage
 func (h *LoggingHandler) getLogsTokenHistogram(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1801,7 +1819,7 @@ func (h *LoggingHandler) getLogsTokenHistogram(ctx *fasthttp.RequestCtx) {
 
 // getLogsCostHistogram handles GET /api/logs/histogram/cost - Get time-bucketed cost data with model breakdown
 func (h *LoggingHandler) getLogsCostHistogram(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1827,7 +1845,7 @@ func (h *LoggingHandler) getLogsCostHistogram(ctx *fasthttp.RequestCtx) {
 
 // getLogsModelHistogram handles GET /api/logs/histogram/models - Get time-bucketed model usage with success/error breakdown
 func (h *LoggingHandler) getLogsModelHistogram(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1845,7 +1863,7 @@ func (h *LoggingHandler) getLogsModelHistogram(ctx *fasthttp.RequestCtx) {
 
 // getLogsLatencyHistogram handles GET /api/logs/histogram/latency - Get time-bucketed latency percentiles
 func (h *LoggingHandler) getLogsLatencyHistogram(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1863,7 +1881,7 @@ func (h *LoggingHandler) getLogsLatencyHistogram(ctx *fasthttp.RequestCtx) {
 
 // getLogsProviderCostHistogram handles GET /api/logs/histogram/cost/by-provider - Get time-bucketed cost data with provider breakdown
 func (h *LoggingHandler) getLogsProviderCostHistogram(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1881,7 +1899,7 @@ func (h *LoggingHandler) getLogsProviderCostHistogram(ctx *fasthttp.RequestCtx) 
 
 // getLogsProviderTokenHistogram handles GET /api/logs/histogram/tokens/by-provider - Get time-bucketed token usage with provider breakdown
 func (h *LoggingHandler) getLogsProviderTokenHistogram(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1899,7 +1917,7 @@ func (h *LoggingHandler) getLogsProviderTokenHistogram(ctx *fasthttp.RequestCtx)
 
 // getLogsProviderLatencyHistogram handles GET /api/logs/histogram/latency/by-provider - Get time-bucketed latency percentiles with provider breakdown
 func (h *LoggingHandler) getLogsProviderLatencyHistogram(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1917,7 +1935,7 @@ func (h *LoggingHandler) getLogsProviderLatencyHistogram(ctx *fasthttp.RequestCt
 
 // getLogsThroughputHistogram handles GET /api/logs/histogram/throughput - Get time-bucketed token-generation throughput (tokens/sec)
 func (h *LoggingHandler) getLogsThroughputHistogram(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1935,7 +1953,7 @@ func (h *LoggingHandler) getLogsThroughputHistogram(ctx *fasthttp.RequestCtx) {
 
 // getLogsProviderThroughputHistogram handles GET /api/logs/histogram/throughput/by-provider - Get time-bucketed tokens/sec with provider breakdown
 func (h *LoggingHandler) getLogsProviderThroughputHistogram(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1973,7 +1991,7 @@ func (h *LoggingHandler) getLogsDimensionCostHistogram(ctx *fasthttp.RequestCtx)
 	if !ok {
 		return
 	}
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -1995,7 +2013,7 @@ func (h *LoggingHandler) getLogsDimensionTokenHistogram(ctx *fasthttp.RequestCtx
 	if !ok {
 		return
 	}
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -2017,7 +2035,7 @@ func (h *LoggingHandler) getLogsDimensionLatencyHistogram(ctx *fasthttp.RequestC
 	if !ok {
 		return
 	}
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -2089,7 +2107,7 @@ func ParseRankingLimit(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters
 
 // getModelRankings handles GET /api/logs/rankings - Get models ranked by usage with trends
 func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -2119,7 +2137,7 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -2132,6 +2150,9 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to get dimension rankings: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Dimension rankings calculation failed: %v", err))
 		return
+	}
+	if dim == logstore.RankingDimensionModelRouter {
+		h.rankRulesUnderRouters(result)
 	}
 	h.applyCurrentRankingNames(ctx, result)
 
@@ -2206,17 +2227,11 @@ func (h *LoggingHandler) rankingNameResolver(dim logstore.RankingDimension) Rank
 			}
 			return names, nil
 		}
-	case logstore.RankingDimensionRoutingRule:
-		if rk == nil {
+	case logstore.RankingDimensionModelRouter:
+		if cs == nil {
 			return nil
 		}
-		return func(ctx context.Context, ids []string) (map[string]string, error) {
-			names := make(map[string]string, len(ids))
-			for _, rule := range rk.GetAllRedactedRoutingRules(ctx, ids) {
-				names[rule.ID] = rule.Name
-			}
-			return names, nil
-		}
+		return cs.GetModelRouterNames
 	case logstore.RankingDimensionSelectedKey:
 		if rk == nil {
 			return nil
@@ -2262,6 +2277,93 @@ func (h *LoggingHandler) rankingNameResolver(dim logstore.RankingDimension) Rank
 		}
 	}
 	return nil
+}
+
+// currentModelRouterNames lists each model router the logs name once, under its
+// current name. A router the config store no longer has keeps the name it was
+// last logged under, marked as deleted, so its logs can still be filtered. When
+// the names cannot be read the logged names stay as they are.
+func (h *LoggingHandler) currentModelRouterNames(ctx context.Context, logged []logging.KeyPair) []logging.KeyPair {
+	resolve := h.rankingNameResolver(logstore.RankingDimensionModelRouter)
+	if resolve == nil {
+		return logged
+	}
+	ruleRouters := h.routersOfRules()
+	ids := make([]string, len(logged))
+	for i, router := range logged {
+		if id, ok := ruleRouters[router.ID]; ok {
+			logged[i].ID = id
+		}
+		ids[i] = logged[i].ID
+	}
+	names, err := resolve(ctx, ids)
+	if err != nil {
+		logger.Warn("failed to read model router names for the logs filter: %v", err)
+		return logged
+	}
+	listed := make(map[string]struct{}, len(logged))
+	routers := make([]logging.KeyPair, 0, len(logged))
+	for _, router := range logged {
+		if _, seen := listed[router.ID]; seen {
+			continue
+		}
+		listed[router.ID] = struct{}{}
+		if name, ok := names[router.ID]; ok {
+			router.Name = name
+		} else {
+			router.Name += " (deleted)"
+		}
+		routers = append(routers, router)
+	}
+	return routers
+}
+
+// routersOfRules returns, by routing rule id, the router made from that rule, read from each
+// router's meta. Logs from before model routers replaced routing rules name the rule, so the
+// router filter list and ranking list such a row under its router.
+func (h *LoggingHandler) routersOfRules() map[string]string {
+	routers := map[string]string{}
+	if h.config == nil || h.config.LiveStore == nil {
+		return routers
+	}
+	h.config.LiveStore.Collections.ModelRouters.Range(func(r *registry.ModelRouter) bool {
+		if r.Router.Meta != nil {
+			for _, rule := range r.Router.Meta.RoutingRuleIDs {
+				if _, taken := routers[rule]; !taken {
+					routers[rule] = r.Router.ID
+				}
+			}
+		}
+		return true
+	})
+	return routers
+}
+
+// rankRulesUnderRouters lists each ranked routing rule (a row from before model routers replaced
+// them) under the router made from it, adding its requests, tokens and cost to that router's row.
+// A merged row keeps the router's own trend, or the first rule's when the router has no row.
+func (h *LoggingHandler) rankRulesUnderRouters(result *logstore.DimensionRankingResult) {
+	if result == nil || len(result.Rankings) == 0 {
+		return
+	}
+	ruleRouters := h.routersOfRules()
+	merged := make([]logstore.DimensionRankingWithTrend, 0, len(result.Rankings))
+	at := make(map[string]int, len(result.Rankings))
+	for _, row := range result.Rankings {
+		if router, ok := ruleRouters[row.ID]; ok {
+			row.ID = router
+		}
+		if i, ok := at[row.ID]; ok {
+			merged[i].TotalRequests += row.TotalRequests
+			merged[i].TotalTokens += row.TotalTokens
+			merged[i].TotalCost += row.TotalCost
+			continue
+		}
+		at[row.ID] = len(merged)
+		merged = append(merged, row)
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].TotalRequests > merged[j].TotalRequests })
+	result.Rankings = merged
 }
 
 // rankingNameLookupBatchSize bounds how many ids one ranking name lookup
@@ -2341,7 +2443,7 @@ const dashboardMCPTopToolsLimit = 10
 // concurrently; if any fails the whole request fails, so consumers always get a
 // complete payload or a clear error, never partial data.
 func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
-	filters := parseHistogramFilters(ctx)
+	filters := h.parseHistogramFilters(ctx)
 	if filters == nil {
 		return
 	}
@@ -2564,7 +2666,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		aliases        []string
 		selectedKeys   []logging.KeyPair
 		virtualKeys    []logging.KeyPair
-		routingRules   []logging.KeyPair
+		modelRouters   []logging.KeyPair
 		routingEngines []string
 		stopReasons    []string
 		toolCallNames  []string
@@ -2633,14 +2735,14 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			return nil
 		})
 	}
-	if _, ok := want[filterDimRoutingRules]; ok {
+	if _, ok := want[filterDimModelRouters]; ok {
 		g.Go(func() error {
-			result, err := h.logManager.GetAvailableRoutingRules(gCtx, defaultFilterDataLimit, query)
+			result, err := h.logManager.GetAvailableModelRouters(gCtx, defaultFilterDataLimit, query)
 			if err != nil {
 				return err
 			}
 			mu.Lock()
-			routingRules = result
+			modelRouters = result
 			mu.Unlock()
 			return nil
 		})
@@ -2826,15 +2928,8 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			redactedVirtualKeys[virtualKey.ID] = virtualKey
 		}
 	}
-	redactedRoutingRules := make(map[string]tables.TableRoutingRule)
-	if _, ok := want[filterDimRoutingRules]; ok && len(routingRules) > 0 {
-		routingRuleIDs := make([]string, len(routingRules))
-		for i, rule := range routingRules {
-			routingRuleIDs[i] = rule.ID
-		}
-		for _, routingRule := range h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, routingRuleIDs) {
-			redactedRoutingRules[routingRule.ID] = routingRule
-		}
+	if _, ok := want[filterDimModelRouters]; ok && len(modelRouters) > 0 {
+		modelRouters = h.currentModelRouterNames(ctx, modelRouters)
 	}
 
 	// Check if all selected key ids are present in the redacted selected keys (will not be present in case a key is deleted, but we still need to show its filter)
@@ -2862,17 +2957,6 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// Check if all routing rule ids are present in the redacted routing rules (will not be present in case a routing rule is deleted, but we still need to show its filter)
-	for _, routingRule := range routingRules {
-		if _, ok := redactedRoutingRules[routingRule.ID]; !ok {
-			// Create a new routing rule struct directly since we know it doesn't exist
-			redactedRoutingRules[routingRule.ID] = tables.TableRoutingRule{
-				ID:   routingRule.ID,
-				Name: routingRule.Name + " (deleted)",
-			}
-		}
-	}
-
 	// Convert maps to arrays for frontend consumption
 	selectedKeysArray := make([]schemas.Key, 0, len(redactedSelectedKeys))
 	for _, key := range redactedSelectedKeys {
@@ -2882,11 +2966,6 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	virtualKeysArray := make([]tables.TableVirtualKey, 0, len(redactedVirtualKeys))
 	for _, key := range redactedVirtualKeys {
 		virtualKeysArray = append(virtualKeysArray, key)
-	}
-
-	routingRulesArray := make([]tables.TableRoutingRule, 0, len(redactedRoutingRules))
-	for _, rule := range redactedRoutingRules {
-		routingRulesArray = append(routingRulesArray, rule)
 	}
 
 	payload := make(map[string]interface{}, len(dims))
@@ -2902,8 +2981,8 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	if _, ok := want[filterDimVirtualKeys]; ok {
 		payload[filterDimVirtualKeys] = virtualKeysArray
 	}
-	if _, ok := want[filterDimRoutingRules]; ok {
-		payload[filterDimRoutingRules] = routingRulesArray
+	if _, ok := want[filterDimModelRouters]; ok {
+		payload[filterDimModelRouters] = modelRouters
 	}
 	if _, ok := want[filterDimRoutingEngines]; ok {
 		payload[filterDimRoutingEngines] = routingEngines
@@ -3239,37 +3318,6 @@ func findRedactedVirtualKey(redactedVirtualKeys []tables.TableVirtualKey, id str
 		}
 	}
 	return &tables.TableVirtualKey{
-		ID: id,
-		Name: func() string {
-			if name != "" {
-				return name + " (deleted)"
-			} else {
-				return ""
-			}
-		}(),
-	}
-}
-
-// findRedactedRoutingRule matches a redacted routing rule or returns a deleted-rule placeholder.
-func findRedactedRoutingRule(redactedRoutingRules []tables.TableRoutingRule, id string, name string) *tables.TableRoutingRule {
-	if len(redactedRoutingRules) == 0 {
-		return &tables.TableRoutingRule{
-			ID: id,
-			Name: func() string {
-				if name != "" {
-					return name + " (deleted)"
-				} else {
-					return ""
-				}
-			}(),
-		}
-	}
-	for _, routingRule := range redactedRoutingRules {
-		if routingRule.ID == id {
-			return &routingRule
-		}
-	}
-	return &tables.TableRoutingRule{
 		ID: id,
 		Name: func() string {
 			if name != "" {

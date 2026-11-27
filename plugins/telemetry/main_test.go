@@ -1354,6 +1354,46 @@ func TestUpstreamLatencyLabelsFailure(t *testing.T) {
 	t.Fatal("bifrost_upstream_latency_seconds not exported")
 }
 
+// A request's series say which model router took it, by id and name, and carry no label for a
+// routing rule: model routers are what route a request.
+func TestMetricsLabelTheModelRouter(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.SetValue(schemas.BifrostContextKeyModelRouterID, "premium")
+	ctx.SetValue(schemas.BifrostContextKeyModelRouterName, "Premium tier")
+	ctx.ResetUpstreamLatency()
+	runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() {
+		schemas.AddUpstreamLatency(ctx, 15*time.Millisecond)
+	}, overheadResponse(), nil)
+	settle(t, p, 1)
+
+	fams, err := p.registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range fams {
+		if mf.GetName() != "bifrost_upstream_latency_seconds" {
+			continue
+		}
+		if len(mf.GetMetric()) != 1 {
+			t.Fatalf("series = %d, want 1", len(mf.GetMetric()))
+		}
+		labels := map[string]string{}
+		for _, l := range mf.GetMetric()[0].GetLabel() {
+			labels[l.GetName()] = l.GetValue()
+		}
+		if labels["model_router_id"] != "premium" || labels["model_router_name"] != "Premium tier" {
+			t.Fatalf("model router labels = %q %q, want premium / Premium tier", labels["model_router_id"], labels["model_router_name"])
+		}
+		// The deprecated routing rule labels carry the router, so a dashboard built on them keeps working.
+		if labels["routing_rule_id"] != "premium" || labels["routing_rule_name"] != "Premium tier" {
+			t.Fatalf("routing rule labels = %q %q, want premium / Premium tier", labels["routing_rule_id"], labels["routing_rule_name"])
+		}
+		return
+	}
+	t.Fatal("bifrost_upstream_latency_seconds not exported")
+}
+
 // A stream records the provider time of the attempt that answered, once, on its final chunk.
 // Intermediate chunks record nothing, and the socket time that keeps accumulating while the
 // stream drains is part of the final read.

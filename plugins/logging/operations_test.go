@@ -662,6 +662,7 @@ func TestEmitAggregateLogEmitsSettlementSpan(t *testing.T) {
 	cost := 0.0123
 	teamID := "team-42"
 	vkID := "vk-7"
+	routerID, routerName := "premium", "Premium tier"
 	entry := &logstore.Log{
 		ID:               "batch-cost:openai:settlement-span",
 		Timestamp:        time.Now().UTC(),
@@ -675,6 +676,8 @@ func TestEmitAggregateLogEmitsSettlementSpan(t *testing.T) {
 		TotalTokens:      150,
 		TeamID:           &teamID,
 		VirtualKeyID:     &vkID,
+		ModelRouterID:    &routerID,
+		ModelRouterName:  &routerName,
 		BatchDebugParsed: &schemas.BifrostBatchDebug{BatchID: "batch_abc123"},
 	}
 	plugin.EmitAggregateLog(context.Background(), entry)
@@ -704,6 +707,12 @@ func TestEmitAggregateLogEmitsSettlementSpan(t *testing.T) {
 		}
 		if got, _ := attrs[schemas.AttrBifrostVirtualKeyID].(string); got != vkID {
 			t.Fatalf("span virtual_key_id = %q, want %q", got, vkID)
+		}
+		if id, name := attrs[schemas.AttrBifrostModelRouterID], attrs[schemas.AttrBifrostModelRouterName]; id != routerID || name != routerName {
+			t.Fatalf("span model router = %v %v, want %q %q", id, name, routerID, routerName)
+		}
+		if id, name := attrs[schemas.AttrBifrostRoutingRuleID], attrs[schemas.AttrBifrostRoutingRuleName]; id != routerID || name != routerName {
+			t.Fatalf("span routing rule = %v %v, want the router %q %q under its deprecated name", id, name, routerID, routerName)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no settlement span injected to the observability connector")
@@ -3545,7 +3554,7 @@ func TestUpdateLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
 		}},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, true); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", 0, nil, "", update, true); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -3591,7 +3600,7 @@ func TestUpdateLogEntryUpdatesContentSummaryForChatOutput(t *testing.T) {
 		},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, true); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", 0, nil, "", update, true); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -3634,7 +3643,7 @@ func TestUpdateLogEntrySuppressesChatOutputWhenContentLoggingDisabled(t *testing
 		},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, false); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", 0, nil, "", update, false); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -4357,7 +4366,7 @@ func TestUpdateLogEntryPerRequestOverrideEnablesContent(t *testing.T) {
 	}
 
 	// Explicitly pass true — simulates the per-request ctx override enabling content logging
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, true); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", 0, nil, "", update, true); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -4400,7 +4409,7 @@ func TestUpdateLogEntryPerRequestOverrideDisablesContent(t *testing.T) {
 	}
 
 	// Explicitly pass false — simulates x-bf-disable-content-logging: true on this request
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, false); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", 0, nil, "", update, false); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 

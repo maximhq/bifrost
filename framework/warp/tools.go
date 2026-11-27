@@ -203,8 +203,7 @@ const FilterSchema = `{
     "min_cost": {"type": "number"},
     "max_cost": {"type": "number"},
     "cache_hit_types": {"type": "array", "items": {"type": "string", "enum": ["direct", "semantic"]}, "minItems": 1, "description": "Local-cache hit type: direct (exact match) or semantic (fuzzy match)."},
-    "routing_rule_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing rules that handled the request. Ids come from describe_filter_space or a query_usage_by routing_rule ranking - never guess one."},
-    "model_router_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Model routers that classified the request for its complexity tier, by router id. Only requests a router classified have one. Ids come from a query_usage_by model_router ranking - never guess one."},
+    "model_router_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Model routers that routed the request, by router id. Only requests a router took have one. Ids come from describe_filter_space or a query_usage_by model_router ranking - never guess one."},
     "routing_engine_used": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing engines the request passed through, e.g. routing-rule, governance, loadbalancing. A request can pass through several."},
     "selected_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Provider API keys Bifrost picked for the request - not virtual keys. Ids come from describe_filter_space (provider_keys)."},
     "aliases": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Model aliases the request was addressed to before Bifrost resolved them to a model."},
@@ -273,7 +272,7 @@ func parseFiltersWithLookback(raw map[string]any, now time.Time, lookback time.D
 		"cache_hit_types": true, "content_search": true, "scope": true,
 		"error_types": true, "error_codes": true, "status_codes": true, "guardrail_outcomes": true,
 		"guardrail_actions": true, "guardrail_rule_ids": true, "guardrail_profile_ids": true, "guardrail_phases": true,
-		"routing_rule_ids": true, "routing_engine_used": true, "selected_key_ids": true, "aliases": true,
+		"routing_engine_used": true, "selected_key_ids": true, "aliases": true,
 		"model_router_ids": true, "complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
 		"metadata_filters": true, "session_id": true, "request_id": true, "parent_request_id": true,
 		"missing_cost_only": true, "agent_names": true, "agent_correlation_id": true,
@@ -339,8 +338,7 @@ func parseFiltersWithLookback(raw map[string]any, now time.Time, lookback time.D
 		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes, "guardrail_outcomes": &filters.GuardrailOutcomes,
 		"guardrail_actions": &filters.GuardrailActions, "guardrail_rule_ids": &filters.GuardrailRuleIDs,
 		"guardrail_profile_ids": &filters.GuardrailProfileIDs, "guardrail_phases": &filters.GuardrailPhases,
-		"routing_rule_ids": &filters.RoutingRuleIDs, "routing_engine_used": &filters.RoutingEngineUsed,
-		"model_router_ids": &filters.ModelRouterIDs,
+		"routing_engine_used": &filters.RoutingEngineUsed, "model_router_ids": &filters.ModelRouterIDs,
 		"selected_key_ids": &filters.SelectedKeyIDs, "aliases": &filters.Aliases,
 		"complexity_tiers": &filters.ComplexityTiers, "complexity_mechanisms": &filters.ComplexityMechanisms,
 		"tool_call_names": &filters.ToolCallNames, "user_agents": &filters.UserAgents,
@@ -1063,11 +1061,11 @@ type logRow struct {
 	ErrorType  string `json:"error_type,omitempty"`
 	ErrorCode  string `json:"error_code,omitempty"`
 	StatusCode int    `json:"status_code,omitempty"`
-	// What routed the request: the rule that handled it, the provider key it was
+	// What routed the request: the model router that took it, the provider key it was
 	// sent with, the alias it was addressed to, the complexity tier it was given
 	// and the functions its response called. All absent on a request none of
 	// them touched, so a plain row costs nothing extra.
-	RoutingRule    string   `json:"routing_rule,omitempty"`
+	ModelRouter    string   `json:"model_router,omitempty"`
 	ProviderKey    string   `json:"provider_key,omitempty"`
 	Alias          string   `json:"alias,omitempty"`
 	ComplexityTier string   `json:"complexity_tier,omitempty"`
@@ -1097,7 +1095,7 @@ func projectLog(entry *logstore.Log, includeContent bool, contentLimit int) logR
 		Cost:           derefFloat(entry.Cost),
 		VirtualKeyName: derefString(entry.VirtualKeyName),
 		UserID:         derefString(entry.UserID),
-		RoutingRule:    cmp.Or(derefString(entry.RoutingRuleName), derefString(entry.RoutingRuleID)),
+		ModelRouter:    cmp.Or(derefString(entry.ModelRouterName), derefString(entry.ModelRouterID)),
 		ProviderKey:    cmp.Or(entry.SelectedKeyName, entry.SelectedKeyID),
 		Alias:          derefString(entry.Alias),
 		ComplexityTier: derefString(entry.ComplexityTier),

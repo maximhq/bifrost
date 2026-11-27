@@ -108,8 +108,8 @@ type SpanEnrichment struct {
 	VirtualKeyName   string
 	SelectedKeyID    string
 	SelectedKeyName  string
-	RoutingRuleID    string
-	RoutingRuleName  string
+	ModelRouterID    string
+	ModelRouterName  string
 	TeamID           string
 	TeamName         string
 	CustomerID       string

@@ -91,8 +91,8 @@ type LogManager interface {
 	// GetAvailableVirtualKeys returns all unique virtual key ID-Name pairs from logs
 	GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
-	// GetAvailableRoutingRules returns all unique routing rule ID-Name pairs from logs
-	GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error)
+	// GetAvailableModelRouters returns all unique model router ID-Name pairs from logs
+	GetAvailableModelRouters(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableRoutingEngines returns all unique routing engine types from logs
 	GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
@@ -375,8 +375,9 @@ func (p *PluginLogManager) GetAvailableVirtualKeys(ctx context.Context, limit in
 	return p.plugin.GetAvailableVirtualKeys(ctx, limit, query)
 }
 
-func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error) {
-	return p.plugin.GetAvailableRoutingRules(ctx, limit, query)
+// GetAvailableModelRouters returns all unique model router ID-Name pairs from logs.
+func (p *PluginLogManager) GetAvailableModelRouters(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableModelRouters(ctx, limit, query)
 }
 
 func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error) {

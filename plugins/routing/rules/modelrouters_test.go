@@ -188,7 +188,10 @@ func TestSelectModelRouterTarget(t *testing.T) {
 // with routers pays the scope walk and, when a router has a condition, one
 // CEL evaluation per router tried.
 func BenchmarkModelRouterMatcher(b *testing.B) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// Each request has its own context, and the walk writes its routing trail there.
+	requestCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
 	evaluation := &EvaluationContext{
 		Scope:    GovernanceScope{TeamID: "team-1", VirtualKeyID: "vk-1"},
 		Provider: schemas.OpenAI, Model: "support-assistant", RequestType: "chat_completion",
@@ -211,7 +214,7 @@ func BenchmarkModelRouterMatcher(b *testing.B) {
 			if !matcher.HasRoutes() {
 				b.Fatal("no routes")
 			}
-			if id, _ := matcher.Match(ctx, evaluation); id != "support" {
+			if id, _ := matcher.Match(requestCtx(), evaluation); id != "support" {
 				b.Fatalf("matched %q", id)
 			}
 		}
@@ -223,7 +226,7 @@ func BenchmarkModelRouterMatcher(b *testing.B) {
 		require.NoError(b, matcher.Set("global", "Global", routerRouting("global", "", 0, `model == "gpt-4o-mini"`)))
 		b.ReportAllocs()
 		for b.Loop() {
-			if id, _ := matcher.Match(ctx, evaluation); id != "" {
+			if id, _ := matcher.Match(requestCtx(), evaluation); id != "" {
 				b.Fatalf("matched %q", id)
 			}
 		}
@@ -238,7 +241,7 @@ func BenchmarkModelRouterMatcher(b *testing.B) {
 		require.NoError(b, matcher.Set("last", "Last", routerRouting("global", "", 999, `model == "support-assistant"`)))
 		b.ReportAllocs()
 		for b.Loop() {
-			if id, _ := matcher.Match(ctx, evaluation); id != "last" {
+			if id, _ := matcher.Match(requestCtx(), evaluation); id != "last" {
 				b.Fatalf("matched %q", id)
 			}
 		}
@@ -251,7 +254,7 @@ func BenchmarkModelRouterMatcher(b *testing.B) {
 		}
 		b.ReportAllocs()
 		for b.Loop() {
-			if id, _ := matcher.Match(ctx, evaluation); id != "first" {
+			if id, _ := matcher.Match(requestCtx(), evaluation); id != "first" {
 				b.Fatalf("matched %q", id)
 			}
 		}
@@ -308,10 +311,19 @@ func TestModelRouterMatcherSkipsConditionsThatFail(t *testing.T) {
 	id, err := matcher.Match(ctx, evaluation)
 	require.NoError(t, err, "a failing condition is not a failed match")
 	assert.Equal(t, "catch-all", id)
-	logs := ctx.GetRoutingEngineLogs()
+	// warnings returns what the walk warned about, among the lines it wrote.
+	warnings := func(ctx *schemas.BifrostContext) []schemas.RoutingEngineLogEntry {
+		var warned []schemas.RoutingEngineLogEntry
+		for _, entry := range ctx.GetRoutingEngineLogs() {
+			if entry.Level == schemas.LogLevelWarn {
+				warned = append(warned, entry)
+			}
+		}
+		return warned
+	}
+	logs := warnings(ctx)
 	require.Len(t, logs, 1)
 	assert.Equal(t, schemas.RoutingEngineModelRouter, logs[0].Engine)
-	assert.Equal(t, schemas.LogLevelWarn, logs[0].Level)
 	assert.Contains(t, logs[0].Message, "Model router 'Fragile' skipped: its condition failed to evaluate")
 
 	// A rename reaches the log with the routing it is saved beside.
@@ -319,8 +331,8 @@ func TestModelRouterMatcherSkipsConditionsThatFail(t *testing.T) {
 	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	_, err = matcher.Match(ctx, evaluation)
 	require.NoError(t, err)
-	require.Len(t, ctx.GetRoutingEngineLogs(), 1)
-	assert.Contains(t, ctx.GetRoutingEngineLogs()[0].Message, "Model router 'Renamed' skipped")
+	require.Len(t, warnings(ctx), 1)
+	assert.Contains(t, warnings(ctx)[0].Message, "Model router 'Renamed' skipped")
 
 	// With a value the condition can read, the same router takes the request.
 	assert.Equal(t, "fragile", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o", Headers: map[string]string{"x-n": "7"}}))
@@ -329,6 +341,96 @@ func TestModelRouterMatcherSkipsConditionsThatFail(t *testing.T) {
 	id, err = matcher.Match(nil, evaluation)
 	require.NoError(t, err)
 	assert.Equal(t, "catch-all", id)
+}
+
+// trailOf returns the messages a walk wrote to the request's routing trail.
+func trailOf(ctx *schemas.BifrostContext) []string {
+	var lines []string
+	for _, entry := range ctx.GetRoutingEngineLogs() {
+		lines = append(lines, entry.Message)
+	}
+	return lines
+}
+
+// TestModelRouterWalkTrail pins what a walk writes to a request's routing
+// trail, which reads as the routing rules' did: what is being routed and the
+// scopes in their order, how many routers each scope with some holds, and each
+// router passed over, with the values its condition read. A scope with no
+// router, and a walk given no request context, write nothing.
+func TestModelRouterWalkTrail(t *testing.T) {
+	matcher := newTestModelRouterMatcher(t)
+	require.NoError(t, matcher.Set("team", "Team", routerRouting("team", "team-1", 0, `headers["x-app"] == "helpdesk" && params["tier"] == "pro"`)))
+	require.NoError(t, matcher.Set("mini", "Mini only", routerRouting("global", "", 0, `model == "gpt-4o-mini"`)))
+	require.NoError(t, matcher.Set("chained", "Chained", routerRouting("global", "", 1, "")))
+	require.NoError(t, matcher.Set("last", "Last", routerRouting("global", "", 2, "")))
+	evaluation := &EvaluationContext{
+		Model: "gpt-4o", Provider: "openai", RequestType: "chat_completion",
+		Scope:   GovernanceScope{VirtualKeyID: "vk-1", TeamID: "team-1"},
+		Headers: map[string]string{"x-app": "helpdesk"},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stopAt := func(id string) func(string) bool { return func(visited string) bool { return visited == id } }
+
+	require.NoError(t, matcher.Walk(ctx, evaluation, nil, stopAt("chained")))
+	first := []string{
+		"Evaluating model routers for model=gpt-4o, provider=openai, requestType=chat_completion",
+		"Scope chain: [virtual_key(vk-1) team(team-1) global]",
+		"Evaluating scope team: 1 routers",
+		`Model router 'Team' [headers["x-app"] == "helpdesk" && params["tier"] == "pro"] → no match (model="gpt-4o", provider="openai", request_type="chat_completion", budget_used=0.0%, tokens_used=0.0%, request=0.0%, headers(x-app=<present>), params(tier=<missing>))`,
+		"Evaluating scope global: 3 routers",
+		`Model router 'Mini only' [model == "gpt-4o-mini"] → no match (model="gpt-4o", provider="openai", request_type="chat_completion", budget_used=0.0%, tokens_used=0.0%, request=0.0%)`,
+	}
+	assert.Equal(t, first, trailOf(ctx), "the virtual key has no router, so its scope writes nothing")
+
+	// A later pass of a chain: the router that already fired is passed over by name.
+	evaluation.Model = "gpt-4o-large"
+	require.NoError(t, matcher.Walk(ctx, evaluation, func(id string) bool { return id == "chained" }, stopAt("last")))
+	second := trailOf(ctx)[len(first):]
+	assert.Contains(t, second, "Model router 'Chained' skipped: already fired in this chain")
+	assert.Contains(t, second, `Model router 'Mini only' [model == "gpt-4o-mini"] → no match (model="gpt-4o-large", provider="openai", request_type="chat_completion", budget_used=0.0%, tokens_used=0.0%, request=0.0%)`)
+
+	// A walk given no request context writes nothing, and still finds the router.
+	id, err := matcher.Match(nil, evaluation)
+	require.NoError(t, err)
+	assert.Equal(t, "chained", id)
+
+	// A request whose scopes hold no router has no trail at all.
+	empty := newTestModelRouterMatcher(t)
+	require.NoError(t, empty.Set("elsewhere", "Elsewhere", routerRouting("team", "team-9", 0, "")))
+	quiet := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err = empty.Match(quiet, &EvaluationContext{Model: "gpt-4o", Scope: GovernanceScope{TeamID: "team-1"}})
+	require.NoError(t, err)
+	assert.Empty(t, quiet.GetRoutingEngineLogs())
+}
+
+// TestModelRouterWalkTrailIsBounded pins the size of the trail on a gateway
+// with many routers: a walk that passes over every router writes
+// modelRouterTrailLimit "no match" lines and one line counting the others, and
+// the router that takes a request is still found past the limit.
+func TestModelRouterWalkTrailIsBounded(t *testing.T) {
+	const routers = 1000
+	matcher := newTestModelRouterMatcher(t)
+	for i := range routers {
+		id := fmt.Sprintf("r%04d", i)
+		require.NoError(t, matcher.Set(id, id, routerRouting("global", "", i, fmt.Sprintf(`model == "model-%d"`, i))))
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := matcher.Match(ctx, &EvaluationContext{Model: "gpt-4o"})
+	require.NoError(t, err)
+	trail := trailOf(ctx)
+	require.Len(t, trail, 3+modelRouterTrailLimit+1, "three opening lines, the limit of no match lines, and the count")
+	assert.Equal(t, "Evaluating scope global: 1000 routers", trail[2])
+	for _, line := range trail[3 : 3+modelRouterTrailLimit] {
+		assert.Contains(t, line, "→ no match")
+	}
+	assert.Equal(t, fmt.Sprintf("%d more model routers did not match", routers-modelRouterTrailLimit), trail[len(trail)-1])
+
+	taken := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	id, err := matcher.Match(taken, &EvaluationContext{Model: "model-900"})
+	require.NoError(t, err)
+	assert.Equal(t, "r0900", id)
+	assert.Equal(t, fmt.Sprintf("%d more model routers did not match", 900-modelRouterTrailLimit), trailOf(taken)[len(trailOf(taken))-1])
 }
 
 // TestModelRouterMatcherReplacesARoutersRoute pins that a router only ever

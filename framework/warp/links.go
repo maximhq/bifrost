@@ -331,7 +331,6 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		{"objects", filters.Objects},
 		{"selected_key_ids", filters.SelectedKeyIDs},
 		{"virtual_key_ids", filters.VirtualKeyIDs},
-		{"routing_rule_ids", filters.RoutingRuleIDs},
 		{"model_router_ids", filters.ModelRouterIDs},
 		{"routing_engine_used", filters.RoutingEngineUsed},
 		{"complexity_tiers", filters.ComplexityTiers},
@@ -506,8 +505,6 @@ func narrowToDimension(filters *logstore.SearchFilters, dimension logstore.Ranki
 		narrowed.Apps = value
 	case logstore.RankingDimensionUserAgent:
 		narrowed.UserAgents = value
-	case logstore.RankingDimensionRoutingRule:
-		narrowed.RoutingRuleIDs = value
 	case logstore.RankingDimensionModelRouter:
 		narrowed.ModelRouterIDs = value
 	case logstore.RankingDimensionSelectedKey:

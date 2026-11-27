@@ -338,6 +338,7 @@ func TestHighFixesCreateTableBuildsOwnerTimestampIndexes(t *testing.T) {
 var hfRankingNameIndexes = []struct{ name, column, replaces string }{
 	{"idx_logs_selected_key_ts", "selected_key_id", "idx_logs_selected_key_id"},
 	{"idx_logs_routing_rule_ts", "routing_rule_id", "idx_logs_routing_rule_id"},
+	{"idx_logs_model_router_ts", "model_router_id", "idx_logs_model_router_id"},
 	{"idx_logs_customer_ts", "customer_id", "idx_logs_customer_id"},
 	{"idx_logs_business_unit_ts", "business_unit_id", "idx_logs_business_unit_id"},
 	{"idx_logs_project_ts", "project_id", "idx_logs_project_id"},

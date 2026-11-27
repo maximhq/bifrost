@@ -1513,7 +1513,6 @@ func applyOutputFieldsToEntry(
 	entry *logstore.Log,
 	selectedKeyID, selectedKeyName string,
 	virtualKeyID, virtualKeyName string,
-	routingRuleID, routingRuleName string,
 	selectedPromptID, selectedPromptName, selectedPromptVersion string,
 	teamID, teamName string,
 	customerID, customerName string,
@@ -1532,12 +1531,6 @@ func applyOutputFieldsToEntry(
 	}
 	if virtualKeyName != "" {
 		entry.VirtualKeyName = &virtualKeyName
-	}
-	if routingRuleID != "" {
-		entry.RoutingRuleID = &routingRuleID
-	}
-	if routingRuleName != "" {
-		entry.RoutingRuleName = &routingRuleName
 	}
 	if selectedPromptID != "" {
 		entry.SelectedPromptID = &selectedPromptID

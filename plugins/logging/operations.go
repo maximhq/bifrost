@@ -205,8 +205,6 @@ func (p *LoggerPlugin) updateLogEntry(
 	latency int64,
 	virtualKeyID string,
 	virtualKeyName string,
-	routingRuleID string,
-	routingRuleName string,
 	numberOfRetries int,
 	cacheMetadata *schemas.BifrostCacheMetadata,
 	routingEngineLogs string,
@@ -229,12 +227,6 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 	if virtualKeyName != "" {
 		updates["virtual_key_name"] = virtualKeyName
-	}
-	if routingRuleID != "" {
-		updates["routing_rule_id"] = routingRuleID
-	}
-	if routingRuleName != "" {
-		updates["routing_rule_name"] = routingRuleName
 	}
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries
@@ -1250,10 +1242,11 @@ func (p *LoggerPlugin) GetAvailableVirtualKeys(ctx context.Context, limit int, q
 	return keyPairResultsToKeyPairs(results), nil
 }
 
-func (p *LoggerPlugin) GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error) {
-	results, err := p.store.GetDistinctKeyPairs(ctx, "routing_rule_id", "routing_rule_name", limit, query)
+// GetAvailableModelRouters returns all unique model router ID-Name pairs from logs.
+func (p *LoggerPlugin) GetAvailableModelRouters(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	results, err := p.store.GetDistinctKeyPairs(ctx, logstore.ModelRouterOrRuleID, logstore.ModelRouterOrRuleName, limit, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get available routing rules: %w", err)
+		return nil, fmt.Errorf("failed to get available model routers: %w", err)
 	}
 	return keyPairResultsToKeyPairs(results), nil
 }

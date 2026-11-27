@@ -27,8 +27,8 @@ func SpanEnrichmentFromContext(ctx context.Context) *SpanEnrichment {
 	e.VirtualKeyName = str(BifrostContextKeyGovernanceVirtualKeyName)
 	e.SelectedKeyID = str(BifrostContextKeySelectedKeyID)
 	e.SelectedKeyName = str(BifrostContextKeySelectedKeyName)
-	e.RoutingRuleID = str(BifrostContextKeyGovernanceRoutingRuleID)
-	e.RoutingRuleName = str(BifrostContextKeyGovernanceRoutingRuleName)
+	e.ModelRouterID = str(BifrostContextKeyModelRouterID)
+	e.ModelRouterName = str(BifrostContextKeyModelRouterName)
 	e.TeamID = str(BifrostContextKeyGovernanceTeamID)
 	e.TeamName = str(BifrostContextKeyGovernanceTeamName)
 	e.CustomerID = str(BifrostContextKeyGovernanceCustomerID)
@@ -77,9 +77,11 @@ func (e *SpanEnrichment) ApplyToSpan(span *Span) {
 		span.SetAttribute(AttrBifrostSelectedKeyID, e.SelectedKeyID)
 		span.SetAttribute(AttrBifrostSelectedKeyName, e.SelectedKeyName)
 	}
-	if e.RoutingRuleID != "" {
-		span.SetAttribute(AttrBifrostRoutingRuleID, e.RoutingRuleID)
-		span.SetAttribute(AttrBifrostRoutingRuleName, e.RoutingRuleName)
+	if e.ModelRouterID != "" {
+		span.SetAttribute(AttrBifrostModelRouterID, e.ModelRouterID)
+		span.SetAttribute(AttrBifrostModelRouterName, e.ModelRouterName)
+		span.SetAttribute(AttrBifrostRoutingRuleID, e.ModelRouterID)
+		span.SetAttribute(AttrBifrostRoutingRuleName, e.ModelRouterName)
 	}
 	setSpanStr(span, AttrBifrostTeamID, e.TeamID)
 	setSpanStr(span, AttrBifrostTeamName, e.TeamName)

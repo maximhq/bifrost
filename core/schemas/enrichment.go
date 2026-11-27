@@ -62,10 +62,14 @@ var EnrichmentDims = []EnrichmentDim{
 	{Name: "virtual_key_name", SpanAttr: AttrBifrostVirtualKeyName, Tier: TierMetric},
 	{Name: "selected_key_id", SpanAttr: AttrBifrostSelectedKeyID, Tier: TierMetric},
 	{Name: "selected_key_name", SpanAttr: AttrBifrostSelectedKeyName, Tier: TierMetric},
+	{Name: "model_router_id", SpanAttr: AttrBifrostModelRouterID, Tier: TierMetric},
+	{Name: "model_router_name", SpanAttr: AttrBifrostModelRouterName, Tier: TierMetric},
+	// Deprecated names of model_router_id and model_router_name, carrying the same values: model
+	// routers replaced routing rules, and dashboards built on these keep working until they move.
 	{Name: "routing_rule_id", SpanAttr: AttrBifrostRoutingRuleID, Tier: TierMetric},
 	{Name: "routing_rule_name", SpanAttr: AttrBifrostRoutingRuleName, Tier: TierMetric},
-	// complexity_tier and complexity_mechanism are set by the governance plugin only
-	// when a routing rule references complexity_tier. Both are closed value sets
+	// complexity_tier and complexity_mechanism are set only when a model router
+	// classified the request. Both are closed value sets
 	// (tiers: SIMPLE/MEDIUM/COMPLEX; mechanisms: semantic/llm/session/skipped), so
 	// they are metric-safe. The raw complexity score is deliberately NOT a
 	// dimension — unbounded cardinality; it lives only in the logstore columns.

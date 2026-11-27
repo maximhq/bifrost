@@ -130,8 +130,8 @@ type SearchFilters struct {
 	GroupSessions        bool       `json:"group_sessions,omitempty"` // Collapse every row sharing a session_id into that session's earliest chain-root row. Layered on top of RootsOnly; see SessionGroupingActive for when it applies.
 	SelectedKeyIDs       []string   `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs        []string   `json:"virtual_key_ids,omitempty"`
-	RoutingRuleIDs       []string   `json:"routing_rule_ids,omitempty"`
 	ModelRouterIDs       []string   `json:"model_router_ids,omitempty"`
+	RoutingRuleIDs       []string   `json:"-"`                               // Deprecated routing_rule_ids query parameter, and a router's meta rules; with ModelRouterIDs, rows with no router whose rule is one of these
 	ComplexityTiers      []string   `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	AgentNames           []string   `json:"agent_names,omitempty"`           // Registered Agents whose context IDs correlate the matching LLM logs
@@ -367,7 +367,7 @@ type Log struct {
 	ID                      string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	IncNumber               *int64    `gorm:"column:inc_number" json:"inc_number,omitempty"`
 	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
-	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;index:idx_logs_session_id_timestamp,priority:2;index:idx_logs_vk_ts,priority:2;index:idx_logs_user_ts,priority:2;index:idx_logs_team_ts,priority:2;not null;index:idx_logs_selected_key_ts,priority:2;index:idx_logs_routing_rule_ts,priority:2;index:idx_logs_customer_ts,priority:2;index:idx_logs_business_unit_ts,priority:2;index:idx_logs_project_ts,priority:2" json:"timestamp"`
+	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;index:idx_logs_session_id_timestamp,priority:2;index:idx_logs_vk_ts,priority:2;index:idx_logs_user_ts,priority:2;index:idx_logs_team_ts,priority:2;not null;index:idx_logs_selected_key_ts,priority:2;index:idx_logs_routing_rule_ts,priority:2;index:idx_logs_model_router_ts,priority:2;index:idx_logs_customer_ts,priority:2;index:idx_logs_business_unit_ts,priority:2;index:idx_logs_project_ts,priority:2" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	IsPassthrough           bool      `gorm:"not null;default:false" json:"is_passthrough,omitempty"`            // Row came from a passthrough route; Object is its inferred type, or passthrough when none is known
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
@@ -384,11 +384,11 @@ type Log struct {
 	AttemptTrail            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.KeyAttemptRecord
 	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_vk_ts,priority:1" json:"virtual_key_id"` // (virtual_key_id, timestamp) composite serves owner-filtered lists newest-first and every equality lookup on virtual_key_id
 	VirtualKeyName          *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
-	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"`                             // Comma-separated routing engines
-	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`                                          // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
-	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_ts,priority:1" json:"routing_rule_id"` // (routing_rule_id, timestamp) composite; replaces idx_logs_routing_rule_id
-	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
-	ModelRouterID           *string   `gorm:"type:varchar(255);index:idx_logs_model_router_id,where:model_router_id IS NOT NULL" json:"model_router_id,omitempty"`
+	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"`                                                                         // Comma-separated routing engines
+	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`                                                                                      // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
+	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_ts,priority:1;<-:false" json:"-"`                                                  // Deprecated: written before model routers replaced routing rules; read only, see AfterFind
+	RoutingRuleName         *string   `gorm:"type:varchar(255);<-:false" json:"-"`                                                                                            // Deprecated with RoutingRuleID
+	ModelRouterID           *string   `gorm:"type:varchar(255);index:idx_logs_model_router_ts,priority:1,where:model_router_id IS NOT NULL" json:"model_router_id,omitempty"` // (model_router_id, timestamp) composite over the rows a router took; replaces idx_logs_model_router_id
 	ModelRouterName         *string   `gorm:"type:varchar(255)" json:"model_router_name,omitempty"`
 	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule or model router demanded complexity. Partial index, matching its performanceIndexes entry
 	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"). NULL means no routing rule or model router asked for a tier, so classification never ran. Partial index, matching its performanceIndexes entry
@@ -607,9 +607,8 @@ type Log struct {
 	BusinessUnitNamesParsed     []string                                `gorm:"-" json:"business_unit_names,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
-	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
-	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted
-	RoutingRule *tables.TableRoutingRule `gorm:"-" json:"routing_rule,omitempty"` // redacted
+	VirtualKey  *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`  // redacted
+	SelectedKey *schemas.Key            `gorm:"-" json:"selected_key,omitempty"` // redacted
 
 	// usageRebuiltFromColumns records that TokenUsageParsed came from the lossy
 	// denormalized-column rebuild in DeserializeFields rather than from a real
@@ -1468,6 +1467,11 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(*l.BusinessUnitNames), &l.BusinessUnitNamesParsed); err != nil {
 			l.BusinessUnitNamesParsed = nil
 		}
+	}
+
+	// A row written before model routers replaced routing rules names its rule instead.
+	if (l.ModelRouterID == nil || *l.ModelRouterID == "") && l.RoutingRuleID != nil && *l.RoutingRuleID != "" {
+		l.ModelRouterID, l.ModelRouterName = l.RoutingRuleID, l.RoutingRuleName
 	}
 
 	if l.RoutingEnginesUsedStr != nil && *l.RoutingEnginesUsedStr != "" {
@@ -3111,11 +3115,11 @@ const (
 	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
 	RankingDimensionApp          RankingDimension = "app"
 	RankingDimensionUserAgent    RankingDimension = "user_agent"
-	// The routing dimensions: which rule, provider key, alias or complexity tier
-	// handled a request. Each has been filterable on the Logs page for as long as
-	// it has existed and could be ranked by nothing, so "which rule takes the most
-	// traffic" had a filter to check one guess at a time and no way to ask.
-	RankingDimensionRoutingRule         RankingDimension = "routing_rule"
+	// The routing dimensions: which model router, provider key, alias or
+	// complexity tier handled a request. Each has been filterable on the Logs page
+	// for as long as it has existed and could be ranked by nothing, so "which
+	// router takes the most traffic" had a filter to check one guess at a time and
+	// no way to ask.
 	RankingDimensionSelectedKey         RankingDimension = "selected_key"
 	RankingDimensionAlias               RankingDimension = "alias"
 	RankingDimensionComplexityTier      RankingDimension = "complexity_tier"
@@ -3162,13 +3166,12 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
 	RankingDimensionApp:          {IDCol: "app", NameCol: "app"},
 	RankingDimensionUserAgent:    {IDCol: "user_agent", NameCol: "user_agent"},
-	RankingDimensionRoutingRule:  {IDCol: "routing_rule_id", NameCol: "routing_rule_name"},
+	RankingDimensionModelRouter:  {IDCol: ModelRouterOrRuleID, NameCol: ModelRouterOrRuleName, RawOnly: true}, // see ModelRouterOrRuleID
 	RankingDimensionSelectedKey:  {IDCol: "selected_key_id", NameCol: "selected_key_name"},
 	RankingDimensionAlias:        {IDCol: "alias", NameCol: "alias"},
 	// Not carried by mv_logs_hourly, so always read from the raw table.
 	RankingDimensionComplexityTier:      {IDCol: "complexity_tier", NameCol: "complexity_tier", RawOnly: true},
 	RankingDimensionComplexityMechanism: {IDCol: "complexity_mechanism", NameCol: "complexity_mechanism", RawOnly: true},
-	RankingDimensionModelRouter:         {IDCol: "model_router_id", NameCol: "model_router_name", RawOnly: true},
 }
 
 // DimensionColumnDef returns the column pair for a supported ranking dimension.

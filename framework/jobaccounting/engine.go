@@ -518,8 +518,8 @@ func applyLogAttribution(entry *logstore.Log, source *logstore.Log) {
 func applyLogDenormalizations(entry *logstore.Log, source *logstore.Log) {
 	entry.SelectedKeyName = source.SelectedKeyName
 	entry.VirtualKeyName = source.VirtualKeyName
-	entry.RoutingRuleID = source.RoutingRuleID
-	entry.RoutingRuleName = source.RoutingRuleName
+	entry.ModelRouterID = source.ModelRouterID
+	entry.ModelRouterName = source.ModelRouterName
 	entry.UserID = source.UserID
 	entry.UserName = source.UserName
 	entry.TeamID = source.TeamID

@@ -848,8 +848,10 @@ func (p *LoggerPlugin) emitSettlementSpan(ctx context.Context, entry *logstore.L
 	setStr(schemas.AttrBifrostSelectedKeyName, entry.SelectedKeyName)
 	setStrPtr(schemas.AttrBifrostVirtualKeyID, entry.VirtualKeyID)
 	setStrPtr(schemas.AttrBifrostVirtualKeyName, entry.VirtualKeyName)
-	setStrPtr(schemas.AttrBifrostRoutingRuleID, entry.RoutingRuleID)
-	setStrPtr(schemas.AttrBifrostRoutingRuleName, entry.RoutingRuleName)
+	setStrPtr(schemas.AttrBifrostModelRouterID, entry.ModelRouterID)
+	setStrPtr(schemas.AttrBifrostModelRouterName, entry.ModelRouterName)
+	setStrPtr(schemas.AttrBifrostRoutingRuleID, entry.ModelRouterID)
+	setStrPtr(schemas.AttrBifrostRoutingRuleName, entry.ModelRouterName)
 	setStrPtr(schemas.AttrBifrostTeamID, entry.TeamID)
 	setStrPtr(schemas.AttrBifrostTeamName, entry.TeamName)
 	setStrPtr(schemas.AttrBifrostCustomerID, entry.CustomerID)
@@ -1281,8 +1283,6 @@ type LogMessage struct {
 	VirtualKeyID       string                             // Virtual key ID
 	VirtualKeyName     string                             // Virtual key name
 	RoutingEnginesUsed []string                           // List of routing engines used
-	RoutingRuleID      string                             // Routing rule ID
-	RoutingRuleName    string                             // Routing rule name
 	Timestamp          time.Time                          // Of the preHook/postHook call
 	Latency            int64                              // For latency updates
 	InitialData        *InitialLogData                    // For create operations
@@ -2459,8 +2459,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
 	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
-	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
-	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
 	complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
 	complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
 	sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID)
@@ -2533,7 +2531,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.ServerSideFallbackModel = &m
 		}
 	}
-	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, projectID, projectName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
+	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, projectID, projectName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
 	applyUserEmail(ctx, entry)
 	if complexityTier != "" {
 		entry.ComplexityTier = &complexityTier
@@ -2843,12 +2841,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		entry.VirtualKey = &tables.TableVirtualKey{
 			ID:   *entry.VirtualKeyID,
 			Name: *entry.VirtualKeyName,
-		}
-	}
-	if entry.RoutingRuleID != nil && entry.RoutingRuleName != nil && *entry.RoutingRuleID != "" && *entry.RoutingRuleName != "" {
-		entry.RoutingRule = &tables.TableRoutingRule{
-			ID:   *entry.RoutingRuleID,
-			Name: *entry.RoutingRuleName,
 		}
 	}
 	p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)

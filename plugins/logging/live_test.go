@@ -570,3 +570,31 @@ func TestLiveSessionRowKeepsVirtualKeyMetadata(t *testing.T) {
 	assert.Equal(t, "cc-live", row.MetadataParsed["cost_center"], "the key's metadata lands on the session row")
 	assert.Equal(t, "vk-wins", row.MetadataParsed["realtime_transport"], "the key's value beats the realtime merge")
 }
+
+// TestLogRowsNameTheModelRouter pins what a log row says routed its request: the model router on
+// the request's context, on a row written for a request and on one written for a live session
+// unit, and no router when none took the request.
+func TestLogRowsNameTheModelRouter(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	unrouted, unroutedLive := &logstore.Log{}, &logstore.Log{}
+	applyModelRoutingFields(ctx, unrouted)
+	plugin.applyLiveContextFields(ctx, unroutedLive, 5)
+	for _, entry := range []*logstore.Log{unrouted, unroutedLive} {
+		if entry.ModelRouterID != nil || entry.ModelRouterName != nil {
+			t.Fatalf("a request no router took names a router: %v %v", entry.ModelRouterID, entry.ModelRouterName)
+		}
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyModelRouterID, "premium")
+	ctx.SetValue(schemas.BifrostContextKeyModelRouterName, "Premium tier")
+	routed, routedLive := &logstore.Log{}, &logstore.Log{}
+	applyModelRoutingFields(ctx, routed)
+	plugin.applyLiveContextFields(ctx, routedLive, 5)
+	for name, entry := range map[string]*logstore.Log{"request": routed, "live session unit": routedLive} {
+		if entry.ModelRouterID == nil || *entry.ModelRouterID != "premium" || entry.ModelRouterName == nil || *entry.ModelRouterName != "Premium tier" {
+			t.Fatalf("%s row: model router = %v %v, want premium / Premium tier", name, entry.ModelRouterID, entry.ModelRouterName)
+		}
+	}
+}

@@ -131,7 +131,7 @@ func TestUpdateLogEntrySanitizesErrorDetails(t *testing.T) {
 		Status:       "error",
 		ErrorDetails: errorWithRawPayloads(),
 	}
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, false); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", 0, nil, "", update, false); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 

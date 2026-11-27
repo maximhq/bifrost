@@ -369,8 +369,8 @@ func (f *fakeLogReader) GetAvailableVirtualKeys(_ context.Context, _ int, query 
 
 // The routing lookups return fixed values: what matters to the tools is that
 // they are asked, and that what comes back reaches the model.
-func (f *fakeLogReader) GetAvailableRoutingRules(context.Context, int, string) ([]KeyPair, error) {
-	return []KeyPair{{ID: "rule-premium", Name: "Premium tier"}}, nil
+func (f *fakeLogReader) GetAvailableModelRouters(context.Context, int, string) ([]KeyPair, error) {
+	return []KeyPair{{ID: "router-premium", Name: "Premium tier"}}, nil
 }
 func (f *fakeLogReader) GetAvailableSelectedKeys(context.Context, int, string) ([]KeyPair, error) {
 	return []KeyPair{{ID: "key-1", Name: "anthropic-primary"}}, nil
@@ -1643,7 +1643,7 @@ func TestWarpDescribeFilterSpaceDescriptionMatchesResult(t *testing.T) {
 		"caller_is_identified": "who is asking",
 		"default_scope":        "who is asking",
 		// What routed a request, from the lookups behind the Logs page's filters.
-		"routing_rules":   "routing rules",
+		"model_routers":   "model routers",
 		"provider_keys":   "provider keys",
 		"aliases":         "aliases",
 		"routing_engines": "routing engines",
@@ -1684,7 +1684,7 @@ func (f *fakeFilterSpaceReader) GetAvailableModels(_ context.Context, _ int, que
 }
 
 // Nothing routed in this deployment: the lookups exist and come back empty.
-func (f *fakeFilterSpaceReader) GetAvailableRoutingRules(context.Context, int, string) ([]KeyPair, error) {
+func (f *fakeFilterSpaceReader) GetAvailableModelRouters(context.Context, int, string) ([]KeyPair, error) {
 	return nil, nil
 }
 func (f *fakeFilterSpaceReader) GetAvailableSelectedKeys(context.Context, int, string) ([]KeyPair, error) {
@@ -2584,7 +2584,7 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 	}
 
 	filters, err := parseFilters(map[string]any{
-		"routing_rule_ids": []any{"rule-premium"}, "selected_key_ids": []any{"key-1"}, "aliases": []any{"smart"},
+		"selected_key_ids": []any{"key-1"}, "aliases": []any{"smart"},
 		"routing_engine_used": []any{"loadbalancing"}, "complexity_tiers": []any{"COMPLEX"}, "complexity_mechanisms": []any{"semantic"},
 		"tool_call_names": []any{"get_weather"}, "user_agents": []any{"curl/8"},
 		"metadata_filters": map[string]any{"env": "prod"}, "session_id": "sess-1", "parent_request_id": "req-0", "request_id": "req-1",
@@ -2592,7 +2592,6 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 		"model_router_ids": []any{"support"},
 	}, Now())
 	require.NoError(t, err)
-	require.Equal(t, []string{"rule-premium"}, filters.RoutingRuleIDs)
 	require.Equal(t, []string{"support"}, filters.ModelRouterIDs)
 	require.Equal(t, []string{"key-1"}, filters.SelectedKeyIDs)
 	require.Equal(t, []string{"smart"}, filters.Aliases)
@@ -2619,14 +2618,14 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 	}
 }
 
-// A guessed rule id returns an empty result that reads like a finding, which is
+// A guessed router id returns an empty result that reads like a finding, which is
 // how "chat_completion" produced "no records" on a busy day. The values that
 // exist are listed where the model already looks for names.
 func TestWarpDescribeFilterSpaceListsRoutingValues(t *testing.T) {
 	result, err := runTool(t, "describe_filter_space", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{})
 	require.NoError(t, err)
 	out := result.(map[string]any)
-	require.Equal(t, []KeyPair{{ID: "rule-premium", Name: "Premium tier"}}, out["routing_rules"])
+	require.Equal(t, []KeyPair{{ID: "router-premium", Name: "Premium tier"}}, out["model_routers"])
 	require.Equal(t, []KeyPair{{ID: "key-1", Name: "anthropic-primary"}}, out["provider_keys"])
 	require.Equal(t, []string{"smart"}, out["aliases"])
 	require.Equal(t, []string{"routing-rule", "loadbalancing"}, out["routing_engines"])
@@ -2634,11 +2633,11 @@ func TestWarpDescribeFilterSpaceListsRoutingValues(t *testing.T) {
 	require.Equal(t, map[string][]string{"env": {"prod", "staging"}}, out["metadata"])
 }
 
-// "Which rule takes the most traffic" is a ranking, and each row opens as the
+// "Which router takes the most traffic" is a ranking, and each row opens as the
 // requests it counted - these are filters the Logs page has.
 func TestWarpRanksAndLinksRoutingDimensions(t *testing.T) {
 	cases := map[string]string{
-		"routing_rule": "routing_rule_ids", "selected_key": "selected_key_ids", "alias": "aliases",
+		"model_router": "model_router_ids", "selected_key": "selected_key_ids", "alias": "aliases",
 		"complexity_tier": "complexity_tiers", "complexity_mechanism": "complexity_mechanisms",
 		"routing_engine": "routing_engine_used", "tool_call_name": "tool_call_names",
 	}
@@ -2654,7 +2653,7 @@ func TestWarpRanksAndLinksRoutingDimensions(t *testing.T) {
 	}
 
 	content := systemInstructions(&schemas.WarpConfig{}, true)
-	require.Contains(t, content, "Per routing rule, provider key, alias, routing engine, complexity tier or tool call: query_usage_by")
+	require.Contains(t, content, "Per model router, provider key, alias, routing engine, complexity tier or tool call: query_usage_by")
 	// Without the management tools, how a rule is configured is out of reach.
 	require.Contains(t, content, "how a routing rule is configured")
 	// With them, it is a management-tool question, not a traffic one.
@@ -2662,13 +2661,13 @@ func TestWarpRanksAndLinksRoutingDimensions(t *testing.T) {
 	require.Contains(t, withManagement, "A question about how something is configured goes to the management tools")
 }
 
-// A row says which rule, key and alias handled it, so a list of requests can be
+// A row says which router, key and alias handled it, so a list of requests can be
 // read without tracing each one.
 func TestWarpLogRowsCarryRoutingFields(t *testing.T) {
-	rule, ruleName, alias, tier := "rule-premium", "Premium tier", "smart", "COMPLEX"
+	router, routerName, alias, tier := "router-premium", "Premium tier", "smart", "COMPLEX"
 	fake := &fakeLogReader{searchResult: &logstore.SearchResult{Logs: []logstore.Log{{
 		ID: "req-1", Timestamp: Now(), Provider: "anthropic", Model: "claude-sonnet-5", Status: "success",
-		RoutingRuleID: &rule, RoutingRuleName: &ruleName, SelectedKeyName: "anthropic-primary", Alias: &alias, ComplexityTier: &tier,
+		ModelRouterID: &router, ModelRouterName: &routerName, SelectedKeyName: "anthropic-primary", Alias: &alias, ComplexityTier: &tier,
 		ToolCallNames: []string{"get_weather"},
 	}}}}
 	out, err := runTool(t, "query_logs", &ToolDeps{logManager: fake}, map[string]any{"filters": map[string]any{"start_time": "-1d"}})
@@ -2681,7 +2680,7 @@ func TestWarpLogRowsCarryRoutingFields(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal(encoded, &shape))
 	rows := shape.Rows
 	require.Len(t, rows, 1)
-	require.Equal(t, "Premium tier", rows[0]["routing_rule"])
+	require.Equal(t, "Premium tier", rows[0]["model_router"])
 	require.Equal(t, "anthropic-primary", rows[0]["provider_key"])
 	require.Equal(t, "smart", rows[0]["alias"])
 	require.Equal(t, "COMPLEX", rows[0]["complexity_tier"])

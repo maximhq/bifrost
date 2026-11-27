@@ -488,6 +488,25 @@ func (s *RDBConfigStore) GetModelRouter(ctx context.Context, id string) (*ModelR
 	return router, nil
 }
 
+// GetModelRouterNames returns the current name of each router in ids that
+// exists, by id. It reads without a row-visibility scope: it names routers the
+// caller already holds the ids of, as a log's router is named to whoever may
+// read the log.
+func (s *RDBConfigStore) GetModelRouterNames(ctx context.Context, ids []string) (map[string]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var rows []tables.TableModelRouter
+	if err := s.DB().WithContext(ctx).Select("id", "name").Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	names := make(map[string]string, len(rows))
+	for _, row := range rows {
+		names[row.ID] = row.Name
+	}
+	return names, nil
+}
+
 // getModelRouterWithDB reads one router, returning nil when no row exists. The
 // row is read on rowDB and its targets on db: a row-visibility scope names
 // model_routers columns, so it can only narrow the router row.

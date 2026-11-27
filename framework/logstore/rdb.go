@@ -288,6 +288,15 @@ func bucketedIDExpr(idCol string) string {
 	return fmt.Sprintf("COALESCE(NULLIF(%s, ''), '%s')", idCol, unassignedDimensionID)
 }
 
+// ModelRouterOrRuleID and ModelRouterOrRuleName read a log's router: the model router that took
+// it, or for a row with no router (written before model routers replaced routing rules, or by a
+// node still on that release) its routing rule, whose id the router it became kept or lists in
+// its meta. The model router filter list and ranking read them as their id and name columns.
+const (
+	ModelRouterOrRuleID   = "CASE WHEN COALESCE(model_router_id, '') = '' THEN routing_rule_id ELSE model_router_id END"
+	ModelRouterOrRuleName = "CASE WHEN COALESCE(model_router_id, '') = '' THEN routing_rule_name ELSE model_router_name END"
+)
+
 // dimensionReadSource describes how the aggregate dimension readers (rankings +
 // the cost / token / latency histograms) must read the logs table for one
 // dimension: which relation to select from, which expression yields the
@@ -444,8 +453,15 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.ComplexityMechanisms) > 0 {
 		baseQuery = baseQuery.Where("complexity_mechanism IN ?", filters.ComplexityMechanisms)
 	}
-	if len(filters.ModelRouterIDs) > 0 {
+	// A router's rows are the rows it took and, from before model routers, the rows with no router
+	// whose routing rule is one the caller names for it (its own id, or one in its meta).
+	switch {
+	case len(filters.ModelRouterIDs) > 0 && len(filters.RoutingRuleIDs) > 0:
+		baseQuery = baseQuery.Where("(model_router_id IN ? OR (COALESCE(model_router_id, '') = '' AND routing_rule_id IN ?))", filters.ModelRouterIDs, filters.RoutingRuleIDs)
+	case len(filters.ModelRouterIDs) > 0:
 		baseQuery = baseQuery.Where("model_router_id IN ?", filters.ModelRouterIDs)
+	case len(filters.RoutingRuleIDs) > 0:
+		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
 	}
 	if len(filters.AgentNames) > 0 {
 		baseQuery = s.applyAgentContextFilter(baseQuery, filters.AgentNames, filters.StartTime, filters.EndTime)
@@ -480,9 +496,6 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if len(filters.VirtualKeyIDs) > 0 {
 		baseQuery = baseQuery.Where("virtual_key_id IN ?", filters.VirtualKeyIDs)
-	}
-	if len(filters.RoutingRuleIDs) > 0 {
-		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
 	}
 	if len(filters.TeamIDs) > 0 {
 		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "team_id", "team_ids", filters.TeamIDs)
@@ -1838,8 +1851,7 @@ func normalizeAggregateTimestamp(value any) string {
 //
 // Columns only the log detail sheet reads are left out: alias_model_family,
 // server_side_fallback_model, served_model, routing_engines_used,
-// complexity_mechanism, model_router_id, model_router_name,
-// video_generation_input and cache_debug. The sheet waits for
+// complexity_mechanism, video_generation_input and cache_debug. The sheet waits for
 // GET /api/logs/{id}, which selects every column, before it renders, so
 // carrying them on every list row only grows the response. Each backs an
 // omitempty field, so a list row leaves the key out rather than reporting a
@@ -1854,7 +1866,8 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// only when both the id and the name are present.
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
-		"tool_call_names", "routing_rule_id", "routing_rule_name",
+		// routing_rule_id and routing_rule_name name the router of a row from before routers.
+		"tool_call_names", "model_router_id", "model_router_name", "routing_rule_id", "routing_rule_name",
 		"complexity_tier", "session_id", "agent_correlation_id",
 		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
@@ -4966,8 +4979,6 @@ var allowedKeyPairColumns = map[string]struct{}{
 	"selected_key_name":  {},
 	"virtual_key_id":     {},
 	"virtual_key_name":   {},
-	"routing_rule_id":    {},
-	"routing_rule_name":  {},
 	"team_id":            {},
 	"team_name":          {},
 	"customer_id":        {},
@@ -4978,6 +4989,9 @@ var allowedKeyPairColumns = map[string]struct{}{
 	"business_unit_name": {},
 	"project_id":         {},
 	"project_name":       {},
+
+	ModelRouterOrRuleID:   {},
+	ModelRouterOrRuleName: {},
 }
 
 // GetDistinctKeyPairs returns unique non-empty ID-Name pairs for the given columns using SELECT DISTINCT.
@@ -5370,7 +5384,7 @@ var allowedDistinctLogColumns = map[string]struct{}{
 	"provider": {}, "model": {}, "number_of_retries": {}, "fallback_index": {},
 	"selected_key_id": {}, "selected_key_name": {},
 	"virtual_key_id": {}, "virtual_key_name": {},
-	"routing_engines_used": {}, "routing_rule_id": {}, "routing_rule_name": {},
+	"routing_engines_used": {}, "routing_rule_id": {}, "routing_rule_name": {}, "model_router_id": {}, "model_router_name": {},
 	"status": {}, "stream": {},
 }
 
