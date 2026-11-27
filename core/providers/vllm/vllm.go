@@ -180,6 +180,7 @@ func (provider *VLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 		return nil, bifrostErr
 	}
 
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
@@ -199,7 +200,6 @@ func (provider *VLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 		)
 	}
 
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -224,6 +224,7 @@ func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 		return nil, bifrostErr
 	}
 
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.VLLM,
@@ -255,7 +256,6 @@ func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 		)
 	}
 
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
@@ -308,6 +308,7 @@ func (provider *VLLMProvider) Responses(ctx *schemas.BifrostContext, key schemas
 		return nil, bifrostErr
 	}
 
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		return anthropic.HandleAnthropicResponsesRequest(
 			ctx,
@@ -328,7 +329,6 @@ func (provider *VLLMProvider) Responses(ctx *schemas.BifrostContext, key schemas
 		)
 	}
 
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -353,6 +353,7 @@ func (provider *VLLMProvider) ResponsesStream(ctx *schemas.BifrostContext, postH
 		return nil, bifrostErr
 	}
 
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.VLLM,
@@ -385,7 +386,6 @@ func (provider *VLLMProvider) ResponsesStream(ctx *schemas.BifrostContext, postH
 		)
 	}
 
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
