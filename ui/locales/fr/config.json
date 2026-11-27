@@ -35,6 +35,8 @@
 		"disableDbPingsHelp": "Si cette option est activée, le point de terminaison /health ignore les vérifications de connectivité de la base de données et renvoie immédiatement OK.",
 		"dumpErrors": "Dumper les erreurs dans les journaux console",
 		"dumpErrorsHelp": "Si cette option est activée, les détails complets des erreurs sont écrits dans les journaux console du serveur. Utile pour le débogage, mais peut être bruyant en production.",
+		"sendBackCost": "Renvoyer le coût",
+		"sendBackCostHelp": "Renvoie à l'appelant le coût de chaque requête calculé par Bifrost, pour les requêtes de modèle et les appels d'outils MCP tarifés, dans <b>extra_fields.cost</b> et l'en-tête de réponse <b>x-bifrost-cost</b>. Lorsque l'emplacement des champs supplémentaires est <b>En-têtes</b>, le corps ne contient pas extra_fields : lisez alors le coût dans <b>x-bifrost-cost</b>. Les appels d'outils sur <b>/mcp</b> le renvoient plutôt dans <b>_meta[\"bifrost/cost\"]</b>. Une requête peut l'activer ou le désactiver pour elle-même avec l'en-tête <b>x-bf-send-back-cost</b>.",
 		"asyncJobTtl": "TTL des résultats de tâches asynchrones (secondes)",
 		"asyncJobTtlHelp": "Durée de vie par défaut des résultats de tâches asynchrones, en secondes. Les résultats sont automatiquement nettoyés à expiration.",
 		"bifrostUrl": "URL de Bifrost",

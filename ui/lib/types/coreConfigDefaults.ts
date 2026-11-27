@@ -10,6 +10,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	retain_content_in_object_storage: false,
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
+	send_back_cost: false,
 	allow_direct_keys: false,
 	vk_rotation_cooldown: 0,
 	disable_db_pings_in_health: false,

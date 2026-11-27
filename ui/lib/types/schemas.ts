@@ -1625,6 +1625,7 @@ export const openAPIUrlSchema = z.string().superRefine((value, ctx) => {
 
 export const coreConfigSchema = z.object({
 	drop_excess_requests: z.boolean().default(false),
+	send_back_cost: z.boolean().default(false),
 	initial_pool_size: z.number().min(1).default(10),
 	prometheus_labels: z.array(z.string()).default([]),
 	enable_logging: z.boolean().default(true),

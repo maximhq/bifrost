@@ -929,6 +929,7 @@ export interface CoreConfig {
 	retain_content_in_object_storage: boolean;
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
+	send_back_cost: boolean;
 	allow_direct_keys: boolean;
 	// Grace period after a virtual key rotation during which the previous value
 	// still authenticates. API returns int64 nanoseconds; writes accept a Go

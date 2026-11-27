@@ -35,6 +35,8 @@
 		"disableDbPingsHelp": "활성화되면 /health 엔드포인트는 데이터베이스 연결 확인을 건너뛰고 즉시 OK를 반환해요.",
 		"dumpErrors": "콘솔 로그의 덤프 오류",
 		"dumpErrorsHelp": "활성화되면 전체 오류 세부 정보가 서버 콘솔 로그에 기록돼요. 디버깅에는 유용하지만 프로덕션 환경에서는 노이즈가 발생할 수 있어요.",
+		"sendBackCost": "비용 반환",
+		"sendBackCostHelp": "Bifrost가 계산한 각 요청의 비용을 모델 요청과 가격이 설정된 MCP 도구 호출에 대해 <b>extra_fields.cost</b>와 <b>x-bifrost-cost</b> 응답 헤더로 호출자에게 반환합니다. 추가 필드 위치가 <b>헤더</b>이면 본문에 extra_fields가 없으므로 비용은 <b>x-bifrost-cost</b>에서 읽으세요. <b>/mcp</b>의 도구 호출은 대신 <b>_meta[\"bifrost/cost\"]</b>에 비용을 담습니다. 요청마다 <b>x-bf-send-back-cost</b> 헤더로 켜거나 끌 수 있습니다.",
 		"asyncJobTtl": "비동기 작업 결과 TTL(초)",
 		"asyncJobTtlHelp": "비동기 작업의 기본 수명은 초 단위이에요. 결과는 만료 후 자동으로 정리돼요.",
 		"bifrostUrl": "Bifrost URL",
