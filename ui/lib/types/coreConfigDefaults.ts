@@ -38,6 +38,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_max_instructions_total: 0,
 	mcp_openapi_max_spec_mb: 0,
 	mcp_enable_temp_token_auth: false,
+	mcp_allow_free_calls_when_budget_exhausted: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],
 	required_headers: [],

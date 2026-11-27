@@ -117,6 +117,7 @@ export default function MCPView() {
 			!codeModeLimitsEqual(localConfig.mcp_code_mode_limits, config.mcp_code_mode_limits) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
+			(localConfig.mcp_allow_free_calls_when_budget_exhausted ?? false) !== (config.mcp_allow_free_calls_when_budget_exhausted ?? false) ||
 			!stringListEquals(localConfig.mcp_oauth_private_allowlist, config.mcp_oauth_private_allowlist) ||
 			clientURLChanged ||
 			clientMetadataURLChanged ||
@@ -204,6 +205,13 @@ export default function MCPView() {
 		setLocalConfig((prev) => ({
 			...prev,
 			mcp_enable_temp_token_auth: checked,
+		}));
+	}, []);
+
+	const handleAllowFreeCallsOverBudgetChange = useCallback((checked: boolean) => {
+		setLocalConfig((prev) => ({
+			...prev,
+			mcp_allow_free_calls_when_budget_exhausted: checked,
 		}));
 	}, []);
 
@@ -492,6 +500,23 @@ export default function MCPView() {
 						onCheckedChange={handleTempTokenAuthChange}
 						disabled={!hasSettingsUpdateAccess}
 						data-testid="mcp-enable-temp-token-auth-switch"
+					/>
+				</div>
+
+				{/* Free Tool Calls Over Budget */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-allow-free-calls-when-budget-exhausted" className="text-sm font-medium">
+							{t("mcpSettings.allowFreeCallsOverBudget")}
+						</label>
+						<p className="text-muted-foreground text-sm">{t("mcpSettings.allowFreeCallsOverBudgetHelp")}</p>
+					</div>
+					<Switch
+						id="mcp-allow-free-calls-when-budget-exhausted"
+						checked={localConfig.mcp_allow_free_calls_when_budget_exhausted ?? false}
+						onCheckedChange={handleAllowFreeCallsOverBudgetChange}
+						disabled={!hasSettingsUpdateAccess}
+						data-testid="mcp-allow-free-calls-when-budget-exhausted-switch"
 					/>
 				</div>
 
