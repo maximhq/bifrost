@@ -1522,10 +1522,12 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 			fields["expires_at"] = strconv.FormatInt(expiresAt, 10)
 		}
 		// Write the hash and its native deadline in one MULTI/EXEC transaction.
-		// Redis checks every queued command before EXEC runs any of them, so a
-		// denied or unavailable EXPIREAT discards the whole write instead of
-		// leaving a hash that never expires. A deadline already in the past
-		// deletes the key immediately.
+		// Once MULTI is accepted, Redis checks every queued command before EXEC
+		// runs any of them, so a denied or unavailable EXPIREAT discards the
+		// whole write instead of leaving a hash that never expires. If MULTI
+		// itself is refused, Redis runs HSET and EXPIREAT as plain commands, so
+		// MULTI and EXEC are required permissions. A deadline already in the
+		// past deletes the key immediately.
 		// Transactions do not roll back: if a non-hash key already occupies
 		// this key, HSET fails with WRONGTYPE but EXPIREAT still applies to it.
 		cmds, err := s.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {

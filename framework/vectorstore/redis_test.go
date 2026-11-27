@@ -1455,6 +1455,13 @@ func TestMatchesQueriesForScan(t *testing.T) {
 // INTEGRATION TESTS (require real Redis instance with RediSearch)
 // ============================================================================
 
+// redisKeyDeleted reports whether key is gone. A failed EXISTS never counts as
+// deleted, so a lost connection cannot satisfy an expiry assertion.
+func redisKeyDeleted(ctx context.Context, client redis.Cmdable, key string) bool {
+	count, err := client.Exists(ctx, key).Result()
+	return err == nil && count == 0
+}
+
 // Expiration must reclaim hashes and their vectors even when no later cache
 // request matches them. A hit-before/miss-after test alone cannot detect a leak.
 func TestRedisStore_ExpiresEntriesWithoutReads(t *testing.T) {
@@ -1487,7 +1494,7 @@ func TestRedisStore_ExpiresEntriesWithoutReads(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 	time.Sleep(time.Until(time.Unix(expiresAt, 0)))
 	require.Eventually(t, func() bool {
-		return setup.Store.client.Exists(setup.ctx, key).Val() == 0
+		return redisKeyDeleted(setup.ctx, setup.Store.client, key)
 	}, time.Second, 10*time.Millisecond)
 	_, err = setup.Store.GetChunk(setup.ctx, TestNamespace, id)
 	require.ErrorContains(t, err, "not found")
@@ -1559,7 +1566,7 @@ func TestRedisStore_ExpiryWriteSafety(t *testing.T) {
 	require.Positive(t, store.client.PTTL(ctx, wrongKey).Val())
 	// A stream completing after its first-chunk deadline must not persist.
 	require.NoError(t, store.Add(ctx, TestNamespace, id, nil, map[string]interface{}{"expires_at": int64(1)}))
-	require.Zero(t, store.client.Exists(ctx, key).Val())
+	require.True(t, redisKeyDeleted(ctx, store.client, key), "a past deadline must delete the key")
 	// Concurrent rewrites must leave matching hash metadata and native expiry.
 	var wg sync.WaitGroup
 	errors := make(chan error, 32)
@@ -1630,7 +1637,7 @@ func TestRedisStore_ExpiryPermissionDenied(t *testing.T) {
 				require.Positive(t, setup.Store.client.PTTL(setup.ctx, key).Val(), "a stored entry must carry its deadline")
 				return
 			}
-			require.Zero(t, setup.Store.client.Exists(setup.ctx, key).Val(), "a rejected write must not leave an immortal hash")
+			require.True(t, redisKeyDeleted(setup.ctx, setup.Store.client, key), "a rejected write must not leave an immortal hash")
 			// A rejected write must also leave an existing entry unchanged.
 			require.NoError(t, setup.Store.client.HSet(setup.ctx, key, "response", "original").Err())
 			require.Error(t, limited.Add(setup.ctx, TestNamespace, user, nil, metadata))
@@ -1673,7 +1680,7 @@ func TestRedisStore_ExpiryCommandAvailability(t *testing.T) {
 				return
 			}
 			require.Error(t, err)
-			require.Zero(t, store.client.Exists(ctx, key).Val(), "disabled expiry must not leave an immortal hash")
+			require.True(t, redisKeyDeleted(ctx, store.client, key), "disabled expiry must not leave an immortal hash")
 			require.NoError(t, store.client.HSet(ctx, key, "response", "original").Err())
 			require.Error(t, store.Add(ctx, "TestRedisExpiryAvailability", id, nil, metadata))
 			require.Equal(t, map[string]string{"response": "original"}, store.client.HGetAll(ctx, key).Val())
@@ -1703,6 +1710,11 @@ func TestRedisStore_ExpiryClientModes(t *testing.T) {
 				config.UseTLS = schemas.NewSecretVar("true")
 				config.CACertPEM = schemas.NewSecretVar(readTestCACert(t))
 			}
+			if !tc.tls && !tc.cluster {
+				// The standalone fixture is NewRedisTestSetup's server, so it uses the same credentials.
+				config.Username = schemas.NewSecretVar(os.Getenv("REDIS_USERNAME"))
+				config.Password = schemas.NewSecretVar(os.Getenv("REDIS_PASSWORD"))
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), RedisTestTimeout)
 			defer cancel()
 			store, err := newRedisStore(ctx, config, bifrost.NewDefaultLogger(schemas.LogLevelError))
@@ -1715,14 +1727,18 @@ func TestRedisStore_ExpiryClientModes(t *testing.T) {
 			require.NoError(t, store.Add(ctx, "TestRedisExpiryModes", id, nil, map[string]interface{}{"expires_at": expiresAt}))
 			require.Positive(t, store.client.PTTL(ctx, key).Val())
 			time.Sleep(time.Until(time.Unix(expiresAt, 0)))
-			require.Eventually(t, func() bool { return store.client.Exists(ctx, key).Val() == 0 }, time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool { return redisKeyDeleted(ctx, store.client, key) }, time.Second, 10*time.Millisecond)
 		})
 	}
 }
 
 func BenchmarkRedisStore_Add(b *testing.B) {
 	ctx := context.Background()
-	store, err := newRedisStore(ctx, RedisConfig{Addr: schemas.NewSecretVar(getEnvWithDefault("REDIS_ADDR", DefaultTestAddr))}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	store, err := newRedisStore(ctx, RedisConfig{
+		Addr:     schemas.NewSecretVar(getEnvWithDefault("REDIS_ADDR", DefaultTestAddr)),
+		Username: schemas.NewSecretVar(os.Getenv("REDIS_USERNAME")),
+		Password: schemas.NewSecretVar(os.Getenv("REDIS_PASSWORD")),
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	if err != nil {
 		b.Fatal(err)
 	}

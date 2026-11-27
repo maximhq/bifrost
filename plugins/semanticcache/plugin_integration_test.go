@@ -16,6 +16,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// redisKeyDeleted reports whether key is gone. A failed EXISTS never counts as
+// deleted, so a lost connection cannot satisfy an expiry assertion.
+func redisKeyDeleted(ctx context.Context, client redis.Cmdable, key string) bool {
+	count, err := client.Exists(ctx, key).Result()
+	return err == nil && count == 0
+}
+
 // Exercise the actual plugin writers over Redis, with no paid provider calls.
 // Storage disappearance is checked before another lookup can lazily delete it.
 func TestSemanticCache_RedisNativeExpiry(t *testing.T) {
@@ -101,10 +108,10 @@ func TestSemanticCache_RedisNativeExpiry(t *testing.T) {
 			require.LessOrEqual(t, expiresAt-time.Now().Unix(), int64(3), "per-request TTL must override the minute default")
 			AssertCacheHit(t, call(true), string(tc.mode))
 			time.Sleep(time.Until(time.Unix(expiresAt, 0)))
-			require.Eventually(t, func() bool { return inspect.Exists(ctx, key).Val() == 0 }, time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool { return redisKeyDeleted(ctx, inspect, key) }, time.Second, 10*time.Millisecond)
 			AssertNoCacheHit(t, call(true))
 			plugin.WaitForPendingOperations()
-			require.Zero(t, inspect.Exists(ctx, key).Val(), "no-store miss must not repopulate the expired entry")
+			require.True(t, redisKeyDeleted(ctx, inspect, key), "no-store miss must not repopulate the expired entry")
 		})
 	}
 	t.Run("stream finishing after first chunk deadline", func(t *testing.T) {
@@ -126,7 +133,7 @@ func TestSemanticCache_RedisNativeExpiry(t *testing.T) {
 		// A restarted TTL would keep the key for a minute; allow for Redis's clock
 		// trailing this host's by a few milliseconds at the deadline second.
 		require.Eventually(t, func() bool {
-			return inspect.Exists(ctx, namespace+":"+id).Val() == 0
+			return redisKeyDeleted(ctx, inspect, namespace+":"+id)
 		}, time.Second, 10*time.Millisecond, "flush must use the original deadline, not restart TTL")
 	})
 }
