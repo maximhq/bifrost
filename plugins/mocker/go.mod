@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/jaswdr/faker/v2 v2.8.0
-	github.com/maximhq/bifrost/core v1.16.0
+	github.com/maximhq/bifrost/core v1.17.0
 )
 
 require (
