@@ -1696,6 +1696,8 @@ type OpenAIModel struct {
 	// GROQ specific fields
 	Active        *bool `json:"active,omitempty"`
 	ContextWindow *int  `json:"context_window,omitempty"`
+
+	MaxModelLen *int `json:"max_model_len,omitempty"` // vLLM
 }
 
 // OpenAIListModelsResponse represents an OpenAI list models response
@@ -1728,7 +1730,7 @@ func (response *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
 		if response.Data[i].OwnedBy == "" {
 			response.Data[i].OwnedBy = model.Organization
 		}
-		if response.Data[i].ContextWindow == nil {
+		if response.Data[i].ContextWindow == nil && response.Data[i].MaxModelLen == nil {
 			response.Data[i].ContextWindow = model.ContextLength
 		}
 	}
