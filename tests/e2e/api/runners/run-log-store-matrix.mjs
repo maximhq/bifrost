@@ -141,16 +141,20 @@ async function runCell(cell, opts) {
 		say(`cell ${cell.id} failed to run: ${err.message}`);
 		return { cell: cell.id, ok: false, codes: { setup: 1 }, error: err.message, logPath: gw?.logPath };
 	} finally {
-		if (gw) {
-			try {
-				fs.copyFileSync(gw.logPath, path.join(keepDir, "server.log"));
-			} catch {
-				// The log is best effort.
+		try {
+			if (gw) {
+				try {
+					fs.copyFileSync(gw.logPath, path.join(keepDir, "server.log"));
+				} catch {}
+				await gw.stop();
 			}
-			await gw.stop();
+		} finally {
+			try {
+				if (fake) await fake.close();
+			} finally {
+				if (pg) await dropPostgresDB(opts.postgresURL, pgName).catch((e) => console.warn(`WARNING: drop ${pgName}: ${e.message}`));
+			}
 		}
-		if (fake) await fake.close();
-		if (pg) await dropPostgresDB(opts.postgresURL, pgName).catch((e) => console.warn(`WARNING: drop ${pgName}: ${e.message}`));
 	}
 }
 
@@ -184,17 +188,17 @@ async function main() {
 	await Promise.all(Array.from({ length: Math.min(parallel, cells.length) }, worker));
 	console.log("\nLog-store matrix:");
 	for (const r of results) {
-		const status = r.skipped ? "skipped" : r.ok ? "ok" : `FAIL ${JSON.stringify(r.codes)}${r.error ? ` (${r.error})` : ""}`;
+		const status = r.skipped ? "skipped" : r.ok ? "ok" : `FAIL ${JSON.stringify(r.codes)}${r.error ? ` (${r.error.split("\n")[0]})` : ""}`;
 		console.log(`  ${r.cell.padEnd(26)} ${status}`);
 	}
-	if (results.some((r) => !r.ok)) process.exit(1);
+	if (results.some((r) => !r.ok)) process.exitCode = 1;
 	if (results.every((r) => r.skipped)) {
 		console.error("every cell was skipped");
-		process.exit(1);
+		process.exitCode = 1;
 	}
 }
 
 main().catch((err) => {
 	console.error(`Log-store matrix failed: ${err.stack || err.message}`);
-	process.exit(1);
+	process.exitCode = 1;
 });

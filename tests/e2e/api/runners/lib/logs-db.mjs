@@ -29,8 +29,28 @@ function candidateUrls() {
 	return urls;
 }
 
-// openLogsDb returns { label, read(table, column, value), all(table, column, value), close }.
-// read returns the first matching row or null; all returns every matching row.
+// refreshPgViews refreshes each named materialized view that exists with a valid unique index, which
+// REFRESH ... CONCURRENTLY requires and the gateway builds after the view. Until then (and with
+// matview_refresh_interval "off", when no view exists) filter reads come from the raw tables, so the
+// view is skipped.
+export async function refreshPgViews(client, views) {
+	for (const view of views) {
+		if (!IDENT.test(view)) throw new Error(`bad view name ${view}`);
+		const { rows } = await client.query(
+			`SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_index i ON i.indrelid = c.oid
+			 WHERE c.relkind = 'm' AND c.oid = to_regclass($1) AND i.indisunique AND i.indisvalid) AS ready`,
+			[view],
+		);
+		if (!rows[0]?.ready) continue;
+		await client.query(`REFRESH MATERIALIZED VIEW CONCURRENTLY ${view}`);
+	}
+}
+
+// openLogsDb returns { label, read(table, column, value), all(table, column, value), refreshViews(views), close }.
+// read returns the first matching row or null; all returns every matching row. refreshViews
+// refreshes the named materialized views on Postgres (a no-op on SQLite, which has none): the
+// gateway refreshes them only on its own schedule, and skips a tick while views are inside their
+// gap, so a check that reads a filter list right after a write refreshes it itself.
 export async function openLogsDb() {
 	const urls = candidateUrls();
 	const url = urls[0];
@@ -63,6 +83,7 @@ export async function openLogsDb() {
 			label: candidates.map((c) => `sqlite://${c.file}`).join(" | "),
 			all,
 			read: async (table, column, value) => (await all(table, column, value))[0] ?? null,
+			refreshViews: async () => {},
 			close: async () => {
 				for (const candidate of candidates) candidate.db.close();
 			},
@@ -80,6 +101,7 @@ export async function openLogsDb() {
 			label: url.replace(/:([^:@/]+)@/, ":***@"),
 			all,
 			read: async (table, column, value) => (await all(table, column, value))[0] ?? null,
+			refreshViews: (views) => refreshPgViews(client, views),
 			close: async () => client.end(),
 		};
 	}

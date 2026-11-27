@@ -41,9 +41,32 @@ export function gatewayConfig({ dir, logsStore, client = {} }) {
 	};
 }
 
-// bootGateway starts binary with the config and resolves once it reports it has started. It
-// resolves to { baseURL, dir, port, logPath, stop(keepDir) }.
-export async function bootGateway({ binary, logsStore, client, env = {}, timeoutMs = 120000 }) {
+// isDatasheetFetchFailure reports whether a server log shows startup stopped on a datasheet
+// download. getbifrost.ai intermittently answers 503 (Cloudflare 1102) while a release run boots
+// dozens of servers at once, and a fresh server cannot start without the datasheet.
+export function isDatasheetFetchFailure(logText) {
+	return /failed to download (pricing|model parameters) data/.test(String(logText ?? ""));
+}
+
+// bootGateway starts binary with the config and resolves once it reports it has started. A boot
+// that exits on a failed datasheet download is retried in a fresh app dir, attempts boots in all,
+// retryDelayMs times the attempt number apart; any other failure throws at once. It resolves to
+// { baseURL, dir, port, logPath, stop(keepDir) }.
+export async function bootGateway(opts) {
+	const attempts = Math.max(1, opts.attempts ?? Number(process.env.BIFROST_BOOT_ATTEMPTS || 4));
+	const retryDelayMs = opts.retryDelayMs ?? Number(process.env.BIFROST_BOOT_RETRY_DELAY || 10) * 1000;
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await bootGatewayOnce(opts);
+		} catch (err) {
+			if (!err.datasheetFetchFailure || attempt >= attempts) throw err;
+			console.warn(`gateway: datasheet download failed during startup (attempt ${attempt} of ${attempts}); retrying in ${(retryDelayMs * attempt) / 1000}s`);
+			await new Promise((r) => setTimeout(r, retryDelayMs * attempt));
+		}
+	}
+}
+
+async function bootGatewayOnce({ binary, logsStore, client, env = {}, timeoutMs = 120000 }) {
 	if (!binary || !fs.existsSync(binary)) throw new Error(`gateway binary not found: ${binary}`);
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bifrost-e2e-"));
 	const port = await freePort();
@@ -61,7 +84,13 @@ export async function bootGateway({ binary, logsStore, client, env = {}, timeout
 	});
 	const started = Date.now();
 	for (;;) {
-		if (exited !== null) throw new Error(`bifrost exited (${exited}) before it was ready:\n${tail(logPath)}`);
+		if (exited !== null) {
+			const err = new Error(`bifrost exited (${exited}) before it was ready:\n${tail(logPath)}`);
+			err.datasheetFetchFailure = isDatasheetFetchFailure(fs.readFileSync(logPath, "utf8"));
+			fs.closeSync(out);
+			fs.rmSync(dir, { recursive: true, force: true });
+			throw err;
+		}
 		if (fs.readFileSync(logPath, "utf8").includes("successfully started bifrost")) break;
 		if (Date.now() - started > timeoutMs) {
 			child.kill("SIGKILL");

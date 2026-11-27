@@ -75,6 +75,67 @@ test("stop_clean_bifrost force-stops a server that ignores SIGTERM and keeps the
   assert.match(readFileSync(join(report, "server.log"), "utf8"), /successfully started bifrost/);
 });
 
+// A fake server that exits on a failed datasheet download (or with failMessage) until it has been
+// started failBoots times, counting its boots in <counter>; after that it starts normally.
+function flakyFake(name, failBoots, failMessage) {
+  const bin = join(WORK, name);
+  const counter = join(WORK, `${name}.boots`);
+  writeFileSync(counter, "0");
+  writeFileSync(
+    bin,
+    `#!/bin/bash
+n=$(($(cat ${JSON.stringify(counter)}) + 1)); echo "$n" > ${JSON.stringify(counter)}
+if [ "$n" -le ${failBoots} ]; then echo '${failMessage}'; exit 1; fi
+echo "successfully started bifrost"
+while :; do sleep 0.2; done
+`,
+  );
+  chmodSync(bin, 0o755);
+  return { bin, boots: () => Number(readFileSync(counter, "utf8").trim()) };
+}
+
+function bootFlaky(fake, env = {}) {
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const body = `source ${JSON.stringify(SCRIPT)}
+trap 'kill -9 "$CLEAN_BIFROST_PID" 2>/dev/null' EXIT
+boot_clean_bifrost ${JSON.stringify(fake.bin)} ${port} >/dev/null 2>&1; rc=$?
+stop_clean_bifrost >/dev/null 2>&1
+exit $rc`;
+  try {
+    execFileSync("bash", ["-c", body], { env: { ...process.env, BIFROST_BOOT_RETRY_DELAY: "0", BIFROST_BOOT_ATTEMPTS: "4", ...env }, encoding: "utf8", timeout: 30000 });
+    return 0;
+  } catch (err) {
+    return err.status;
+  }
+}
+
+const DATASHEET_503 = '{"level":"fatal","message":"failed to initialize pricing manager: failed to sync pricing data: failed to download pricing data: HTTP 503"}';
+const PARAMS_503 = '{"level":"fatal","message":"failed to sync model parameters data: failed to download model parameters data: HTTP 503"}';
+
+test("a boot stopped by a failed datasheet download is retried until the server starts", () => {
+  const fake = flakyFake("flaky-pricing", 2, DATASHEET_503);
+  assert.equal(bootFlaky(fake), 0, "the third boot should have started");
+  assert.equal(fake.boots(), 3);
+});
+
+test("a failed model-parameters download is retried the same way", () => {
+  const fake = flakyFake("flaky-params", 1, PARAMS_503);
+  assert.equal(bootFlaky(fake), 0);
+  assert.equal(fake.boots(), 2);
+});
+
+test("datasheet retries stop after BIFROST_BOOT_ATTEMPTS boots", () => {
+  const fake = flakyFake("always-503", 99, DATASHEET_503);
+  assert.notEqual(bootFlaky(fake, { BIFROST_BOOT_ATTEMPTS: "3" }), 0);
+  assert.equal(fake.boots(), 3);
+});
+
+test("any other startup failure is not retried", () => {
+  const fake = flakyFake("other-fatal", 99, '{"level":"fatal","message":"failed to connect to vector store"}');
+  assert.notEqual(bootFlaky(fake), 0);
+  assert.equal(fake.boots(), 1);
+});
+
 // Both wiring runners take --binary relative to where they were started, though they change into
 // tests/e2e/api before booting it. newman is stubbed: only the boot is under test.
 test("a wiring runner resolves a relative --binary from the directory it was started in", () => {
