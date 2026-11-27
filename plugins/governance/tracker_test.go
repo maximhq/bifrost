@@ -15,12 +15,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestGovernancePlugin_StartResetWorkers checks that the plugin's reset workers start and stop cleanly.
 func TestGovernancePlugin_StartResetWorkers(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	pluginCtx, cancel := context.WithCancel(context.Background())
 	plugin := &GovernancePlugin{
@@ -53,13 +54,13 @@ func TestUsageTracker_FailedRequestWithUsage_IsBilled(t *testing.T) {
 	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -95,13 +96,13 @@ func TestUsageTracker_FailedRequestNoUsage_IsSkipped(t *testing.T) {
 	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -130,10 +131,10 @@ func TestUsageTracker_FailedRequestNoUsage_IsSkipped(t *testing.T) {
 func TestUsageTracker_UpdateUsage_VirtualKeyNotFound(t *testing.T) {
 	logger := NewMockLogger()
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -158,13 +159,13 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 0)
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -225,13 +226,13 @@ func TestUsageTracker_Idempotency_SameAttemptBilledOnce(t *testing.T) {
 	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -268,13 +269,13 @@ func TestUsageTracker_Idempotency_DifferentAttemptsBothBilled(t *testing.T) {
 	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -311,13 +312,13 @@ func TestUsageTracker_Idempotency_ForgedRequestIDsBothBilled(t *testing.T) {
 	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -359,13 +360,13 @@ func TestUsageTracker_Idempotency_ForgedRequestIDsCrossVKBothBilled(t *testing.T
 	vk1 := buildVirtualKeyWithBudget("vk1", "sk-bf-one", "VK One", budget1)
 	vk2 := buildVirtualKeyWithBudget("vk2", "sk-bf-two", "VK Two", budget2)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk1, *vk2},
 		Budgets:     []configstoreTables.TableBudget{*budget1, *budget2},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -404,13 +405,13 @@ func TestUsageTracker_Idempotency_SameNonceSameAttemptBilledOnce(t *testing.T) {
 	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -448,13 +449,13 @@ func TestUsageTracker_Idempotency_NestedCallsUnderOneNonceEachBilled(t *testing.
 	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -490,13 +491,13 @@ func TestUsageTracker_Idempotency_ConcurrentForgedRequestIDsAllBilled(t *testing
 	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -531,10 +532,10 @@ func TestUsageTracker_Idempotency_ConcurrentForgedRequestIDsAllBilled(t *testing
 // TestUsageTracker_Cleanup tests cleanup of the usage tracker
 func TestUsageTracker_Cleanup(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 
 	// Should cleanup without error
@@ -550,15 +551,17 @@ type cleanupOrderingStore struct {
 	finalBeforeWorkerExit atomic.Bool
 }
 
-func (s *cleanupOrderingStore) ResetExpiredRateLimitsInMemory(context.Context, bool, ...string) []*configstoreTables.TableRateLimit {
+// ResetExpiredRateLimitsInMemory resets nothing, so the cleanup ordering is all the test observes.
+func (s *cleanupOrderingStore) ResetExpiredRateLimitsInMemory(context.Context, ...string) []*RateLimitReset {
 	return nil
 }
 
-func (s *cleanupOrderingStore) ResetExpiredBudgetsInMemory(context.Context, bool, ...string) []*configstoreTables.TableBudget {
+// ResetExpiredBudgetsInMemory resets nothing, so the cleanup ordering is all the test observes.
+func (s *cleanupOrderingStore) ResetExpiredBudgetsInMemory(context.Context, ...string) []*configstoreTables.TableBudget {
 	return nil
 }
 
-func (s *cleanupOrderingStore) ResetExpiredRateLimits(context.Context, []*configstoreTables.TableRateLimit) error {
+func (s *cleanupOrderingStore) ResetExpiredRateLimits(context.Context, []*RateLimitReset) error {
 	return nil
 }
 
@@ -566,25 +569,29 @@ func (s *cleanupOrderingStore) ResetExpiredBudgets(context.Context, []*configsto
 	return nil
 }
 
-func (s *cleanupOrderingStore) DumpBudgets(context.Context, map[string]float64) error {
-	return nil
+// GetBudgetDumper returns the final-flush writer without issuing database work.
+func (s *cleanupOrderingStore) GetBudgetDumper(context.Context, map[string]float64) func(context.Context) error {
+	return func(context.Context) error { return nil }
 }
 
-func (s *cleanupOrderingStore) DumpRateLimits(ctx context.Context, _ map[string]int64, _ map[string]int64) error {
-	if ctx.Done() == nil {
-		select {
-		case <-s.periodicExited:
-		default:
-			s.finalBeforeWorkerExit.Store(true)
+// GetRateLimitDumper simulates a database write that must exit before the final flush.
+func (s *cleanupOrderingStore) GetRateLimitDumper(ctx context.Context, _ map[string]int64, _ map[string]int64) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if ctx.Done() == nil {
+			select {
+			case <-s.periodicExited:
+			default:
+				s.finalBeforeWorkerExit.Store(true)
+			}
+			close(s.finalDumped)
+			return nil
 		}
-		close(s.finalDumped)
-		return nil
-	}
 
-	close(s.periodicEntered)
-	<-ctx.Done()
-	close(s.periodicExited)
-	return fmt.Errorf("failed to dump rate limits to database: failed to dump 4 rate limits: %w", ctx.Err())
+		close(s.periodicEntered)
+		<-ctx.Done()
+		close(s.periodicExited)
+		return fmt.Errorf("failed to dump rate limits to database: failed to dump 4 rate limits: %w", ctx.Err())
+	}
 }
 
 // Cleanup must first cancel and join an in-flight periodic dump, then take the

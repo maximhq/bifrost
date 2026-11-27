@@ -42,6 +42,8 @@ const DEFAULT_OUT = join(HERE, "..", "collections", "bifrost-semantic-cache-wiri
 
 const MODEL = "openai/gpt-4o-mini";
 const MODEL_ALT = "openai/gpt-4o";
+// Turns web_search_options into its Google Search tool.
+const SEARCH_MODEL = "gemini/gemini-2.5-flash";
 // OpenAI has retired every model on /v1/completions, so text completions go to gpt-4o-mini
 // through OpenRouter, which still serves that endpoint.
 const TEXT_MODEL = "openrouter/openai/gpt-4o-mini";
@@ -205,6 +207,8 @@ const WEATHER = fn("get_weather", "Get the current weather for a city.", { city:
 const TIME = fn("get_time", "Get the current local time for a city.", { city: { type: "string" } });
 const FORECAST = fn("get_forecast", "Get the current weather for a city.", { city: { type: "string" } });
 const FORCE_WEATHER = { type: "function", function: { name: "get_weather" } };
+// A chat tool in the shape the Responses API declares it.
+const responsesTool = (tool) => ({ type: "function", ...tool.function });
 
 // --------------------------------------------------------------------------- //
 // Item builders
@@ -998,16 +1002,127 @@ function folderS() {
     write("S21 text completion write", "text", text(p3.canonical), [H.key("s21c")], { save: "s21c", ...embedded }),
     hit("S21 text completion hits", "text", text(p3.canonical), [H.key("s21c")], { same: "s21c" }),
     hit("S21 text completion paraphrase is a semantic hit", "text", text(p3.paraphrase), [H.key("s21c")], semanticHit("s21c")),
-    write("S22 write with two tools", "chat", tools(p4.canonical, [WEATHER, TIME]), [H.key("s22")], { save: "s22", ...embedded }),
+    write("S22 write with two tools", "chat", tools(p4.canonical, [WEATHER, TIME]), [H.key("s22")], { save: "s22", embedding: false }),
     hit("S22 hits", "chat", tools(p4.canonical, [WEATHER, TIME]), [H.key("s22")], { same: "s22" }),
-    hit("S22 paraphrase with tools reordered is a semantic hit", "chat", tools(p4.paraphrase, [TIME, WEATHER]), [H.key("s22")], semanticHit("s22")),
-    miss("S22 paraphrase with a renamed tool misses", "chat", tools(p4.paraphrase, [FORECAST, TIME]), [H.key("s22")], { distinct: ["s22"] }),
+    hit("S22 tools reordered hit", "chat", tools(p4.canonical, [TIME, WEATHER]), [H.key("s22")], { same: "s22" }),
+    miss("S22 paraphrase with the same tools misses", "chat", tools(p4.paraphrase, [WEATHER, TIME]), [H.key("s22")], { distinct: ["s22"], embedding: false }),
+    miss("S22 a renamed tool misses", "chat", tools(p4.canonical, [FORECAST, TIME]), [H.key("s22")], { distinct: ["s22"], embedding: false }),
+    // S31: a request that offers tools, switches on web search, or carries a tool call and its
+    // result, is matched exactly only. It runs no embedding, a paraphrase of it misses, and a semantic-only lookup for it is
+    // not cached at all. Both shapes get the same rows, on chat and Responses, streamed and not.
+    ...["chat", "responses"].flatMap((r) =>
+      [false, true].flatMap((stream) => {
+        const streamed = (chatExtra) => (stream ? (r === "chat" ? { ...chatExtra, stream: true } : { stream: true }) : {});
+        const shapes = [
+          {
+            slug: "",
+            noun: "tool turn",
+            pair: p1,
+            other: p2.canonical,
+            body: (prompt) =>
+              r === "chat"
+                ? chat(prompt, { tools: [WEATHER, TIME], tool_choice: "none", ...streamed({ max_tokens: 12 }) })
+                : responses(prompt, { tools: [WEATHER, TIME].map(responsesTool), tool_choice: "none", ...streamed() }),
+          },
+          {
+            slug: "result",
+            noun: "tool result turn",
+            pair: p4,
+            other: p5.canonical,
+            body: (prompt, weather = "Sunny, 21 degrees.") =>
+              r === "chat"
+                ? chatMessages(
+                    [
+                      { role: "user", content: prompt },
+                      { role: "assistant", content: null, tool_calls: [{ id: "call_s31", type: "function", function: { name: "get_weather", arguments: '{"city":"Paris"}' } }] },
+                      { role: "tool", tool_call_id: "call_s31", content: weather },
+                    ],
+                    streamed({ max_tokens: 12 }),
+                  )
+                : responses(
+                    [
+                      { role: "user", content: prompt },
+                      { type: "function_call", call_id: "call_s31", name: "get_weather", arguments: '{"city":"Paris"}' },
+                      { type: "function_call_output", call_id: "call_s31", output: weather },
+                    ],
+                    streamed(),
+                  ),
+          },
+          // Web search is switched on by a request parameter, with no tools declared. Gemini runs it
+          // as its Google Search tool. Chat only: Responses declares web search in its tools.
+          ...(r === "chat"
+            ? [
+                {
+                  slug: "search",
+                  noun: "web search turn",
+                  pair: p3,
+                  other: p5.canonical,
+                  body: (prompt) => chat(prompt, { model: SEARCH_MODEL, web_search_options: {}, max_tokens: 256, ...(stream ? { stream: true } : {}) }),
+                },
+              ]
+            : []),
+        ];
+        return shapes.flatMap(({ slug, noun, pair, other, body }) => {
+          const k = `s31${r}${slug}${stream ? "s" : ""}`;
+          const label = `S31 ${r}${stream ? " stream" : ""}`;
+          const logged = r === "chat" && !stream && slug === "";
+          // A chat stream ends with [DONE] and sends its cache headers before the final chunk.
+          const streamSpec = (extra) => (stream ? { stream: { finalOnly: true, ...(r === "chat" ? { done: true } : {}), ...extra }, ...(r === "chat" ? { headersMatch: "stream" } : {}) } : {});
+          return [
+            write(`${label} ${noun} write runs no embedding`, r, body(pair.canonical), [H.key(k)], {
+              save: k,
+              embedding: false,
+              ...(logged ? { saveReq: "s31", headersMatch: "all" } : {}),
+              ...streamSpec({ save: k }),
+            }),
+            hit(`${label} the same ${noun} is a direct hit`, r, body(pair.canonical), [H.key(k)], {
+              same: k,
+              ...(logged ? { headersMatch: "all" } : {}),
+              ...streamSpec({ compare: k }),
+            }),
+            miss(`${label} a paraphrased ${noun} misses`, r, body(pair.paraphrase), [H.key(k)], { distinct: [k], embedding: false }),
+            ...(slug === "result"
+              ? [miss(`${label} another tool result misses`, r, body(pair.canonical, "Sunny, 22 degrees."), [H.key(k)], { distinct: [k], embedding: false })]
+              : []),
+            infer(`${label} semantic-only ${noun} is not cached`, r, body(other), [H.key(`${k}so`), H.type("semantic")], { outcome: "none" }),
+            // A direct miss is all the wire shows. That the lookup wrote nothing under any id is
+            // asserted against the store in TestAgentTurnSemanticOnlySkipsCache.
+            miss(`${label} the ${noun} is a direct miss after the semantic-only lookup`, r, body(other), [H.key(`${k}so`)], { embedding: false }, { wait: 2 }),
+          ];
+        });
+      }),
+    ),
     write("S23 write at temperature 0", "chat", chat(p5.canonical), [H.key("s23")], { save: "s23", ...embedded }),
     hit("S23 hits", "chat", chat(p5.canonical), [H.key("s23")], { same: "s23" }),
     miss("S23 paraphrase at temperature 0.5 misses", "chat", chat(p5.paraphrase, { temperature: 0.5 }), [H.key("s23")], { distinct: ["s23"] }),
     // Similarity is cosine on every store. This pair scores about 0.62, under the plugin's default
     // threshold of 0.8 on any store that compares cosine; Weaviate's certainty, (1 + cosine) / 2,
     // puts the same pair at about 0.81, which would serve France's answer to Germany's question.
+    // S30: a follow-up turn is matched on its exact earlier messages and only its newest message by
+    // meaning. The follow-up repeats the first question in other words, so embedding the whole
+    // conversation scored it against turn 1 and replayed turn 1's answer.
+    ...["chat", "responses"].flatMap((r) => {
+      const k = `s30${r}`;
+      const turns = (reply, newest) => {
+        const messages = [
+          { role: "user", content: p3.canonical },
+          { role: "assistant", content: reply },
+          { role: "user", content: newest },
+        ];
+        return r === "chat" ? chatMessages(messages) : responses(messages);
+      };
+      const first = r === "chat" ? chat(p3.canonical) : responses(p3.canonical);
+      const REPLY = "Whisk three parts oil into one part vinegar.";
+      return [
+        write(`S30 ${r} turn 1 write`, r, first, [H.key(k)], { save: `${k}a`, ...embedded }),
+        hit(`S30 ${r} turn 1 hits`, r, first, [H.key(k)], { same: `${k}a` }),
+        miss(`S30 ${r} follow-up does not replay turn 1`, r, turns(REPLY, p3.paraphrase), [H.key(k)], { distinct: [`${k}a`] }),
+        write(`S30 ${r} follow-up write`, r, turns(REPLY, p3.paraphrase), [H.key(k)], { save: `${k}b`, distinct: [`${k}a`], ...embedded }),
+        hit(`S30 ${r} the same follow-up hits`, r, turns(REPLY, p3.paraphrase), [H.key(k)], { same: `${k}b` }),
+        hit(`S30 ${r} reworded follow-up after the same history is a semantic hit`, r, turns(REPLY, p3.canonical), [H.key(k)], semanticHit(`${k}b`)),
+        miss(`S30 ${r} the same follow-up after a different reply misses`, r, turns("Use lemon juice and olive oil.", p3.paraphrase), [H.key(k)], { distinct: [`${k}a`, `${k}b`] }),
+      ];
+    }),
     putPlugin("S29 plugin default threshold", SEMANTIC({ threshold: null })),
     write("S29 write", "chat", chat(p1.canonical), [H.key("s29")], { save: "s29", ...embedded }),
     hit("S29 hits", "chat", chat(p1.canonical), [H.key("s29")], { same: "s29" }),
@@ -1049,6 +1164,7 @@ function folderS() {
     logRow("S27 the semantic hit's log row has no warning", "s27c", { outcome: "semantic", same: "s27b", pluginLogs: { plugin: "semantic_cache", level: "warn", absent: true } }),
     logRow("S28 the semantic miss's log row", "s1a", { outcome: "miss", same: "s1", ...embedded }),
     logRow("S28 the semantic hit's log row", "s2", semanticHit("s1")),
+    logRow("S31 the tool turn's log row", "s31", { outcome: "miss", same: "s31chat", embedding: false }),
     write("K7 Anthropic messages write in semantic mode", "anthropic", anthropic(p5.canonical), [H.key("k7"), H.anthropicVersion()], {
       source: "headers",
       noBodyCacheDebug: true,

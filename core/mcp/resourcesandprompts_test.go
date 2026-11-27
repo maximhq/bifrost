@@ -110,14 +110,14 @@ func TestResourcesAndPrompts_Discovery(t *testing.T) {
 				sticky bool
 			}{{"shared", true}, {"per-call", false}} {
 				t.Run(tc.name, func(t *testing.T) {
-					m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+					m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 					recorder := &discoveryRecorder{}
 					m.SetDiscoveryChangeCallback(recorder.record)
 					config := &schemas.MCPClientConfig{
 						ID: "listed-" + tc.name, Name: "docs", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP,
 						ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(tc.sticky),
 					}
-					require.NoError(t, m.AddClient(context.Background(), config))
+					require.NoError(t, addClient(context.Background(), m, config))
 					t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
 					requireResourcesAndPrompts(t, installedOf(t, m, config.ID), "docs")
@@ -138,12 +138,12 @@ func TestResourcesAndPrompts_ToolsOnlyServerSendsNoRequests(t *testing.T) {
 	counter := newWireCounter()
 	ts := httptest.NewServer(counter.wrap(server.NewStreamableHTTPServer(newMatrixUpstream())))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "tools-only", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	_, err := m.RefreshClientTools(context.Background(), config.ID)
 	require.NoError(t, err)
@@ -162,12 +162,12 @@ func TestResourcesAndPrompts_ToolsOnlyServerSendsNoRequests(t *testing.T) {
 func TestResourcesAndPrompts_FailedListKeepsPrevious(t *testing.T) {
 	var failResources atomic.Bool
 	ts := newFailingResourcesUpstream(t, &failResources)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "flaky", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	requireResourcesAndPrompts(t, installedOf(t, m, config.ID), "docs")
 
@@ -182,20 +182,56 @@ func TestResourcesAndPrompts_FailedFirstListKeepsSaved(t *testing.T) {
 	var failResources atomic.Bool
 	failResources.Store(true)
 	ts := newFailingResourcesUpstream(t, &failResources)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	saved := []mcpgo.Resource{mcpgo.NewResource("file:///saved.md", "saved")}
 	config := &schemas.MCPClientConfig{
 		ID: "restarted", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 		DiscoveredResources: saved,
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	assert.Equal(t, saved, installedOf(t, m, config.ID).Resources)
 }
 
+// After a restart the store holds the lists each client's row saved and the client's record carries
+// none: a persistent client's first connect that fails its resources and prompts lists keeps the
+// saved ones, and the discovery written back holds them.
+func TestResourcesAndPrompts_FailedFirstListKeepsStoreRestoredLists(t *testing.T) {
+	var fail atomic.Bool
+	fail.Store(true)
+	ts := newFailingListsUpstream(t, &fail, "resources/list", "prompts/list")
+	savedResources := []mcpgo.Resource{mcpgo.NewResource("file:///saved.md", "saved")}
+	savedPrompts := []mcpgo.Prompt{mcpgo.NewPrompt("docs-saved")}
+	config := &schemas.MCPClientConfig{
+		ID: "restarted", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
+	}
+	// Restored from the row at startup: no DiscoveredAt, so not written back as it is.
+	shared := &recordingSharedDiscoveryStore{discoveries: map[string]*schemas.MCPDiscovery{
+		config.ID: {Resources: savedResources, Prompts: savedPrompts},
+	}}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared, PerUserDiscoveryStore: newFakePerUserDiscoveryStore()},
+		newTestAccount(), nil, &MockLogger{}, nil)
+	require.NoError(t, addClient(context.Background(), m, config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	written := shared.GetDiscovery(context.Background(), config)
+	require.NotNil(t, written)
+	assert.False(t, written.DiscoveredAt.IsZero(), "the first connect's discovery is the one written back")
+	assert.Contains(t, written.Tools, "docs-echo", "the connect itself succeeded")
+	assert.Equal(t, savedResources, written.Resources, "a failed resources/list keeps the saved resources")
+	assert.Equal(t, savedPrompts, written.Prompts, "a failed prompts/list keeps the saved prompts")
+}
+
 // newFailingResourcesUpstream serves the resources-and-prompts upstream, failing resources/list while fail is set.
 func newFailingResourcesUpstream(t *testing.T, fail *atomic.Bool) *httptest.Server {
+	t.Helper()
+	return newFailingListsUpstream(t, fail, "resources/list")
+}
+
+// newFailingListsUpstream serves the resources-and-prompts upstream, failing each of methods while fail is set.
+func newFailingListsUpstream(t *testing.T, fail *atomic.Bool, methods ...string) *httptest.Server {
 	t.Helper()
 	upstream := server.NewStreamableHTTPServer(newResourcesPromptsUpstream())
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +242,7 @@ func newFailingResourcesUpstream(t *testing.T, fail *atomic.Bool) *httptest.Serv
 				Method string          `json:"method"`
 			}
 			_ = json.Unmarshal(body, &msg)
-			if msg.Method == "resources/list" {
+			if slices.Contains(methods, msg.Method) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(msg.ID) + `,"error":{"code":-32603,"message":"backend down"}}`))
 				return
@@ -227,12 +263,12 @@ func TestResourcesAndPrompts_ListChangedRefreshes(t *testing.T) {
 			upstream := newResourcesPromptsUpstream()
 			ts := httptest.NewServer(server.NewStreamableHTTPServer(upstream, server.WithStreamableHTTPProtocolVersions(version)))
 			t.Cleanup(ts.Close)
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			config := &schemas.MCPClientConfig{
 				ID: "live", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 				ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 			}
-			require.NoError(t, m.AddClient(context.Background(), config))
+			require.NoError(t, addClient(context.Background(), m, config))
 			t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 			requireResourcesAndPrompts(t, installedOf(t, m, config.ID), "docs")
 
@@ -253,17 +289,15 @@ func TestResourcesAndPrompts_ListChangedRefreshes(t *testing.T) {
 func TestResourcesAndPrompts_RenameReprefixesPrompts(t *testing.T) {
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(newResourcesPromptsUpstream()))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "renamed", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
-	renamed := *config
-	renamed.Name = "handbook"
-	require.NoError(t, m.UpdateClient(config.ID, &renamed))
+	require.NoError(t, editClient(m, config.ID, func(c *schemas.MCPClientConfig) { c.Name = "handbook" }))
 	requireResourcesAndPrompts(t, installedOf(t, m, config.ID), "handbook")
 }
 
@@ -303,7 +337,7 @@ func (p *listGatePipeline) RunMCPPostConnectionHooks(_ *schemas.BifrostContext, 
 func TestResourcesAndPrompts_ListsRunThroughPluginGate(t *testing.T) {
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(newResourcesPromptsUpstream()))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	pipeline := &listGatePipeline{answerListPrompts: true}
 	m.pluginPipelineProvider = func() PluginPipeline { return pipeline }
 	m.releasePluginPipeline = func(PluginPipeline) {}
@@ -311,7 +345,7 @@ func TestResourcesAndPrompts_ListsRunThroughPluginGate(t *testing.T) {
 		ID: "gated", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
 	pipeline.mu.Lock()
@@ -339,12 +373,12 @@ func TestResourcesAndPrompts_PerListBudgetOutlivesSpentDeadline(t *testing.T) {
 		upstream.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "slow", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	state, ok := snapshotClientState(m, config.ID)
 	require.True(t, ok)
@@ -375,12 +409,13 @@ func TestResourcesAndPrompts_PromptsOnlyServerLivenessFollowsPromptsList(t *test
 		handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID: "prompts-only", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	require.Len(t, installedOf(t, m, config.ID).Prompts, 1)
 
@@ -442,7 +477,7 @@ func newToollessUpstream(t *testing.T, resources, prompts bool, fail func(method
 // neither verifies nor connects, as a server whose tools/list fails does not.
 func TestResourcesAndPrompts_ToollessServerWithFailingListsIsNotHealthy(t *testing.T) {
 	ts := newToollessUpstream(t, false, true, func(method string) bool { return method == "prompts/list" })
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID: "toolless", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeHeaders,
@@ -451,6 +486,7 @@ func TestResourcesAndPrompts_ToollessServerWithFailingListsIsNotHealthy(t *testi
 	_, err := m.VerifyHeadersConnection(context.Background(), config, nil)
 	require.Error(t, err, "verification must fail when nothing the server offers can be listed")
 
+	accountOf(m).set(config)
 	require.Error(t, m.connectToMCPClient(context.Background(), config), "connecting must fail too")
 	state, ok := snapshotClientState(m, config.ID)
 	if ok {
@@ -463,12 +499,13 @@ func TestResourcesAndPrompts_ToollessServerWithFailingListsIsNotHealthy(t *testi
 func TestResourcesAndPrompts_TemplatesAnsweringKeepsServerHealthy(t *testing.T) {
 	var failResources atomic.Bool
 	ts := newToollessUpstream(t, true, false, func(method string) bool { return failResources.Load() && method == "resources/list" })
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID: "resources-only", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 
 	failResources.Store(true)
@@ -496,7 +533,7 @@ func (p *swallowingPipeline) RunMCPPostHooks(_ *schemas.BifrostContext, resp *sc
 func TestResourcesAndPrompts_SwallowedFailureKeepsPrevious(t *testing.T) {
 	var failResources atomic.Bool
 	ts := newFailingResourcesUpstream(t, &failResources)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	pipeline := &swallowingPipeline{}
 	m.pluginPipelineProvider = func() PluginPipeline { return pipeline }
 	m.releasePluginPipeline = func(PluginPipeline) {}
@@ -504,7 +541,7 @@ func TestResourcesAndPrompts_SwallowedFailureKeepsPrevious(t *testing.T) {
 		ID: "swallowed", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	requireResourcesAndPrompts(t, installedOf(t, m, config.ID), "docs")
 
@@ -515,16 +552,16 @@ func TestResourcesAndPrompts_SwallowedFailureKeepsPrevious(t *testing.T) {
 }
 
 // A discovery installed from outside (a cluster peer's stored result) carries its resources and
-// prompts to the client's state and config.
+// prompts to the client's state and the discovery store.
 func TestResourcesAndPrompts_SetClientDiscoveryCarriesLists(t *testing.T) {
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(newMatrixUpstream()))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "replayed", Name: "docs", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"},
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	recorder := &discoveryRecorder{}
 	m.SetDiscoveryChangeCallback(recorder.record)
@@ -534,7 +571,8 @@ func TestResourcesAndPrompts_SetClientDiscoveryCarriesLists(t *testing.T) {
 	state, ok := snapshotClientState(m, config.ID)
 	require.True(t, ok)
 	assert.Equal(t, stored, state.Prompts)
-	assert.Equal(t, stored, state.ExecutionConfig.DiscoveredPrompts)
+	assert.Equal(t, stored, installedOf(t, m, config.ID).Prompts, "the discovery store holds the installed prompts")
+	assert.Nil(t, m.config(config.ID).DiscoveredPrompts, "the client's record is read-only: the discovery is the store's")
 	require.Equal(t, 1, recorder.count())
 	assert.Equal(t, stored, recorder.calls[0].Prompts)
 
@@ -548,7 +586,7 @@ func TestResourcesAndPrompts_ServedFromOwner(t *testing.T) {
 	t.Cleanup(ts.Close)
 	for _, sticky := range []bool{true, false} {
 		t.Run(map[bool]string{true: "shared", false: "per-call"}[sticky], func(t *testing.T) {
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			pipeline := &listGatePipeline{}
 			m.pluginPipelineProvider = func() PluginPipeline { return pipeline }
 			m.releasePluginPipeline = func(PluginPipeline) {}
@@ -556,7 +594,7 @@ func TestResourcesAndPrompts_ServedFromOwner(t *testing.T) {
 				ID: "served", Name: "docs", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP,
 				ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(sticky),
 			}
-			require.NoError(t, m.AddClient(context.Background(), config))
+			require.NoError(t, addClient(context.Background(), m, config))
 			t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
@@ -601,12 +639,12 @@ func TestResourcesAndPrompts_ServedFromOwner(t *testing.T) {
 func TestResourcesAndPrompts_NarrowedCallerCannotReach(t *testing.T) {
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(newResourcesPromptsUpstream()))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "narrowed", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
 	for name, ctx := range map[string]*schemas.BifrostContext{
@@ -639,12 +677,12 @@ func TestResourcesAndPrompts_CompleteWithoutUpstreamCompletions(t *testing.T) {
 	})
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(upstream))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "no-completions", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
 	completion, bErr := m.Complete(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mcpgo.CompleteParams{
@@ -666,12 +704,12 @@ func TestResourcesAndPrompts_ServerWithoutToolsIsServed(t *testing.T) {
 	})
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(upstream))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "no-tools", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
 	for name, tc := range map[string]struct {
@@ -695,13 +733,13 @@ func TestResourcesAndPrompts_ServerWithoutToolsIsServed(t *testing.T) {
 func TestResourcesAndPrompts_AllowListsNarrowWhatIsServed(t *testing.T) {
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(newResourcesPromptsUpstream()))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "allow-lists", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 		PromptsToExpose: schemas.WhiteList{}, ResourcesToExpose: schemas.WhiteList{"repo://{owner}/{name}"},
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
@@ -730,9 +768,10 @@ func TestResourcesAndPrompts_DeadSessionIsRecovered(t *testing.T) {
 		streamable.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("resources-dead-session", "docs", ts.URL)
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
@@ -765,12 +804,12 @@ func TestResourcesAndPrompts_FollowsPagination(t *testing.T) {
 	}
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "paged", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
 	listed := installedOf(t, m, config.ID)
@@ -786,13 +825,13 @@ func TestResourcesAndPrompts_ZeroToolPerCallClientRestoresSavedLists(t *testing.
 	down.Close()
 	saved := []mcpgo.Prompt{mcpgo.NewPrompt("docs-review")}
 	savedResources := []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")}
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "zero-tools", Name: "docs", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(down.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(false),
 		DiscoveredTools: map[string]schemas.ChatTool{}, DiscoveredPrompts: saved, DiscoveredResources: savedResources,
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
 	listed := installedOf(t, m, config.ID)
@@ -800,48 +839,20 @@ func TestResourcesAndPrompts_ZeroToolPerCallClientRestoresSavedLists(t *testing.
 	assert.Equal(t, savedResources, listed.Resources)
 }
 
-// An update that re-ran verification replaces the stored resources and prompts along with the tools.
-func TestResourcesAndPrompts_VerifiedUpdateReplacesLists(t *testing.T) {
-	ts := httptest.NewServer(server.NewStreamableHTTPServer(newResourcesPromptsUpstream()))
-	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
-	config := &schemas.MCPClientConfig{
-		ID: "reverified", Name: "docs", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP,
-		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"},
-	}
-	require.NoError(t, m.AddClient(context.Background(), config))
-	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
-
-	verified := *config
-	verified.DiscoveredTools = map[string]schemas.ChatTool{}
-	verified.DiscoveredPrompts = []mcpgo.Prompt{mcpgo.NewPrompt("docs-fresh")}
-	verified.DiscoveredResources = []mcpgo.Resource{mcpgo.NewResource("file:///fresh.md", "fresh")}
-	verified.DiscoveredResourceTemplates = []mcpgo.ResourceTemplate{}
-	require.NoError(t, m.UpdateClient(config.ID, &verified))
-
-	state, ok := snapshotClientState(m, config.ID)
-	require.True(t, ok)
-	assert.Equal(t, verified.DiscoveredPrompts, state.ExecutionConfig.DiscoveredPrompts)
-	assert.Equal(t, verified.DiscoveredResources, state.ExecutionConfig.DiscoveredResources)
-	assert.Empty(t, state.ExecutionConfig.DiscoveredResourceTemplates)
-}
-
 // Editing a client that never had a discovery fires no discovery change: persisting an empty one
 // would mark an unverified per_user_headers client as verified.
 func TestResourcesAndPrompts_EditOfUndiscoveredClientFiresNothing(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	recorder := &discoveryRecorder{}
 	m.SetDiscoveryChangeCallback(recorder.record)
 	config := &schemas.MCPClientConfig{
 		ID: "unverified", Name: "docs", AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"X-User-Token"},
 		ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"), ToolsToExecute: []string{"*"},
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
-	renamed := *config
-	renamed.Name = "handbook"
-	require.NoError(t, m.UpdateClient(config.ID, &renamed))
+	require.NoError(t, editClient(m, config.ID, func(c *schemas.MCPClientConfig) { c.Name = "handbook" }))
 	assert.Equal(t, 0, recorder.count())
 }
 
@@ -859,21 +870,21 @@ func (p *stampingPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *sche
 // A read picks its server before the pre-hooks run; a hook that narrows the request to other servers
 // (governance, for a Go caller that stamped nothing) must stop it before the server is contacted.
 func TestResourcesAndPrompts_ReadRecheckedAfterPreHooksNarrowAccess(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	m.pluginPipelineProvider = func() PluginPipeline { return &stampingPipeline{tools: []string{"allowed-search"}} }
 	m.releasePluginPipeline = func(PluginPipeline) {}
-	m.clientMap["allowed-id"] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name:            "allowed",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "allowed-id", Name: "allowed"},
-	}
-	m.discoveryStore.SetDiscovery(context.Background(), m.clientMap["allowed-id"].ExecutionConfig, &schemas.MCPDiscovery{
+	})
+	m.discoveryStore.SetDiscovery(context.Background(), m.config("allowed-id"), &schemas.MCPDiscovery{
 		Tools: map[string]schemas.ChatTool{"allowed-search": {}},
 	})
-	m.clientMap["denied-id"] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name:            "denied",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "denied-id", Name: "denied"},
-	}
-	m.discoveryStore.SetDiscovery(context.Background(), m.clientMap["denied-id"].ExecutionConfig, &schemas.MCPDiscovery{
+	})
+	m.discoveryStore.SetDiscovery(context.Background(), m.config("denied-id"), &schemas.MCPDiscovery{
 		Tools:     map[string]schemas.ChatTool{"denied-search": {}},
 		Prompts:   []mcpgo.Prompt{mcpgo.NewPrompt("denied-review")},
 		Resources: []mcpgo.Resource{mcpgo.NewResource("file:///secret.md", "secret")},
@@ -905,18 +916,20 @@ func (p *servedByPipeline) RunMCPPostHooks(_ *schemas.BifrostContext, resp *sche
 // second instead of failing on the first, and the response names the server that answered.
 func TestResourcesAndPrompts_SharedURIReadGoesToTheReachableServer(t *testing.T) {
 	ts := newToollessUpstream(t, true, false, func(string) bool { return false })
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
-	require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+	b := &schemas.MCPClientConfig{
 		ID: "b-id", Name: "b", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
-	}))
+	}
+	accountOf(m).set(b)
+	require.NoError(t, m.connectToMCPClient(context.Background(), b))
 	// "a" sorts first and lists the same URI, but the request may not reach it.
-	m.clientMap["a-id"] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name:            "a",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "a-id", Name: "a"},
-	}
-	m.discoveryStore.SetDiscovery(context.Background(), m.clientMap["a-id"].ExecutionConfig, &schemas.MCPDiscovery{
+	})
+	m.discoveryStore.SetDiscovery(context.Background(), m.config("a-id"), &schemas.MCPDiscovery{
 		Tools:     map[string]schemas.ChatTool{},
 		Resources: []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
 	})

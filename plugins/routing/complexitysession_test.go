@@ -12,7 +12,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 )
@@ -27,147 +27,171 @@ func testEnabledSessionAnalyzerConfig() *complexity.AnalyzerConfig {
 	return &cfg
 }
 
-func TestRoutingPluginRequiresKVStoreForSessionMode(t *testing.T) {
+func TestRoutingPluginRequiresSessionStoreForSessionMode(t *testing.T) {
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(ruleStore.Close)
 
 	plugin, err := InitFromStore(
 		context.Background(),
 		&Config{ComplexityAnalyzerConfig: testEnabledSessionAnalyzerConfig()},
 		logger,
 		nil,
-		ruleStore,
+		ruleStore.Store,
 		NewMockGovernance(),
 	)
-	require.ErrorContains(t, err, "requires a KV store")
+	require.ErrorContains(t, err, "requires a session store")
 	require.Nil(t, plugin)
 }
 
-func newTestComplexitySessionStore(t *testing.T, ttl time.Duration) (*complexitySessionStore, *kvstore.Store) {
+// stringTableForTest returns a table of strings that keeps write times, on a new live store.
+func stringTableForTest(t *testing.T) *livestore.Table[string, string] {
 	t.Helper()
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
+	live, err := livestore.New()
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	return newComplexitySessionStore(store, ttl), store
+	t.Cleanup(live.Close)
+	table, err := live.NewTable[string, string](context.Background(), "test_strings", livestore.WithWriteTimes())
+	require.NoError(t, err)
+	return table
 }
 
-type recordingSessionKVStore struct {
-	schemas.KVStore
-	setTTLs []time.Duration
+// tableLen counts a table's live entries.
+func tableLen(table *livestore.Table[string, string]) int {
+	n := 0
+	table.Range(func(string, string) bool { n++; return true })
+	return n
 }
 
-func (s *recordingSessionKVStore) SetWithTTL(key string, value any, ttl time.Duration) error {
-	s.setTTLs = append(s.setTTLs, ttl)
-	return s.KVStore.SetWithTTL(key, value, ttl)
+// newSessionTestPlugin returns a routing plugin over a new session table, and the table.
+func newSessionTestPlugin(t *testing.T) (*RoutingPlugin, *livestore.Table[string, string]) {
+	t.Helper()
+	sessions := stringTableForTest(t)
+	return &RoutingPlugin{sessions: sessions}, sessions
 }
 
-func TestComplexitySessionStoreMonotonicLadder(t *testing.T) {
-	sessions, _ := newTestComplexitySessionStore(t, time.Minute)
+// requireExpiresAfter checks that key's entry in store expires ttl after a moment between before
+// and after, the window around the write that set it.
+func requireExpiresAfter(t *testing.T, store *livestore.Table[string, string], key string, ttl time.Duration, before, after time.Time) time.Time {
+	t.Helper()
+	at, ok := store.Expiry(key)
+	require.True(t, ok, "the entry has an expiry")
+	require.False(t, at.Before(before.Add(ttl)), "expires %v, written no earlier than %v", at, before)
+	require.False(t, at.After(after.Add(ttl)), "expires %v, written no later than %v", at, after)
+	return at
+}
+
+func TestComplexitySessionTierMonotonicLadder(t *testing.T) {
+	plugin, _ := newSessionTestPlugin(t)
 	key := "complexity-test:ladder"
 
-	resolution, err := sessions.resolve(key, complexity.TierSimple)
+	resolution, err := plugin.resolveSessionTier(key, complexity.TierSimple)
 	require.NoError(t, err)
 	require.False(t, resolution.Existed)
 	require.Equal(t, complexity.TierSimple, resolution.EffectiveTier)
 
-	resolution, err = sessions.resolve(key, complexity.TierMedium)
+	resolution, err = plugin.resolveSessionTier(key, complexity.TierMedium)
 	require.NoError(t, err)
 	require.True(t, resolution.Escalated)
 	require.Equal(t, complexity.TierMedium, resolution.EffectiveTier)
 
-	resolution, err = sessions.resolve(key, complexity.TierSimple)
+	resolution, err = plugin.resolveSessionTier(key, complexity.TierSimple)
 	require.NoError(t, err)
 	require.False(t, resolution.Escalated)
 	require.Equal(t, complexity.TierMedium, resolution.EffectiveTier)
 
-	resolution, err = sessions.resolve(key, complexity.TierComplex)
+	resolution, err = plugin.resolveSessionTier(key, complexity.TierComplex)
 	require.NoError(t, err)
 	require.True(t, resolution.Escalated)
 	require.Equal(t, complexity.TierComplex, resolution.EffectiveTier)
 
-	resolution, err = sessions.resolve(key, complexity.TierSimple)
+	resolution, err = plugin.resolveSessionTier(key, complexity.TierSimple)
 	require.NoError(t, err)
 	require.Equal(t, complexity.TierComplex, resolution.EffectiveTier)
 }
 
-func TestComplexitySessionStoreEmptyProposalOnlyRefreshesExisting(t *testing.T) {
-	sessions, store := newTestComplexitySessionStore(t, time.Minute)
+func TestComplexitySessionTierEmptyProposalOnlyRefreshesExisting(t *testing.T) {
+	plugin, store := newSessionTestPlugin(t)
 	key := "complexity-test:continuation"
 
-	resolution, err := sessions.resolve(key, "")
+	resolution, err := plugin.resolveSessionTier(key, "")
 	require.NoError(t, err)
 	require.Empty(t, resolution.EffectiveTier)
-	require.Equal(t, 0, store.Len())
+	require.Equal(t, 0, tableLen(store))
 
-	_, err = sessions.resolve(key, complexity.TierMedium)
+	_, err = plugin.resolveSessionTier(key, complexity.TierMedium)
 	require.NoError(t, err)
-	resolution, err = sessions.resolve(key, "")
+	resolution, err = plugin.resolveSessionTier(key, "")
 	require.NoError(t, err)
 	require.True(t, resolution.Existed)
 	require.Equal(t, complexity.TierMedium, resolution.EffectiveTier)
 }
 
-func TestComplexitySessionStoreRefreshesTTLWhenTierDoesNotChange(t *testing.T) {
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-
-	const sessionTTL = 45 * time.Minute
-	recordingStore := &recordingSessionKVStore{KVStore: store}
-	sessions := newComplexitySessionStore(recordingStore, sessionTTL)
+func TestComplexitySessionTierRefreshesTTLWhenTierDoesNotChange(t *testing.T) {
+	plugin, store := newSessionTestPlugin(t)
+	const sessionTTL = complexitySessionInactivityTTL
 	key := "complexity-test:refresh"
 
-	_, err = sessions.resolve(key, complexity.TierMedium)
+	before := time.Now()
+	_, err := plugin.resolveSessionTier(key, complexity.TierMedium)
 	require.NoError(t, err)
-	resolution, err := sessions.resolve(key, complexity.TierSimple)
+	first := requireExpiresAfter(t, store, key, sessionTTL, before, time.Now())
+
+	time.Sleep(5 * time.Millisecond)
+	before = time.Now()
+	resolution, err := plugin.resolveSessionTier(key, complexity.TierSimple)
 	require.NoError(t, err)
 	require.Equal(t, complexity.TierMedium, resolution.EffectiveTier)
-	tier, found, err := sessions.load(key, true)
+	second := requireExpiresAfter(t, store, key, sessionTTL, before, time.Now())
+	require.True(t, second.After(first), "a lower proposal still refreshes the TTL")
+
+	time.Sleep(5 * time.Millisecond)
+	before = time.Now()
+	tier, found, err := plugin.loadSessionTier(key, true)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, complexity.TierMedium, tier)
-
-	require.Equal(t, []time.Duration{sessionTTL, sessionTTL, sessionTTL}, recordingStore.setTTLs)
+	third := requireExpiresAfter(t, store, key, sessionTTL, before, time.Now())
+	require.True(t, third.After(second), "a refreshing load refreshes the TTL")
 }
 
-func TestComplexitySessionStoreExpiryStartsNewEpoch(t *testing.T) {
-	sessions, _ := newTestComplexitySessionStore(t, 10*time.Millisecond)
+func TestComplexitySessionTierExpiryStartsNewEpoch(t *testing.T) {
+	plugin, store := newSessionTestPlugin(t)
 	key := "complexity-test:expiry"
 
-	_, err := sessions.resolve(key, complexity.TierComplex)
+	_, err := plugin.resolveSessionTier(key, complexity.TierComplex)
 	require.NoError(t, err)
+	store.PutWithTTL(key, complexity.TierComplex, 10*time.Millisecond) // the entry runs out
 	time.Sleep(25 * time.Millisecond)
 
-	tier, found, err := sessions.load(key, false)
+	tier, found, err := plugin.loadSessionTier(key, false)
 	require.NoError(t, err)
 	require.False(t, found)
 	require.Empty(t, tier)
 
-	resolution, err := sessions.resolve(key, complexity.TierSimple)
+	resolution, err := plugin.resolveSessionTier(key, complexity.TierSimple)
 	require.NoError(t, err)
 	require.False(t, resolution.Existed)
 	require.Equal(t, complexity.TierSimple, resolution.EffectiveTier)
 }
 
-func TestComplexitySessionStoreRejectsCorruptTier(t *testing.T) {
-	sessions, store := newTestComplexitySessionStore(t, time.Minute)
+func TestComplexitySessionTierRejectsCorruptTier(t *testing.T) {
+	plugin, store := newSessionTestPlugin(t)
 	key := "complexity-test:corrupt"
-	require.NoError(t, store.SetWithTTL(key, "UNKNOWN", time.Minute))
+	store.PutWithTTL(key, "UNKNOWN", time.Minute)
 
-	_, _, err := sessions.load(key, false)
+	_, _, err := plugin.loadSessionTier(key, false)
 	require.ErrorIs(t, err, errInvalidComplexitySessionTier)
-	_, err = sessions.resolve(key, complexity.TierSimple)
+	_, err = plugin.resolveSessionTier(key, complexity.TierSimple)
 	require.ErrorIs(t, err, errInvalidComplexitySessionTier)
 }
 
-func TestComplexitySessionStoreDecodesReplicatedString(t *testing.T) {
-	sessions, store := newTestComplexitySessionStore(t, time.Minute)
-	key := "complexity-test:remote"
-	now := time.Now()
-	require.NoError(t, store.SetRemote(key, []byte(`"MEDIUM"`), now.UnixNano(), now.Add(time.Minute).UnixNano()))
+func TestComplexitySessionTierReadsAStoredTier(t *testing.T) {
+	plugin, store := newSessionTestPlugin(t)
+	key := "complexity-test:stored"
+	store.PutWithTTL(key, "MEDIUM", time.Minute)
 
-	tier, found, err := sessions.load(key, false)
+	tier, found, err := plugin.loadSessionTier(key, false)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, complexity.TierMedium, tier)

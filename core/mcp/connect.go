@@ -82,14 +82,14 @@ func connectCaller(ctx context.Context) bool {
 }
 
 // connectAccessible reports whether the caller on ctx may see and call state's
-// connect tool. The client itself must be reachable: enabled, in the request's
-// client list, executing some tool, and named by the request's tool list when
-// there is one. Which of its tools are allowed does not matter, since a caller
+// connect tool. The client itself must be reachable: not withheld from callers
+// (withheld, see withheldFromCallers), in the request's client list, executing
+// some tool, and named by the request's tool list when there is one. Which of its tools are allowed does not matter, since a caller
 // cannot know them before connecting, and a list naming specific tools would
 // otherwise leave connect, and so every one of them, out of reach.
-func connectAccessible(ctx context.Context, state *schemas.MCPClientState, logger schemas.Logger) bool {
+func connectAccessible(ctx context.Context, state *schemas.MCPClientState, withheld bool, logger schemas.Logger) bool {
 	config := state.ExecutionConfig
-	if withheldFromCallers(state.State, config) {
+	if config == nil || withheld {
 		return false
 	}
 	includeClients, _ := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string)
@@ -150,7 +150,7 @@ func (m *MCPManager) runConnect(ctx *schemas.BifrostContext, request *schemas.Bi
 	if !connectCaller(ctx) {
 		return nil, fmt.Errorf("%s keeps tools per caller and needs a signed-in user or a virtual key to connect", config.Name)
 	}
-	if !connectAccessible(ctx, state, m.logger) {
+	if !connectAccessible(ctx, state, m.withheld(config.ID), m.logger) {
 		return nil, fmt.Errorf("tool '%s' is not available or not permitted", ConnectToolName(config.Name))
 	}
 

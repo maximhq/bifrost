@@ -2,6 +2,7 @@ package datasheet
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 // Defaults for sync configuration and timeouts. Exposed so the composer can
@@ -58,18 +60,18 @@ type Store struct {
 	// Canonical pricing state, protected by mu. Read paths take RLock and
 	// return defensive copies of any slice/map they expose.
 	mu                     sync.RWMutex
-	pricingData            map[string]configstoreTables.TableModelPricing // model|provider|mode → row
-	baseModelIndex         map[string]string                              // model → canonical base name
-	supportedResponseTypes map[string][]string                            // model → [chat_completion, responses, …]
-	supportedParams        map[string][]string                            // model → [temperature, top_p, …]
-	modelParameterKeys     []string                                       // usable parameter rows, including empty allowlists
-	modelParamsSyncMu      sync.Mutex                                     // serialize DB snapshot, write, and publication
+	pricingData            *livestore.Table[string, configstoreTables.TableModelPricing] // model|provider|mode → row
+	baseModelIndex         *livestore.Table[string, string]                              // model → canonical base name
+	supportedResponseTypes *livestore.Table[string, []string]                            // model → [chat_completion, responses, …]
+	supportedParams        *livestore.Table[string, []string]                            // model → [temperature, top_p, …]
+	modelParameterKeys     slot[[]string]                                                // usable parameter rows, including empty allowlists
+	modelParamsSyncMu      sync.Mutex                                                    // serialize DB snapshot, write, and publication
 
 	// onModelParametersApplied fires after a model-parameters reload lands, so
 	// caches built from the previous sheet can be dropped.
 	onModelParametersApplied func()
-	datasheetByProvider      map[schemas.ModelProvider][]string // rebuilt every reload
-	deprecatedByProvider     map[schemas.ModelProvider][]string // rebuilt every reload
+	datasheetByProvider      *livestore.Table[schemas.ModelProvider, []string] // rebuilt every reload
+	deprecatedByProvider     *livestore.Table[schemas.ModelProvider, []string] // rebuilt every reload
 
 	// writeGen counts membership rebuilds; the composer's model→provider memo
 	// stamps it to detect staleness. Atomic so readers skip mu.
@@ -79,28 +81,28 @@ type Store struct {
 	// (the hot CalculateCost path takes mu.RLock and overridesMu.RLock
 	// independently and the orderings never invert).
 	overridesMu   sync.RWMutex
-	rawOverrides  []Override
-	customPricing *customPricingData
+	rawOverrides  slot[[]Override]
+	customPricing slot[*customPricingData]
 
 	// Datasheet entry overrides (entryoverrides.go): user edits merged over
 	// pricingData and the model-parameters rows on every load. Lock order is
 	// mu → entryOverridesMu.
 	entryOverridesMu      sync.RWMutex
 	entryOverridesWriteMu sync.Mutex // serializes read-modify-install of the set; taken before mu
-	entryOverrides        []EntryOverride
-	paramsPatches         map[string]paramsPatch     // provider|model → params patches in apply order
-	paramsUpstream        map[string]json.RawMessage // provider|model → upstream blob a patch replaced
+	entryOverrides        slot[[]EntryOverride]
+	paramsPatches         slot[map[string]paramsPatch]     // provider|model → params patches in apply order
+	paramsUpstream        slot[map[string]json.RawMessage] // provider|model → upstream blob a patch replaced
 
 	// Undo log for entry overrides, under mu.
-	pricingUpstream    map[string]configstoreTables.TableModelPricing // upstream rows an override replaced
-	customPricingKeys  map[string]struct{}                            // rows synthesized for custom entries
-	pricingRows        []configstoreTables.TableModelPricing          // upstream rows of the last load, every spelling
-	paramsSheet        map[string]json.RawMessage                     // upstream params sheet, kept only without a config store
-	paramsOverrideOnly map[string]struct{}                            // models in the params indexes only because a params override adds them
+	pricingUpstream    *livestore.Table[string, configstoreTables.TableModelPricing] // upstream rows an override replaced
+	customPricingKeys  *livestore.Table[string, struct{}]                            // rows synthesized for custom entries
+	pricingRows        slot[[]configstoreTables.TableModelPricing]                   // upstream rows of the last load, every spelling
+	paramsSheet        slot[map[string]json.RawMessage]                              // upstream params sheet, kept only without a config store
+	paramsOverrideOnly *livestore.Table[string, struct{}]                            // models in the params indexes only because a params override adds them
 
 	// Providers whose self-reported usage.cost is ignored in favour of catalog pricing.
 	ignoreProviderCostMu sync.RWMutex
-	ignoreProviderCost   map[schemas.ModelProvider]struct{}
+	ignoreProviderCost   *livestore.Table[schemas.ModelProvider, struct{}]
 
 	// Sync configuration owned here so UpdateSyncConfig is atomic w.r.t. the
 	// URL accessors in sync.go. The composer's ticker reads SyncInterval()
@@ -110,26 +112,30 @@ type Store struct {
 	modelParametersURL string
 	syncInterval       time.Duration
 	lastSyncedAt       time.Time
+
+	// ownedStore is the live store a test store made for itself; Close closes it.
+	ownedStore *livestore.Store
 }
 
-// New constructs a Store with the given config. The store is empty; callers
-// (composer) drive bootstrap via LoadFromDB or LoadFromURLIntoMemory.
-func New(configStore configstore.ConfigStore, logger schemas.Logger, cfg Config) *Store {
-	cfg = cfg.resolved()
-	return &Store{
-		configStore:            configStore,
-		logger:                 logger,
-		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		baseModelIndex:         make(map[string]string),
-		supportedResponseTypes: make(map[string][]string),
-		supportedParams:        make(map[string][]string),
-		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
-		deprecatedByProvider:   make(map[schemas.ModelProvider][]string),
-		ignoreProviderCost:     make(map[schemas.ModelProvider]struct{}),
-		url:                    cfg.URL,
-		modelParametersURL:     cfg.ModelParametersURL,
-		syncInterval:           cfg.SyncInterval,
+// New constructs a Store with the given config, keeping its pricing state in live, which is
+// required. The store is empty; callers (composer) drive bootstrap via LoadFromDB or
+// LoadFromURLIntoMemory.
+func New(configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger, cfg Config) (*Store, error) {
+	if live == nil {
+		return nil, fmt.Errorf("datasheet: %w", livestore.ErrNoLiveStore)
 	}
+	cfg = cfg.resolved()
+	s := &Store{
+		configStore:        configStore,
+		logger:             logger,
+		url:                cfg.URL,
+		modelParametersURL: cfg.ModelParametersURL,
+		syncInterval:       cfg.SyncInterval,
+	}
+	if err := s.createTables(live); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // UpdateSyncConfig replaces URL / params URL / interval atomically. The
@@ -188,7 +194,7 @@ func (s *Store) Get(model string, provider schemas.ModelProvider, requestType sc
 	key := makeKeyNormalized(model, normalizeProvider(string(provider)), normalizeRequestType(requestType))
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	row, ok := s.pricingData[key]
+	row, ok := s.pricingData.Get(key)
 	if !ok {
 		return nil
 	}
@@ -218,7 +224,7 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 		schemas.OCRRequest,
 	} {
 		key := makeKeyNormalized(model, catalogProvider, normalizeRequestType(mode))
-		if pricing, ok := s.pricingData[key]; ok {
+		if pricing, ok := s.pricingData.Get(key); ok {
 			return convertTablePricingToEntry(&pricing)
 		}
 	}
@@ -268,12 +274,12 @@ func (s *Store) BaseModelName(model string) string {
 // baseModelNameUnsafe — caller MUST hold s.mu. Used by GetCapabilityEntry
 // and other hot paths that already hold the lock.
 func (s *Store) baseModelNameUnsafe(model string) string {
-	if base, ok := s.baseModelIndex[model]; ok {
+	if base, ok := s.baseModelIndex.Get(model); ok {
 		return base
 	}
 	_, baseName := schemas.ParseModelString(model, "")
 	if baseName != model {
-		if base, ok := s.baseModelIndex[baseName]; ok {
+		if base, ok := s.baseModelIndex.Get(baseName); ok {
 			return base
 		}
 	}
@@ -295,7 +301,7 @@ func (s *Store) DistinctBaseModelNames() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	seen := make(map[string]struct{})
-	for _, baseName := range s.baseModelIndex {
+	for _, baseName := range tableEntries(s.baseModelIndex) {
 		seen[baseName] = struct{}{}
 	}
 	out := make([]string, 0, len(seen))
@@ -311,7 +317,7 @@ func (s *Store) DistinctBaseModelNames() []string {
 func (s *Store) DatasheetModelsForProvider(provider schemas.ModelProvider) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	models, ok := s.datasheetByProvider[provider]
+	models, ok := s.datasheetByProvider.Get(provider)
 	if !ok {
 		return nil
 	}
@@ -326,7 +332,7 @@ func (s *Store) DatasheetModelsForProvider(provider schemas.ModelProvider) []str
 func (s *Store) DeprecatedDatasheetModelsForProvider(provider schemas.ModelProvider) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	models, ok := s.deprecatedByProvider[provider]
+	models, ok := s.deprecatedByProvider.Get(provider)
 	if !ok {
 		return nil
 	}
@@ -341,8 +347,8 @@ func (s *Store) DeprecatedDatasheetModelsForProvider(provider schemas.ModelProvi
 func (s *Store) DatasheetProviders() []schemas.ModelProvider {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]schemas.ModelProvider, 0, len(s.datasheetByProvider))
-	for p := range s.datasheetByProvider {
+	out := make([]schemas.ModelProvider, 0, s.datasheetByProvider.Len())
+	for p := range tableEntries(s.datasheetByProvider) {
 		out = append(out, p)
 	}
 	return out
@@ -353,7 +359,7 @@ func (s *Store) DatasheetProviders() []schemas.ModelProvider {
 func (s *Store) IsRequestTypeSupported(model string, requestType schemas.RequestType) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	outputs, ok := s.supportedResponseTypes[model]
+	outputs, ok := s.supportedResponseTypes.Get(model)
 	return ok && slices.Contains(outputs, string(requestType))
 }
 
@@ -361,7 +367,7 @@ func (s *Store) IsRequestTypeSupported(model string, requestType schemas.Request
 // names a model accepts (e.g. temperature, top_p, tools). nil for unknown.
 func (s *Store) GetSupportedParameters(model string) []string {
 	s.mu.RLock()
-	params, ok := s.supportedParams[model]
+	params, ok := s.supportedParams.Get(model)
 	s.mu.RUnlock()
 	if !ok {
 		return nil
@@ -378,7 +384,7 @@ func (s *Store) IsTextCompletionSupported(model string, provider schemas.ModelPr
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	key := makeKeyNormalized(model, normalizeProvider(string(provider)), normalizeRequestType(schemas.TextCompletionRequest))
-	_, ok := s.pricingData[key]
+	_, ok := s.pricingData.Get(key)
 	return ok
 }
 
@@ -392,14 +398,14 @@ func (s *Store) capabilityEntryForExactUnsafe(model string, provider schemas.Mod
 	}
 	for _, mode := range preferredModes {
 		key := makeKeyNormalized(model, string(provider), normalizeRequestType(mode))
-		if pricing, ok := s.pricingData[key]; ok {
+		if pricing, ok := s.pricingData.Get(key); ok {
 			return convertTablePricingToEntry(&pricing)
 		}
 	}
 
 	prefix := makeKeyNormalized(model, string(provider), "")
 	var matchingKeys []string
-	for key := range s.pricingData {
+	for key := range tableEntries(s.pricingData) {
 		if strings.HasPrefix(key, prefix) {
 			matchingKeys = append(matchingKeys, key)
 		}
@@ -412,7 +418,7 @@ func (s *Store) capabilityEntryForFamilyUnsafe(baseModel string, provider schema
 		return nil
 	}
 	var matchingKeys []string
-	for key, pricing := range s.pricingData {
+	for key, pricing := range tableEntries(s.pricingData) {
 		if normalizeProvider(pricing.Provider) != string(provider) {
 			continue
 		}
@@ -446,30 +452,39 @@ func (s *Store) selectCapabilityEntryFromKeysUnsafe(matchingKeys []string) *Entr
 			continue
 		}
 		slices.Sort(modeMatches)
-		pricing := s.pricingData[modeMatches[0]]
+		pricing := lookup(s.pricingData, modeMatches[0])
 		return convertTablePricingToEntry(&pricing)
 	}
 	slices.Sort(matchingKeys)
-	pricing := s.pricingData[matchingKeys[0]]
+	pricing := lookup(s.pricingData, matchingKeys[0])
 	return convertTablePricingToEntry(&pricing)
 }
 
-// NewTestStore constructs a minimal Store for unit tests without I/O.
-// Optionally seed baseModelIndex so BaseModelName lookups resolve. A no-op
-// logger is wired so cost / pricing paths (which assume Store.logger is
-// non-nil) don't panic from external test code.
-func NewTestStore(baseModelIndex map[string]string) *Store {
-	if baseModelIndex == nil {
-		baseModelIndex = make(map[string]string)
+// NewTestStore constructs a minimal Store for unit tests without I/O, over a live store of its
+// own. Optionally seed baseModelIndex so BaseModelName lookups resolve. A no-op logger is wired so
+// cost / pricing paths (which assume Store.logger is non-nil) don't panic from external test code.
+func NewTestStore(baseModelIndex map[string]string) (*Store, error) {
+	live, err := livestore.New()
+	if err != nil {
+		return nil, err
 	}
-	return &Store{
-		logger:                 bifrost.NewNoOpLogger(),
-		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		baseModelIndex:         baseModelIndex,
-		supportedResponseTypes: make(map[string][]string),
-		supportedParams:        make(map[string][]string),
-		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
-		deprecatedByProvider:   make(map[schemas.ModelProvider][]string),
+	s, err := New(nil, live, bifrost.NewNoOpLogger(), Config{})
+	if err != nil {
+		live.Close()
+		return nil, err
+	}
+	s.ownedStore = live
+	for model, base := range baseModelIndex {
+		s.baseModelIndex.Put(model, base)
+	}
+	return s, nil
+}
+
+// Close releases a test store's own live store. A store from New uses the caller's live store and
+// owns nothing to close.
+func (s *Store) Close() {
+	if s.ownedStore != nil {
+		s.ownedStore.Close()
 	}
 }
 
@@ -482,7 +497,7 @@ func (s *Store) SetSupportedParamsForTest(params map[string][]string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.supportedParams = params
+	fillTable(s.supportedParams, params)
 }
 
 // SetPricingRowsForTest replaces pricingData with rows and rebuilds the derived
@@ -504,15 +519,15 @@ func (s *Store) SetPricingRowsForTest(rows []configstoreTables.TableModelPricing
 // is kept so an override change can rebuild the view without a reload.
 // Caller MUST hold s.mu write-lock.
 func (s *Store) setPricingRowsUnsafe(rows []configstoreTables.TableModelPricing) {
-	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(rows))
+	s.pricingData.Flush()
 	for _, row := range rows {
 		key := makeKeyNormalized(row.Model, row.Provider, row.Mode)
-		if cur, taken := s.pricingData[key]; taken && !pricingRowBeats(row, cur) {
+		if cur, taken := s.pricingData.Get(key); taken && !pricingRowBeats(row, cur) {
 			continue
 		}
-		s.pricingData[key] = row
+		s.pricingData.Put(key, row)
 	}
-	s.pricingRows = rows
+	s.pricingRows.store(rows)
 	s.applyPricingEntryOverridesUnsafe()
 	s.rebuildDatasheetViewUnsafe(s.datasheetViewRowsUnsafe())
 }
@@ -535,7 +550,7 @@ func pricingRowBeats(row, current configstoreTables.TableModelPricing) bool {
 // rebuildDatasheetViewUnsafe regenerates baseModelIndex, datasheetByProvider,
 // and deprecatedByProvider from rows. Caller MUST hold s.mu write-lock.
 func (s *Store) rebuildDatasheetViewUnsafe(rows []configstoreTables.TableModelPricing) {
-	s.baseModelIndex = make(map[string]string)
+	s.baseModelIndex.Flush()
 	providerModels := make(map[schemas.ModelProvider]map[string]struct{})
 	deprecatedModels := make(map[schemas.ModelProvider]map[string]struct{})
 
@@ -556,28 +571,28 @@ func (s *Store) rebuildDatasheetViewUnsafe(rows []configstoreTables.TableModelPr
 		}
 
 		if pricing.BaseModel != "" {
-			s.baseModelIndex[pricing.Model] = pricing.BaseModel
+			s.baseModelIndex.Put(pricing.Model, pricing.BaseModel)
 		}
 	}
 
-	s.datasheetByProvider = make(map[schemas.ModelProvider][]string, len(providerModels))
+	s.datasheetByProvider.Flush()
 	for provider, modelSet := range providerModels {
 		models := make([]string, 0, len(modelSet))
 		for m := range modelSet {
 			models = append(models, m)
 		}
 		slices.Sort(models)
-		s.datasheetByProvider[provider] = models
+		s.datasheetByProvider.Put(provider, models)
 	}
 
-	s.deprecatedByProvider = make(map[schemas.ModelProvider][]string, len(deprecatedModels))
+	s.deprecatedByProvider.Flush()
 	for provider, modelSet := range deprecatedModels {
 		models := make([]string, 0, len(modelSet))
 		for m := range modelSet {
 			models = append(models, m)
 		}
 		slices.Sort(models)
-		s.deprecatedByProvider[provider] = models
+		s.deprecatedByProvider.Put(provider, models)
 	}
 
 	s.writeGen.Add(1)

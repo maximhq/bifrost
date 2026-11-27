@@ -837,7 +837,7 @@ func TestWarpServiceSearchLogsForAnAPICaller(t *testing.T) {
 		embedded++
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(vectors),
@@ -868,7 +868,7 @@ func TestWarpServiceSearchLogsForAnAPICaller(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidSearchQuery)
 	require.Zero(t, embedded, "a refused query set is never embedded")
 
-	unindexed := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader))
+	unindexed := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader))
 	_, err = unindexed.SearchLogs(ctx, []string{"refund requests"}, nil, 5)
 	require.ErrorIs(t, err, ErrUnavailable)
 	_, err = unindexed.SearchLogs(ctx, nil, nil, 5)
@@ -887,7 +887,7 @@ func TestWarpSemanticSearchRefusesFiltersItCannotApply(t *testing.T) {
 		embedded++
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),

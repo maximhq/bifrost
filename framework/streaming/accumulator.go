@@ -47,16 +47,7 @@ func (a *Accumulator) getChatStreamChunk() *ChatStreamChunk {
 
 // putChatStreamChunk returns a chat stream chunk to the pool
 func (a *Accumulator) putChatStreamChunk(chunk *ChatStreamChunk) {
-	chunk.Timestamp = time.Time{}
-	chunk.Delta = nil
-	chunk.Cost = nil
-	chunk.SemanticCacheDebug = nil
-	chunk.ErrorDetails = nil
-	chunk.FinishReason = nil
-	chunk.TokenUsage = nil
-	chunk.ServiceTier = nil
-	chunk.RawResponse = nil
-	chunk.RawResponseFormat = ""
+	*chunk = ChatStreamChunk{}
 	a.chatStreamChunkPool.Put(chunk)
 }
 
