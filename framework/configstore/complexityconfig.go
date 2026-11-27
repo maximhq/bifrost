@@ -944,10 +944,10 @@ func (c *ComplexitySuggestionsTierConfig) Validate() error {
 		if n := utf8.RuneCountInString(criteria.Definition); n > MaxComplexityDecisionDefinitionCharacters {
 			return fmt.Errorf("suggestions tier criteria %s definition must be at most %d characters, got %d", tier, MaxComplexityDecisionDefinitionCharacters, n)
 		}
-		if err := validateComplexityDecisionList(tier, "signals", criteria.Signals); err != nil {
+		if err := validateComplexityDecisionList(tier, "signals", criteria.Signals, MaxComplexityDecisionSignals); err != nil {
 			return err
 		}
-		if err := validateComplexityDecisionList(tier, "examples", criteria.Examples); err != nil {
+		if err := validateComplexityDecisionList(tier, "examples", criteria.Examples, MaxComplexityDecisionExamples); err != nil {
 			return err
 		}
 	}

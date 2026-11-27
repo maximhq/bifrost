@@ -1534,7 +1534,7 @@ func TestComplexitySuggestionsTierSettings(t *testing.T) {
 	assert.Empty(t, n.Suggestions.Tier.Prompt, "a blank prompt is generated, not sent blank")
 	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"tier":{"classifier":"decision","criteria":{"SIMPLE":{"definiton":"x"}}}}`), &cfg), "definiton")
 
-	tooMany := make([]string, MaxComplexityDecisionCriteriaItems+1)
+	tooMany := make([]string, MaxComplexityDecisionExamples+1)
 	for i := range tooMany {
 		tooMany[i] = fmt.Sprintf("example %d", i)
 	}

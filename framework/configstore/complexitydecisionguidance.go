@@ -19,10 +19,14 @@ const (
 
 // Bounds on the administrator's decision-model guidance. Every value is sent with each
 // classification, so these cap the per-request token cost as much as they
-// guard input size.
+// guard input size. Examples get a far larger bound than signals: a tier is
+// taught mostly by examples drawn from real traffic, and a full list (60 per
+// tier, 180 in all, of up to 300 characters each) is the per-request cost an administrator
+// opts into by writing them.
 const (
 	MaxComplexityDecisionDefinitionCharacters   = 500
-	MaxComplexityDecisionCriteriaItems          = 12
+	MaxComplexityDecisionSignals                = 12
+	MaxComplexityDecisionExamples               = 60
 	MaxComplexityDecisionCriteriaItemCharacters = 300
 )
 
@@ -209,10 +213,10 @@ func validateComplexityDecisionGuidance(c *ComplexityDecisionConfig) error {
 		if n := utf8.RuneCountInString(criteria.Definition); n > MaxComplexityDecisionDefinitionCharacters {
 			return fmt.Errorf("decision criteria %s definition must be at most %d characters, got %d", tier, MaxComplexityDecisionDefinitionCharacters, n)
 		}
-		if err := validateComplexityDecisionList(tier, "signals", criteria.Signals); err != nil {
+		if err := validateComplexityDecisionList(tier, "signals", criteria.Signals, MaxComplexityDecisionSignals); err != nil {
 			return err
 		}
-		if err := validateComplexityDecisionList(tier, "examples", criteria.Examples); err != nil {
+		if err := validateComplexityDecisionList(tier, "examples", criteria.Examples, MaxComplexityDecisionExamples); err != nil {
 			return err
 		}
 	}
@@ -220,9 +224,9 @@ func validateComplexityDecisionGuidance(c *ComplexityDecisionConfig) error {
 }
 
 // validateComplexityDecisionList bounds one tier list's item count and item length.
-func validateComplexityDecisionList(tier, field string, values []string) error {
-	if len(values) > MaxComplexityDecisionCriteriaItems {
-		return fmt.Errorf("decision criteria %s %s must have at most %d items, got %d", tier, field, MaxComplexityDecisionCriteriaItems, len(values))
+func validateComplexityDecisionList(tier, field string, values []string, maxItems int) error {
+	if len(values) > maxItems {
+		return fmt.Errorf("decision criteria %s %s must have at most %d items, got %d", tier, field, maxItems, len(values))
 	}
 	for _, value := range values {
 		if n := utf8.RuneCountInString(value); n > MaxComplexityDecisionCriteriaItemCharacters {

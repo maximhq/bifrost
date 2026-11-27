@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -55,16 +56,30 @@ func TestComplexityDecisionGuidanceValidation(t *testing.T) {
 	valid := &ComplexityDecisionConfig{Criteria: map[string]ComplexityDecisionTierCriteria{"COMPLEX": {Signals: []string{"ok"}}}}
 	assert.NoError(t, valid.normalized().Validate())
 
-	tooMany := make([]string, MaxComplexityDecisionCriteriaItems+1)
-	for i := range tooMany {
-		tooMany[i] = strings.Repeat("x", i+1)
+	distinct := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("item %d", i)
+		}
+		return out
 	}
+	full := &ComplexityDecisionConfig{Criteria: map[string]ComplexityDecisionTierCriteria{"MEDIUM": {
+		Signals:  distinct(MaxComplexityDecisionSignals),
+		Examples: distinct(MaxComplexityDecisionExamples),
+	}}}
+	assert.NoError(t, full.normalized().Validate(), "each list may be filled to its own bound")
+	assert.Equal(t, 60, MaxComplexityDecisionExamples, "a decision tier allows 60 examples, 180 across the three tiers")
+	assert.Equal(t, 12, MaxComplexityDecisionSignals, "a decision tier allows 12 signals")
+
+	tooManyExamples := distinct(MaxComplexityDecisionExamples + 1)
+	tooManySignals := distinct(MaxComplexityDecisionSignals + 1)
 	for name, cfg := range map[string]*ComplexityDecisionConfig{
-		"unknown tier":    {Criteria: map[string]ComplexityDecisionTierCriteria{"REASONING": {Signals: []string{"a"}}}},
-		"lowercase tier":  {Criteria: map[string]ComplexityDecisionTierCriteria{"simple": {Signals: []string{"a"}}, "SIMPLE": {Signals: []string{"b"}}}},
-		"too many items":  {Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Examples: tooMany}}},
-		"long item":       {Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Signals: []string{strings.Repeat("x", MaxComplexityDecisionCriteriaItemCharacters+1)}}}},
-		"long definition": {Criteria: map[string]ComplexityDecisionTierCriteria{"MEDIUM": {Definition: strings.Repeat("x", MaxComplexityDecisionDefinitionCharacters+1)}}},
+		"unknown tier":      {Criteria: map[string]ComplexityDecisionTierCriteria{"REASONING": {Signals: []string{"a"}}}},
+		"lowercase tier":    {Criteria: map[string]ComplexityDecisionTierCriteria{"simple": {Signals: []string{"a"}}, "SIMPLE": {Signals: []string{"b"}}}},
+		"too many examples": {Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Examples: tooManyExamples}}},
+		"too many signals":  {Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Signals: tooManySignals}}},
+		"long item":         {Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Signals: []string{strings.Repeat("x", MaxComplexityDecisionCriteriaItemCharacters+1)}}}},
+		"long definition":   {Criteria: map[string]ComplexityDecisionTierCriteria{"MEDIUM": {Definition: strings.Repeat("x", MaxComplexityDecisionDefinitionCharacters+1)}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assert.Error(t, cfg.normalized().Validate())
