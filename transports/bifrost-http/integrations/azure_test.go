@@ -151,7 +151,7 @@ func azureRouteResolver(t *testing.T) schemas.LLMPlugin {
 	t.Helper()
 	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive(schemas.Azure, "azure-route-test-key", false, []string{"neural", "DragonHDLatestNeural", "fast-transcription", "short-audio"})
-	resolver, err := modelcatalogresolver.Init(catalog, bifrost.NewNoOpLogger())
+	resolver, err := modelcatalogresolver.Init(catalog, nil, bifrost.NewNoOpLogger())
 	require.NoError(t, err)
 	return resolver
 }

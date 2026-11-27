@@ -3752,10 +3752,12 @@ func TestFilterKeysByID(t *testing.T) {
 
 // fakeRoutingPlugin is a minimal LLMPlugin whose PreRequestHook writes a routing key pin to the
 // non-reserved BifrostContextKeyRoutingPinnedAPIKeyID, mirroring what the governance routing
-// engine does. It exists to exercise the commit step in PluginPipeline.RunPreRequestHooks.
+// engine does, and optionally the reason it left the provider unset. It exists to exercise the
+// commit step in PluginPipeline.RunPreRequestHooks and the validation that follows it.
 type fakeRoutingPlugin struct {
-	name     string
-	pinKeyID string // written to BifrostContextKeyRoutingPinnedAPIKeyID when non-empty
+	name            string
+	pinKeyID        string // written to BifrostContextKeyRoutingPinnedAPIKeyID when non-empty
+	resolutionError string // written to req.ProviderResolutionError when non-empty
 }
 
 func (f *fakeRoutingPlugin) GetName() string { return f.name }
@@ -3765,6 +3767,9 @@ func (f *fakeRoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sch
 		// A direct write to the reserved BifrostContextKeyAPIKeyID here would be dropped by the
 		// restricted-write block; routing must use the non-reserved key.
 		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, f.pinKeyID)
+	}
+	if f.resolutionError != "" {
+		req.ProviderResolutionError = f.resolutionError
 	}
 	return nil
 }
@@ -3914,6 +3919,162 @@ func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
 			t.Fatalf("APIKeyID = %q, want %q (no routing pin must not clobber caller pin)", got, "caller-pin")
 		}
 	})
+}
+
+// TestProviderResolutionErrorReplacesAutoResolveMessage pins the error a request gets when no
+// PreRequestHook set a provider: the generic auto-resolve message, unless a plugin wrote why it
+// left the provider unset, in which case the caller gets that reason. Both are 400s.
+func TestProviderResolutionErrorReplacesAutoResolveMessage(t *testing.T) {
+	const reason = "model shared-model is served by more than one provider (azure, openai)"
+	for _, tc := range []struct {
+		name   string
+		plugin *fakeRoutingPlugin
+		want   string
+	}{
+		{"no reason keeps the generic message", &fakeRoutingPlugin{name: "noop"}, ProviderAutoResolveErrorMessage},
+		{"a plugin's reason is returned", &fakeRoutingPlugin{name: "resolver", resolutionError: reason}, reason},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			client, initErr := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewNoOpLogger(),
+				LLMPlugins: []schemas.LLMPlugin{tc.plugin},
+			})
+			if initErr != nil {
+				t.Fatalf("Init failed: %v", initErr)
+			}
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+				Model: "shared-model",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			})
+			if bifrostErr == nil || bifrostErr.Error == nil {
+				t.Fatalf("got %v, want an error", bifrostErr)
+			}
+			if bifrostErr.Error.Message != tc.want {
+				t.Fatalf("message %q, want %q", bifrostErr.Error.Message, tc.want)
+			}
+			if status := bifrostErr.EffectiveHTTPStatus(); status != 400 {
+				t.Fatalf("status %d, want 400", status)
+			}
+		})
+	}
+}
+
+// TestProviderResolutionErrorIsPerRequest pins that a provider resolution reason does not outlive
+// its request. Nil-ctx calls share the instance context, so a reason one request's plugin wrote
+// must not become the error of a later request whose provider stays unset with no reason given.
+func TestProviderResolutionErrorIsPerRequest(t *testing.T) {
+	const reason = "model shared-model is served by more than one provider (azure, openai)"
+	input := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			plugin := &fakeRoutingPlugin{name: "resolver", resolutionError: reason}
+			client, initErr := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewNoOpLogger(),
+				LLMPlugins: []schemas.LLMPlugin{plugin},
+			})
+			if initErr != nil {
+				t.Fatalf("Init failed: %v", initErr)
+			}
+			t.Cleanup(client.Shutdown)
+
+			send := func() string {
+				req := &schemas.BifrostChatRequest{Model: "shared-model", Input: input}
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					_, bifrostErr = client.ChatCompletionStreamRequest(nil, req)
+				} else {
+					_, bifrostErr = client.ChatCompletionRequest(nil, req)
+				}
+				if bifrostErr == nil || bifrostErr.Error == nil {
+					t.Fatalf("got %v, want an error", bifrostErr)
+				}
+				return bifrostErr.Error.Message
+			}
+			if got := send(); got != reason {
+				t.Fatalf("first request: message %q, want %q", got, reason)
+			}
+			plugin.resolutionError = ""
+			if got := send(); got != ProviderAutoResolveErrorMessage {
+				t.Fatalf("second request: message %q, want the generic %q", got, ProviderAutoResolveErrorMessage)
+			}
+		})
+	}
+}
+
+// interleavedResolverPlugin leaves the provider unset for every request. For model "a" it gives a
+// reason and then waits until the hook of the request for model "b", which gives none, has run.
+type interleavedResolverPlugin struct {
+	reason  string
+	aHooked chan struct{} // closed once the "a" request's reason is set
+	bHooked chan struct{} // closed once the "b" request's hook has run
+}
+
+func (p *interleavedResolverPlugin) GetName() string { return "interleaved-resolver" }
+func (p *interleavedResolverPlugin) Cleanup() error  { return nil }
+func (p *interleavedResolverPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	_, model, _ := req.GetRequestFields()
+	switch model {
+	case "a":
+		req.ProviderResolutionError = p.reason
+		close(p.aHooked)
+		<-p.bHooked
+	case "b":
+		close(p.bHooked)
+	}
+	return nil
+}
+func (p *interleavedResolverPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *interleavedResolverPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestProviderResolutionErrorConcurrentNilCtx pins that two concurrent nil-ctx requests, which
+// share the instance context, each get their own provider resolution error: request b runs its
+// whole pre-request phase while request a, whose plugin gave a reason, waits between its hook and
+// its validation. a must still get its reason and b the generic message.
+func TestProviderResolutionErrorConcurrentNilCtx(t *testing.T) {
+	const reason = "model a is served by more than one provider (azure, openai)"
+	input := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	plugin := &interleavedResolverPlugin{reason: reason, aHooked: make(chan struct{}), bHooked: make(chan struct{})}
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	message := func(model string) string {
+		_, bifrostErr := client.ChatCompletionRequest(nil, &schemas.BifrostChatRequest{Model: model, Input: input})
+		if bifrostErr == nil || bifrostErr.Error == nil {
+			return fmt.Sprintf("no error: %v", bifrostErr)
+		}
+		return bifrostErr.Error.Message
+	}
+	aMessage := make(chan string, 1)
+	go func() { aMessage <- message("a") }()
+	<-plugin.aHooked
+	if got := message("b"); got != ProviderAutoResolveErrorMessage {
+		t.Errorf("request b: message %q, want the generic %q", got, ProviderAutoResolveErrorMessage)
+	}
+	if got := <-aMessage; got != reason {
+		t.Errorf("request a: message %q, want %q", got, reason)
+	}
 }
 
 // modelRewritingPlugin rewrites the model in PreRequestHook the way a routing rule does, and

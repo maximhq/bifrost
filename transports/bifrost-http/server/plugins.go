@@ -205,7 +205,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog)
 
 	case modelcatalogresolver.PluginName:
-		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, logger)
+		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, bifrostConfig.LiveStore, logger)
 
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)

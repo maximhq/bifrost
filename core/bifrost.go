@@ -11299,6 +11299,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.ContainerFileContentRequest = nil
 	req.ContainerFileDeleteRequest = nil
 	req.PassthroughRequest = nil
+	req.ProviderResolutionError = ""
 }
 
 // getBifrostRequest gets a BifrostRequest from the pool

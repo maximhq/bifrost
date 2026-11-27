@@ -24,6 +24,7 @@
 - feat: files - Files API uploads stream from a `FileSource` instead of a byte slice on OpenAI and Azure
 - feat: websocket stream hooks return the pre-hook request, so raw relays can forward plugin edits
 - feat: `bifrost_provider_queue_wait_seconds` timing on the attempt window
+- feat: a PreRequestHook plugin that leaves the provider unset can set `BifrostRequest.ProviderResolutionError`; core returns that reason as the 400 message instead of the generic auto-resolve error (thanks [@Xytronix](https://github.com/Xytronix)!)
 - fix: anthropic - mid-conversation system reminders keep one form across turns, decided from the emitted messages, with placement controlled by the `supports_native_mid_conversation_system` datasheet field; the `<system-reminder>` envelope drops its trailing newline and the cache breakpoint stays on the marked block
 - fix: vertex - Claude request bodies always end with `tools`, `system`, `messages` so prompt cache reads hit
 - fix: anthropic - streamed usage counts each cached prompt token once on chat, Responses and passthrough streams (thanks [@is911](https://github.com/is911) and [@wangkanai](https://github.com/wangkanai)!)

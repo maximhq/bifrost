@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
@@ -47,7 +50,7 @@ func requireLog(t *testing.T, ctx *schemas.BifrostContext, want string) {
 }
 
 func TestInitRequiresACatalog(t *testing.T) {
-	if _, err := Init(nil, nil); err == nil {
+	if _, err := Init(nil, nil, nil); err == nil {
 		t.Fatal("Init accepted a nil catalog")
 	}
 }
@@ -255,7 +258,7 @@ func TestPreRequestHook(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			plugin, err := Init(testCatalog(t), nil)
+			plugin, err := Init(testCatalog(t), nil, nil)
 			if err != nil {
 				t.Fatalf("Init: %v", err)
 			}
@@ -286,6 +289,152 @@ func TestPreRequestHook(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPreRequestHookDecisionWithSeveralProviders pins that a decision model named without a provider
+// is not sent to the alphabetically first of several providers serving it: the provider stays unset
+// and the reason core returns names every candidate. One candidate, or an integration route whose
+// own provider is a candidate, resolves as for any other request; a chat request with the same
+// candidates keeps the alphabetical pick (TestPreRequestHook). A custom provider whose
+// allowed_requests forbid decisions cannot serve the request, so it is not a candidate.
+func TestPreRequestHookDecisionWithSeveralProviders(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		model        string
+		integration  string
+		alsoServedBy schemas.ModelProvider // also serves shared-model, beyond testCatalog
+		// custom are custom providers that also serve shared-model, each with whether its
+		// allowed_requests permit decisions.
+		custom       map[schemas.ModelProvider]bool
+		allowed      []schemas.ModelProvider
+		wantProvider schemas.ModelProvider
+		wantReason   string
+	}{
+		{
+			name:       "two candidates after the allowlist are refused with both named",
+			model:      "shared-model",
+			allowed:    []schemas.ModelProvider{schemas.OpenAI, schemas.Azure},
+			wantReason: "decision model shared-model is served by more than one provider (azure, openai); send it as provider/model, for example azure/shared-model, or add a routing rule that sets the provider",
+		},
+		{
+			name:         "an allowlist that leaves one candidate resolves to it",
+			model:        "shared-model",
+			allowed:      []schemas.ModelProvider{schemas.Azure},
+			wantProvider: schemas.Azure,
+		},
+		{
+			name:         "a model one provider serves resolves to it",
+			model:        "solo-model",
+			wantProvider: schemas.OpenAI,
+		},
+		{
+			name:         "the openai route still resolves to openai",
+			model:        "shared-model",
+			integration:  "openai",
+			wantProvider: schemas.OpenAI,
+		},
+		{
+			name:         "the typesafe route resolves to typesafe",
+			model:        "shared-model",
+			integration:  "typesafe",
+			alsoServedBy: schemas.Typesafe,
+			wantProvider: schemas.Typesafe,
+		},
+		{
+			name:         "a custom provider gated off decisions is not a second candidate",
+			model:        "shared-model",
+			custom:       map[schemas.ModelProvider]bool{"aaa_gated": false},
+			allowed:      []schemas.ModelProvider{schemas.Azure, "aaa_gated"},
+			wantProvider: schemas.Azure,
+		},
+		{
+			name:       "a gated custom provider is left out of the named candidates",
+			model:      "shared-model",
+			custom:     map[schemas.ModelProvider]bool{"aaa_gated": false, "openai_custom": true},
+			wantReason: "decision model shared-model is served by more than one provider (anthropic, azure, openai, openai_custom); send it as provider/model, for example anthropic/shared-model, or add a routing rule that sets the provider",
+		},
+		{
+			name:       "every candidate gated off decisions recommends none",
+			model:      "shared-model",
+			custom:     map[schemas.ModelProvider]bool{"aaa_gated": false, "bbb_gated": false},
+			allowed:    []schemas.ModelProvider{"aaa_gated", "bbb_gated"},
+			wantReason: "decision model shared-model is served only by providers whose allowed_requests forbid decisions (aaa_gated, bbb_gated); allow decisions on one of them or send the model as provider/model for a provider that serves decisions",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := testCatalog(t)
+			if tc.alsoServedBy != "" {
+				catalog.UpsertLive(tc.alsoServedBy, string(tc.alsoServedBy)+"-key", false, []string{"shared-model"})
+			}
+			var live *livestore.Store
+			if tc.custom != nil {
+				live = customProvidersForTest(t, tc.custom)
+				for prov := range tc.custom {
+					catalog.UpsertLive(prov, string(prov)+"-key", false, []string{"shared-model"})
+				}
+			}
+			plugin, err := Init(catalog, live, nil)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			ctx := newTestContext()
+			if tc.allowed != nil {
+				ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, tc.allowed)
+			}
+			if tc.integration != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tc.integration)
+			}
+			req := &schemas.BifrostRequest{
+				RequestType:     schemas.DecisionRequest,
+				DecisionRequest: &schemas.BifrostDecisionRequest{Model: tc.model},
+			}
+			if err := plugin.PreRequestHook(ctx, req); err != nil {
+				t.Fatalf("PreRequestHook: %v", err)
+			}
+			provider, _, fallbacks := req.GetRequestFields()
+			if provider != tc.wantProvider {
+				t.Fatalf("provider %q, want %q", provider, tc.wantProvider)
+			}
+			reason := req.ProviderResolutionError
+			if reason != tc.wantReason {
+				t.Fatalf("resolution error %q, want %q", reason, tc.wantReason)
+			}
+			if tc.wantReason != "" && len(fallbacks) != 0 {
+				t.Fatalf("an unresolved decision request got fallbacks %v", fallbacks)
+			}
+			for _, fb := range fallbacks {
+				if allowsDecisions, custom := tc.custom[fb.Provider]; custom && !allowsDecisions {
+					t.Fatalf("fallback %q is gated off decisions: %v", fb.Provider, fallbacks)
+				}
+			}
+		})
+	}
+}
+
+// customProvidersForTest returns a live store holding a custom provider (base openai) for each
+// entry of custom, whose allowed_requests permit list-models and, when the value is true,
+// decisions.
+func customProvidersForTest(t *testing.T, custom map[schemas.ModelProvider]bool) *livestore.Store {
+	t.Helper()
+	store, err := livestore.New()
+	if err != nil {
+		t.Fatalf("livestore: %v", err)
+	}
+	t.Cleanup(store.Close)
+	recs := make([]livestore.Record, 0, len(custom))
+	for name, decisions := range custom {
+		recs = append(recs, livestore.Rec(store.Collections.Providers, &registry.Provider{
+			Name: name,
+			Config: configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{
+				BaseProviderType: schemas.OpenAI,
+				AllowedRequests:  &schemas.AllowedRequests{ListModels: true, Decision: decisions},
+			}},
+		}))
+	}
+	if err := store.LoadRecords(context.Background(), recs); err != nil {
+		t.Fatalf("load providers: %v", err)
+	}
+	return store
 }
 
 // TestKeySelectionBypass pins the resolution of a request that skips key selection (Claude Code
@@ -393,7 +542,7 @@ func TestKeySelectionBypass(t *testing.T) {
 
 	runHook := func(t *testing.T, model string) (*schemas.BifrostContext, *schemas.BifrostRequest) {
 		t.Helper()
-		plugin, err := Init(testCatalog(t), nil)
+		plugin, err := Init(testCatalog(t), nil, nil)
 		if err != nil {
 			t.Fatalf("Init: %v", err)
 		}

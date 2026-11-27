@@ -858,7 +858,8 @@ type Fallback struct {
 // - ImageGenerationRequest
 // NOTE: Bifrost Request is submitted back to pool after every use so DO NOT keep references to this struct after use, especially in go routines.
 type BifrostRequest struct {
-	RequestType RequestType
+	RequestType             RequestType
+	ProviderResolutionError string `json:"-"` // why a PreRequestHook left the provider unset; see validateRequestAfterPreRequestHooks
 
 	ListModelsRequest            *BifrostListModelsRequest
 	ModelRetrieveRequest         *BifrostModelRetrieveRequest
