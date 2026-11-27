@@ -396,15 +396,16 @@ var transcriptionParamsKnownFields = map[string]bool{
 }
 
 var batchCreateParamsKnownFields = map[string]bool{
-	"model":             true,
-	"input_file_id":     true,
-	"input_blob":        true,
-	"output_folder":     true,
-	"display_name":      true,
-	"requests":          true,
-	"endpoint":          true,
-	"completion_window": true,
-	"metadata":          true,
+	"model":                true,
+	"input_file_id":        true,
+	"input_blob":           true,
+	"output_folder":        true,
+	"display_name":         true,
+	"requests":             true,
+	"endpoint":             true,
+	"completion_window":    true,
+	"metadata":             true,
+	"output_expires_after": true,
 }
 
 var containerCreateParamsKnownFields = map[string]bool{
@@ -724,15 +725,16 @@ type VideoEditHTTPRequest struct {
 
 // BatchCreateRequest is a bifrost batch create request
 type BatchCreateRequest struct {
-	Model            string                     `json:"model"`                       // Model in "provider/model" format
-	InputFileID      string                     `json:"input_file_id,omitempty"`     // OpenAI-style file ID
-	Requests         []schemas.BatchRequestItem `json:"requests,omitempty"`          // Anthropic-style inline requests
-	InputBlob        *string                    `json:"input_blob,omitempty"`        // Azure-style blob storage input
-	OutputFolder     *schemas.BatchOutputFolder `json:"output_folder,omitempty"`     // Azure-style output destination
-	DisplayName      *string                    `json:"display_name,omitempty"`      // Human-readable job name (e.g. Vertex displayName)
-	Endpoint         string                     `json:"endpoint,omitempty"`          // e.g., "/v1/chat/completions"
-	CompletionWindow string                     `json:"completion_window,omitempty"` // e.g., "24h"
-	Metadata         map[string]string          `json:"metadata,omitempty"`
+	Model              string                     `json:"model"`                       // Model in "provider/model" format
+	InputFileID        string                     `json:"input_file_id,omitempty"`     // OpenAI-style file ID
+	Requests           []schemas.BatchRequestItem `json:"requests,omitempty"`          // Anthropic-style inline requests
+	InputBlob          *string                    `json:"input_blob,omitempty"`        // Azure-style blob storage input
+	OutputFolder       *schemas.BatchOutputFolder `json:"output_folder,omitempty"`     // Azure-style output destination
+	DisplayName        *string                    `json:"display_name,omitempty"`      // Human-readable job name (e.g. Vertex displayName)
+	Endpoint           string                     `json:"endpoint,omitempty"`          // e.g., "/v1/chat/completions"
+	CompletionWindow   string                     `json:"completion_window,omitempty"` // e.g., "24h"
+	Metadata           map[string]string          `json:"metadata,omitempty"`
+	OutputExpiresAfter *schemas.BatchExpiresAfter `json:"output_expires_after,omitempty"` // How long the provider keeps the batch output
 }
 
 // BatchListRequest is a bifrost batch list request
@@ -3862,17 +3864,18 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 
 	// Build Bifrost batch create request
 	bifrostBatchReq := &schemas.BifrostBatchCreateRequest{
-		Provider:         schemas.ModelProvider(provider),
-		Model:            model,
-		InputFileID:      req.InputFileID,
-		InputBlob:        req.InputBlob,
-		OutputFolder:     req.OutputFolder,
-		DisplayName:      req.DisplayName,
-		Requests:         req.Requests,
-		Endpoint:         schemas.BatchEndpoint(req.Endpoint),
-		CompletionWindow: req.CompletionWindow,
-		Metadata:         req.Metadata,
-		ExtraParams:      extraParams,
+		Provider:           schemas.ModelProvider(provider),
+		Model:              model,
+		InputFileID:        req.InputFileID,
+		InputBlob:          req.InputBlob,
+		OutputFolder:       req.OutputFolder,
+		DisplayName:        req.DisplayName,
+		Requests:           req.Requests,
+		Endpoint:           schemas.BatchEndpoint(req.Endpoint),
+		CompletionWindow:   req.CompletionWindow,
+		Metadata:           req.Metadata,
+		OutputExpiresAfter: req.OutputExpiresAfter,
+		ExtraParams:        extraParams,
 	}
 
 	// Convert context

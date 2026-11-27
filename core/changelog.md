@@ -68,3 +68,4 @@
 - fix: streams cancelled before the upstream's first byte run their terminal post-hooks
 - chore: brotli 1.2.8 and dependency updates
 - chore: upgraded Go to 1.27.4
+- [fix]: Azure batch create sends `output_expires_after`, and Azure file upload sends `expires_after[anchor]` and `expires_after[seconds]`. Both were dropped, so Azure kept batch output and batch input files on its default retention, and input files without an expiry count against the lower file limit [@impoiler](https://github.com/impoiler)

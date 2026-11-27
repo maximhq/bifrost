@@ -2,11 +2,21 @@ package handlers
 
 import (
 	"bytes"
+	"io"
 	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -112,6 +122,81 @@ func TestBatchCreateRefusesFileAndInlineRequestsTogether(t *testing.T) {
 			if tc.name != "nothing named" && !strings.Contains(string(ctx.Response.Body()), "not both") {
 				t.Fatalf("the refusal should say the inputs are exclusive: %s", ctx.Response.Body())
 			}
+		})
+	}
+}
+
+// TestBatchCreateForwardsOutputExpiresAfter pins that output_expires_after on POST /v1/batches reaches
+// the provider's batch create body, and that a request without it sends none.
+func TestBatchCreateForwardsOutputExpiresAfter(t *testing.T) {
+	var mu sync.Mutex
+	var gotPath string
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotPath, gotBody = r.URL.Path, body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"batch_1","object":"batch","endpoint":"/v1/chat/completions","status":"validating","input_file_id":"file-abc","completion_window":"24h","created_at":1}`)
+	}))
+	defer upstream.Close()
+
+	log := bifrost.NewNoOpLogger()
+	SetLogger(log)
+	network := &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true}
+	concurrency := &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10}
+	config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {NetworkConfig: network, ConcurrencyAndBufferSize: concurrency},
+		schemas.Azure:  {NetworkConfig: &schemas.NetworkConfig{AllowPrivateNetwork: true}, ConcurrencyAndBufferSize: concurrency},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("k"), Weight: 1, UseForBatchAPI: schemas.Ptr(true)}},
+		schemas.Azure: {{
+			ID: "azure-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("k"), Weight: 1, UseForBatchAPI: schemas.Ptr(true),
+			AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(upstream.URL)},
+		}},
+	})
+	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{Account: lib.NewBaseAccount(config), Logger: log})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	h := NewInferenceHandler(nil, client, config)
+
+	cases := []struct {
+		provider string
+		path     string
+		expiry   string
+	}{
+		{provider: "azure", path: "/openai/v1/batches", expiry: `,"output_expires_after":{"anchor":"created_at","seconds":1209600}`},
+		{provider: "azure", path: "/openai/v1/batches"},
+		{provider: "openai", path: "/v1/batches", expiry: `,"output_expires_after":{"anchor":"created_at","seconds":1209600}`},
+		{provider: "openai", path: "/v1/batches"},
+	}
+	for _, tc := range cases {
+		name := tc.provider + " without output_expires_after"
+		if tc.expiry != "" {
+			name = tc.provider + " with output_expires_after"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetRequestURI("/v1/batches?provider=" + tc.provider)
+			ctx.Request.SetBodyString(`{"input_file_id":"file-abc","endpoint":"/v1/chat/completions"` + tc.expiry + `}`)
+
+			h.batchCreate(ctx)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			mu.Lock()
+			path, body := gotPath, gotBody
+			mu.Unlock()
+			require.Equal(t, tc.path, path)
+			expiry := gjson.GetBytes(body, "output_expires_after")
+			if tc.expiry == "" {
+				require.False(t, expiry.Exists(), "upstream body: %s", body)
+				return
+			}
+			require.Equal(t, "created_at", expiry.Get("anchor").String(), "upstream body: %s", body)
+			require.Equal(t, int64(1209600), expiry.Get("seconds").Int(), "upstream body: %s", body)
 		})
 	}
 }

@@ -1958,8 +1958,13 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				return err
 			},
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-				// Provider is parsed from JSON body (extra_body), default to OpenAI if not set
+				// The provider comes from the JSON body (extra_body), then the provider query
+				// parameter the other batch routes read (extra_query), then the Azure SDK
+				// mount or user agent, and is OpenAI when none of them names one.
 				if createReq, ok := req.(*schemas.BifrostBatchCreateRequest); ok {
+					if createReq.Provider == "" {
+						createReq.Provider = schemas.ModelProvider(ctx.QueryArgs().Peek("provider"))
+					}
 					if createReq.Provider == "" {
 						if IsAzureSDKRequest(ctx) {
 							createReq.Provider = schemas.Azure

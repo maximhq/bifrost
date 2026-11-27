@@ -167,3 +167,5 @@ All new migrations add tables, nullable columns or indexes and never rewrite exi
 - [#9846](https://github.com/maximhq/bifrost/issues/9846) - [Feature]: Add option to show stop reason as a column.
 - [#10026](https://github.com/maximhq/bifrost/issues/10026) - [Bug]: prompt_cache auto_inject checks r.Model, not the canonical model
 - [#10132](https://github.com/maximhq/bifrost/issues/10132) - [Bug]: Updating the budget of a config.json virtual key fails with "invalid reset duration format: "
+- [fix]: Batch create on the OpenAI SDK routes (`/openai/v1/batches`) reads the `provider` query parameter (`extra_query`), as list, retrieve and cancel already do. It was ignored, so `?provider=azure` without a provider in the body created the batch on OpenAI [@impoiler](https://github.com/impoiler)
+- [fix]: `POST /v1/batches` reads `output_expires_after` and passes it to the provider. It was never parsed, so the field was dropped for every provider [@impoiler](https://github.com/impoiler)

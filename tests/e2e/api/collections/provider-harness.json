@@ -352427,6 +352427,335 @@
           ]
         }
       ]
+    },
+    {
+      "name": "390. Batch options reach Azure: provider on the OpenAI SDK route, file and output expiry (azure batch options)",
+      "description": "Pins three batch options that used to stop at the gateway. 390.1 uploads an Azure batch input file with expires_after and checks Azure set expires_at 14 days (1209600s) after created_at; before the fix the Azure provider sent only purpose, so the file had no expiry. 390.3 creates a batch on the OpenAI SDK route with ?provider=azure and a file id that does not exist; Azure refuses it, and extra_fields.provider must be azure. Before the fix the query parameter was ignored on create and the batch went to OpenAI. 390.5 creates an OpenAI batch on the native /v1/batches route with output_expires_after.seconds of 60, below the 3600 minimum; OpenAI refuses it only if the field reaches it, and before the fix the native handler never read the field, so the batch was created. The Azure provider forwarding output_expires_after needs a Global Batch deployment to reach live, so it is pinned by TestBatchCreateForwardsOutputExpiresAfter in transports/bifrost-http/handlers instead. 390.1/390.2 share h390AzureFileId and 390.4-390.6 share h390OpenAIFileId; each cleanup deletes the file its upload created.",
+      "item": [
+        {
+          "name": "390.1 azure batch options: azure file upload on /v1/files with expires_after sets expires_at 14 days after created_at",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/openai-batch-input.jsonl",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "expires_after[anchor]",
+                  "value": "created_at",
+                  "type": "text"
+                },
+                {
+                  "key": "expires_after[seconds]",
+                  "value": "1209600",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('h390AzureFileId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('azure upload succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('azure upload returns a file id', function () { pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "if (typeof j.id === 'string' && j.id) { pm.collectionVariables.set('h390AzureFileId', j.id); }",
+                  "pm.test('azure set expires_at 1209600s after created_at', function () { pm.expect(j.expires_at, pm.response.text()).to.be.a('number'); pm.expect(j.expires_at - j.created_at, pm.response.text()).to.equal(1209600); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "390.2 azure batch options cleanup: delete the azure file",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{h390AzureFileId}}?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{h390AzureFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('h390AzureFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('azure file delete succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('azure file is deleted', function () { pm.expect(pm.response.json().deleted, pm.response.text()).to.equal(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "390.3 [EXPECT-4XX] azure batch options: azure batch create on the /openai SDK route with ?provider=azure reaches Azure, not OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_file_id\": \"file-bifrostharness390missing\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the batch is refused with a 4xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(400, 499); });",
+                  "pm.test('the batch was sent to a batch-enabled key', function () { pm.expect(pm.response.text()).to.not.include('no config found for batch apis'); });",
+                  "pm.test('azure answered, not openai', function () { pm.expect(pm.response.json().extra_fields.provider, pm.response.text()).to.equal('azure'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "390.4 azure batch options: openai batch input upload on /v1/files",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/openai-batch-input.jsonl",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('h390OpenAIFileId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai upload succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openai upload returns a file id', function () { pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "if (typeof j.id === 'string' && j.id) { pm.collectionVariables.set('h390OpenAIFileId', j.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "390.5 [EXPECT-400] azure batch options: openai native /v1/batches forwards output_expires_after, so a 60 second expiry is refused by OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_file_id\": \"{{h390OpenAIFileId}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"output_expires_after\": {\n    \"anchor\": \"created_at\",\n    \"seconds\": 60\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('h390OpenAIFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai refuses the expiry with a 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('the refusal names the expiry', function () { pm.expect(pm.response.text().toLowerCase()).to.include('expires_after'); });",
+                  "pm.test('openai answered', function () { pm.expect(pm.response.json().extra_fields.provider, pm.response.text()).to.equal('openai'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "390.6 azure batch options cleanup: delete the openai file",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{h390OpenAIFileId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{h390OpenAIFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('h390OpenAIFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai file delete succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('openai file is deleted', function () { pm.expect(pm.response.json().deleted, pm.response.text()).to.equal(true); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

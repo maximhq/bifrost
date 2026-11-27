@@ -848,6 +848,8 @@ Files operations are supported for OpenAI models only.
 
 Files are stored in Azure and can be used with batch operations.
 
+An upload accepts `expires_after[anchor]` (`created_at`) and `expires_after[seconds]` as form fields, and Bifrost passes them to Azure. Azure accepts 1209600 through 2592000 seconds (14 to 30 days). Setting an expiry on batch input files also raises Azure's limit on how many of them a resource can hold.
+
 ---
 
 # 5. Image Generation
