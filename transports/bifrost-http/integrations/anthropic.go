@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -328,16 +329,20 @@ func extractPassthroughHeaders(allHeaders map[string][]string) map[string][]stri
 	return filtered
 }
 
-func hasHeaderKeyFold(headers map[string][]string, target string) bool {
+// findHeaderKeyFold returns the matching key in headers for a lowercased target.
+// ConvertToBifrostContext and extractPassthroughHeaders both lowercase keys, so the
+// exact lookup covers the normal request path; the EqualFold scan is a fallback for
+// callers or plugins that populate mixed-case keys directly.
+func findHeaderKeyFold(headers map[string][]string, target string) (string, bool) {
 	if _, ok := headers[target]; ok {
-		return true
+		return target, true
 	}
 	for k := range headers {
 		if strings.EqualFold(k, target) {
-			return true
+			return k, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
@@ -449,9 +454,15 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 						merged[k] = v
 					}
 					for k, v := range passthroughHeaders {
-						if !hasHeaderKeyFold(merged, k) {
-							merged[k] = v
+						if existingKey, found := findHeaderKeyFold(merged, k); found {
+							// Append raw anthropic-beta values so caller betas are not dropped when
+							// x-bf-eh-anthropic-beta is also set; MergeBetaHeaders splits and dedupes.
+							if k == anthropic.AnthropicBetaHeader && !slices.Equal(merged[existingKey], v) {
+								merged[existingKey] = slices.Concat(merged[existingKey], v)
+							}
+							continue
 						}
+						merged[k] = v
 					}
 					bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, merged)
 				} else {

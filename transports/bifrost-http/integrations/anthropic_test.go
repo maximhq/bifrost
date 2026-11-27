@@ -602,29 +602,41 @@ func TestCheckAnthropicPassthrough_APIKeyPreservesExtraHeaders(t *testing.T) {
 		require.Nil(t, existing["anthropic-version"])
 	})
 
-	t.Run("does not duplicate or overwrite existing safe header case-insensitively", func(t *testing.T) {
+	t.Run("merges anthropic-beta values while keeping existing-wins for other safe headers", func(t *testing.T) {
 		reqCtx := &fasthttp.RequestCtx{}
 		reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
 		reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
 		reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
-		reqCtx.Request.Header.Set("anthropic-beta", "raw-beta")
+		reqCtx.Request.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14,raw-beta")
 		reqCtx.Request.Header.Set("anthropic-version", "2023-06-01")
 
 		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 		defer cancel()
-		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
-			"Anthropic-Beta": {"explicit-extra-beta"},
-			"user-agent":     {"claude-code/1.0"},
-		})
+		existingBetas := make([]string, 1, 4)
+		existingBetas[0] = "explicit-extra-beta"
+		existing := map[string][]string{
+			"Anthropic-Beta":    existingBetas,
+			"Anthropic-Version": {"2024-01-01"},
+			"user-agent":        {"claude-code/1.0"},
+		}
+		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, existing)
 
 		req := &anthropic.AnthropicMessageRequest{Model: "claude-opus-5-5", MaxTokens: 1024}
 		require.NoError(t, checkAnthropicPassthrough(reqCtx, bifrostCtx, req))
 
+		// Both the pre-existing custom beta and the raw request betas must reach MergeBetaHeaders.
+		mergedBetas := anthropic.MergeBetaHeaders(bifrostCtx, nil)
+		require.Equal(t, []string{"explicit-extra-beta", "interleaved-thinking-2025-05-14", "raw-beta"}, mergedBetas)
+
+		// Non-beta safe headers keep existing-wins semantics without duplicating keys.
 		extra, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
-		require.Equal(t, []string{"explicit-extra-beta"}, extra["Anthropic-Beta"])
-		require.Nil(t, extra["anthropic-beta"])
-		require.Equal(t, []string{"2023-06-01"}, extra["anthropic-version"])
-		require.Equal(t, []string{"claude-code/1.0"}, extra["user-agent"])
+		require.Equal(t, []string{"2024-01-01"}, lookup(extra, "anthropic-version"))
+		require.Nil(t, extra["anthropic-version"])
+		require.Equal(t, []string{"claude-code/1.0"}, lookup(extra, "user-agent"))
+
+		// Neither the original map nor its slice backing array is mutated in place.
+		require.Equal(t, []string{"explicit-extra-beta"}, existing["Anthropic-Beta"])
+		require.Equal(t, "", existingBetas[:2][1])
 	})
 
 	t.Run("populates safe passthrough headers when no extra headers were pre-populated", func(t *testing.T) {
