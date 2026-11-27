@@ -1,3 +1,4 @@
+- fix: Bedrock string tool results whose JSON repeats a key within one object are sent as a text block instead of a json block, so Converse stops rejecting the request with "The format of the value at messages.N.content.M.toolResult.content.0.json is invalid" (json.Compact accepts duplicate keys; the existing empty-key guard is generalized to cover them)
 - fix: a zero provider usage.cost returns as total_cost 0 instead of an empty cost object (#9000) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
 [fix]: preserve cache-write TTL usage on Bedrock Invoke responses [@gauravch-code](https://github.com/gauravch-code)
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
