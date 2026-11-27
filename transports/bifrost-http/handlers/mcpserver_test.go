@@ -2745,15 +2745,22 @@ var liveStoreForTest = livestoretest.New
 
 // pricedToolManager answers every call like fakeResultToolManager and, as core does with send-back
 // cost on, fills the cost capture it finds on the call's context. It reads it through a child
-// context, the way BifrostHTTPServer.ExecuteChatMCPTool wraps every /mcp call.
+// context, the way BifrostHTTPServer.ExecuteChatMCPTool wraps every /mcp call. off reports the
+// cost as off, and sawCapture records whether the last call carried a capture.
 type pricedToolManager struct {
 	fakeResultToolManager
-	cost *schemas.BifrostCost
+	cost       *schemas.BifrostCost
+	off        bool
+	sawCapture bool
 }
+
+func (p *pricedToolManager) SendBackCostEnabled(context.Context) bool { return !p.off }
 
 func (p *pricedToolManager) ExecuteChatMCPTool(ctx context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
 	callCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-	if capture, ok := callCtx.Value(schemas.BifrostContextKeyMCPToolCostCapture).(*schemas.MCPToolCostCapture); ok {
+	capture, ok := callCtx.Value(schemas.BifrostContextKeyMCPToolCostCapture).(*schemas.MCPToolCostCapture)
+	p.sawCapture = ok
+	if ok {
 		capture.Cost = p.cost
 	}
 	return p.fakeResultToolManager.ExecuteChatMCPTool(ctx, call)
@@ -2777,6 +2784,30 @@ func TestToolsCallCarriesSendBackCostInMeta(t *testing.T) {
 
 	unpriced := callToolResult(t, &pricedToolManager{fakeResultToolManager: fakeResultToolManager{result: message}})
 	assert.NotContains(t, unpriced, "_meta")
+
+	// With the cost off for the call, no capture is set up and no _meta is sent.
+	off := &pricedToolManager{fakeResultToolManager: fakeResultToolManager{result: message}, cost: cost, off: true}
+	assert.NotContains(t, callToolResult(t, off), "_meta")
+	assert.False(t, off.sawCapture, "a call with the cost off carries no capture")
+}
+
+// With the cost off, or a tool manager that cannot report it, setting up a call adds nothing.
+func BenchmarkToolCostCaptureOff(b *testing.B) {
+	for name, tm := range map[string]MCPToolManager{
+		"reported off": &pricedToolManager{off: true},
+		"no reporter":  &fakeResultToolManager{},
+	} {
+		b.Run(name, func(b *testing.B) {
+			h := &MCPServerHandler{toolManager: tm}
+			ctx := context.Background()
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, capture := h.toolCostCapture(ctx); capture != nil {
+					b.Fatal("a capture was set up with the cost off")
+				}
+			}
+		})
+	}
 }
 
 // The cost goes on a new _meta that keeps every field the upstream's had: gatewayToolResult's copy

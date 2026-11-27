@@ -1,6 +1,8 @@
 package bifrost
 
 import (
+	"context"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -16,6 +18,14 @@ import (
 // responseCostEnabled reports whether this request's result should carry its
 // cost: the per-request override when present, else the global setting.
 func (bifrost *Bifrost) responseCostEnabled(ctx *schemas.BifrostContext) bool {
+	return bifrost.SendBackCostEnabled(ctx)
+}
+
+// SendBackCostEnabled reports whether a request made with ctx gets its send-back
+// cost, by the rule core prices with. ctx may be any context the request's
+// BifrostContext descends from. A transport reads it to set up nothing for a
+// request that will carry no cost.
+func (bifrost *Bifrost) SendBackCostEnabled(ctx context.Context) bool {
 	if override, ok := ctx.Value(schemas.BifrostContextKeySendBackCost).(bool); ok {
 		return override
 	}

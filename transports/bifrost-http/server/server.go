@@ -594,6 +594,13 @@ func (s *BifrostHTTPServer) ExecuteResponsesMCPTool(ctx context.Context, toolCal
 	return s.Client.ExecuteResponsesMCPTool(bifrostCtx, toolCall)
 }
 
+// SendBackCostEnabled reports whether a tool call made with ctx returns its send-back cost.
+func (s *BifrostHTTPServer) SendBackCostEnabled(ctx context.Context) bool {
+	return s.Client.SendBackCostEnabled(ctx)
+}
+
+var _ handlers.MCPToolCostReporter = (*BifrostHTTPServer)(nil)
+
 // GetAvailableMCPTools returns the tools currently available to the Bifrost client.
 func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
 	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
