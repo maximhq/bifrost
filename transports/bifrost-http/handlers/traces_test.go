@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -680,4 +681,170 @@ func TestSDKDatasetLookupMatchesTheExactName(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, found, "the exact name is found past a page of newer near-matches")
 	assert.Equal(t, golden.ID, found.ID)
+}
+
+// TestExperimentsAreListedWithTheirSummaries pins experiments end to end: a Langfuse dataset run
+// tags its traces and is recorded by name, a repeat run item does not duplicate it, and the
+// dashboard lists each experiment with the scores, tokens and cost of its own traces.
+func TestExperimentsAreListedWithTheirSummaries(t *testing.T) {
+	ctx := context.Background()
+	env := newTracesAPITestEnv(t)
+	env.ingest.SetDatasetService(datasets.NewService(env.config, nil))
+	var project struct {
+		Project tables.TableTraceProject `json:"project"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "agent"}, &project))
+	projectID := project.Project.ID
+	var key struct {
+		Value string `json:"value"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "k", "project_ids": []string{projectID}, "default_project_id": projectID, "can_use_datasets": true}, &key))
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte("pk:"+key.Value))
+	send := func(method, uri, body string) (int, map[string]any) {
+		reqCtx := &fasthttp.RequestCtx{}
+		reqCtx.Request.Header.SetMethod(method)
+		reqCtx.Request.SetRequestURI(uri)
+		reqCtx.Request.Header.Set("Authorization", auth)
+		reqCtx.Request.SetBody([]byte(body))
+		env.router.Handler(reqCtx)
+		var decoded map[string]any
+		_ = sonic.Unmarshal(reqCtx.Response.Body(), &decoded)
+		return reqCtx.Response.StatusCode(), decoded
+	}
+
+	for i, score := range []string{"1", "0.5"} {
+		trace := "tr-" + strconv.Itoa(i)
+		batch := `{"batch":[
+			{"id":"a` + trace + `","type":"trace-create","timestamp":"2026-11-12T10:00:00Z","body":{"id":"` + trace + `","name":"case","input":"q","output":"a"}},
+			{"id":"b` + trace + `","type":"generation-create","timestamp":"2026-11-12T10:00:00Z","body":{"id":"g-` + trace + `","traceId":"` + trace + `","startTime":"2026-11-12T10:00:00Z","endTime":"2026-11-12T10:00:02Z","usage":{"input":8,"output":2,"total":10},"costDetails":{"total":0.001}}},
+			{"id":"c` + trace + `","type":"score-create","timestamp":"2026-11-12T10:00:03Z","body":{"traceId":"` + trace + `","name":"exact","value":` + score + `}}
+		]}`
+		status, _ := send("POST", "/tracing/langfuse/api/public/ingestion", batch)
+		require.Equal(t, fasthttp.StatusMultiStatus, status)
+		status, item := send("POST", "/tracing/langfuse/api/public/dataset-run-items", `{"runName":"nightly","datasetItemId":"item-`+trace+`","traceId":"`+trace+`","datasetName":"golden"}`)
+		require.Equal(t, fasthttp.StatusOK, status)
+		assert.Equal(t, "nightly", item["datasetRunName"])
+		for _, required := range []string{"id", "datasetRunId", "datasetItemId", "traceId", "createdAt", "updatedAt"} {
+			assert.Contains(t, item, required)
+		}
+	}
+	status, _ := send("POST", "/tracing/langfuse/api/public/dataset-run-items", `{"datasetItemId":"x"}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
+	require.NoError(t, env.service.FlushRollups(ctx))
+
+	tagged, err := env.store.SearchTraces(ctx, logstore.TraceFilters{ProjectIDs: []string{projectID}}, logstore.PaginationOptions{})
+	require.NoError(t, err)
+	require.Len(t, tagged.Traces, 2)
+	assert.NotEmpty(t, tagged.Traces[0].ExperimentID, "the run item tagged its trace with the run")
+	spans, err := env.store.ListTraceSpans(ctx, projectID, "tr-0")
+	require.NoError(t, err)
+	assert.Len(t, spans, 2, "tagging a trace adds no span to it")
+
+	var listed struct {
+		Experiments []struct {
+			ID          string                 `json:"id"`
+			Name        string                 `json:"name"`
+			Source      string                 `json:"source"`
+			DatasetName string                 `json:"dataset_name"`
+			Summary     TraceExperimentSummary `json:"summary"`
+		} `json:"experiments"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "GET", "/api/traces/experiments?project_ids="+projectID, nil, &listed))
+	require.Len(t, listed.Experiments, 1, "two run items of one run are one experiment")
+	experiment := listed.Experiments[0]
+	assert.Equal(t, "nightly", experiment.Name)
+	assert.Equal(t, logstore.TraceSourceLangfuse, experiment.Source)
+	assert.Equal(t, "golden", experiment.DatasetName)
+	assert.Equal(t, 2, experiment.Summary.TraceCount)
+	assert.InDelta(t, 0.75, experiment.Summary.Scores["exact"], 1e-9)
+	assert.Equal(t, 20, experiment.Summary.TotalTokens)
+	assert.InDelta(t, 0.002, experiment.Summary.TotalCost, 1e-9)
+	assert.Equal(t, tagged.Traces[0].ExperimentID, experiment.ID)
+}
+
+// sdkDatasetBearer returns a credential allowed to use datasets through the SDK routes.
+func sdkDatasetBearer(t *testing.T, env *tracesAPITestEnv) string {
+	var project struct {
+		Project tables.TableTraceProject `json:"project"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "dataset-users"}, &project))
+	var key struct {
+		Value string `json:"value"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "k", "project_ids": []string{project.Project.ID}, "default_project_id": project.Project.ID, "can_use_datasets": true}, &key))
+	return key.Value
+}
+
+// A Langfuse dataset run belongs to its dataset: the same run name in two datasets is two runs,
+// and items of one dataset run under one run id.
+func TestLangfuseDatasetRunIDsAreScopedToTheirDataset(t *testing.T) {
+	env := newTracesAPITestEnv(t)
+	env.ingest.SetDatasetService(datasets.NewService(env.config, nil))
+	lf := "Basic " + base64.StdEncoding.EncodeToString([]byte("pk:"+sdkDatasetBearer(t, env)))
+	send := func(uri, body string) map[string]any {
+		reqCtx := &fasthttp.RequestCtx{}
+		reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+		reqCtx.Request.SetRequestURI(uri)
+		reqCtx.Request.Header.Set("Authorization", lf)
+		reqCtx.Request.SetBody([]byte(body))
+		env.router.Handler(reqCtx)
+		require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), uri+": "+string(reqCtx.Response.Body()))
+		var decoded map[string]any
+		require.NoError(t, sonic.Unmarshal(reqCtx.Response.Body(), &decoded))
+		return decoded
+	}
+	item := func(dataset string) string {
+		return send("/tracing/langfuse/api/public/dataset-items", `{"datasetName":"`+dataset+`","input":"q"}`)["id"].(string)
+	}
+	send("/tracing/langfuse/api/public/v2/datasets", `{"name":"first"}`)
+	send("/tracing/langfuse/api/public/v2/datasets", `{"name":"second"}`)
+	firstA, firstB, second := item("first"), item("first"), item("second")
+	run := func(itemID string) string {
+		return send("/tracing/langfuse/api/public/dataset-run-items", `{"runName":"baseline","datasetItemId":"`+itemID+`"}`)["datasetRunId"].(string)
+	}
+	assert.NotEqual(t, run(firstA), run(second), "one run name in two datasets is two runs")
+	assert.Equal(t, run(firstA), run(firstB), "items of one dataset share the run")
+}
+
+// noPagingTraceStore fails a test that reads an experiment's traces page by page.
+type noPagingTraceStore struct {
+	logstore.TraceStore
+	t *testing.T
+}
+
+func (s noPagingTraceStore) SearchTraces(ctx context.Context, filters logstore.TraceFilters, pagination logstore.PaginationOptions) (*logstore.TraceSearchResult, error) {
+	s.t.Error("the summary pages through traces: a trace written between pages is counted twice or missed")
+	return s.TraceStore.SearchTraces(ctx, filters, pagination)
+}
+
+// An experiment summary is one aggregate over all of its traces, so it is neither sampled nor
+// thrown off by a trace written while it is computed.
+func TestTraceExperimentSummaryIsOneAggregate(t *testing.T) {
+	ctx := context.Background()
+	env := newTracesAPITestEnv(t)
+	start := time.Now().UTC().Add(-time.Minute)
+	end := start.Add(2 * time.Second)
+	span := func(traceID, experimentID, status string, tokens int) *logstore.TraceSpan {
+		return &logstore.TraceSpan{ProjectID: "p1", TraceID: traceID, SpanID: "root", Source: logstore.TraceSourceBraintrust, Name: "case", Kind: logstore.TraceSpanKindLLM, StartTime: start, EndTime: &end, ExperimentID: experimentID, Status: status, TotalTokens: tokens}
+	}
+	require.NoError(t, env.store.UpsertTraceSpans(ctx, []*logstore.TraceSpan{
+		span("t1", "e1", logstore.TraceSpanStatusOK, 10), span("t2", "e1", logstore.TraceSpanStatusError, 5), span("t3", "e2", logstore.TraceSpanStatusOK, 7),
+	}))
+	require.NoError(t, env.store.UpsertTraceScores(ctx, []*logstore.TraceScore{
+		{ID: "a", ProjectID: "p1", TraceID: "t1", Name: "acc", Value: new(1.0), Source: logstore.TraceAuthorSDK},
+		{ID: "b", ProjectID: "p1", TraceID: "t1", Name: "acc", Value: new(0.0), Source: logstore.TraceAuthorSDK},
+		{ID: "c", ProjectID: "p1", TraceID: "t2", Name: "acc", Value: new(1.0), Source: logstore.TraceAuthorSDK},
+		{ID: "d", ProjectID: "p1", TraceID: "t3", Name: "acc", Value: new(0.0), Source: logstore.TraceAuthorSDK},
+		{ID: "e", ProjectID: "p1", TraceID: "t2", Name: "tone", StringValue: "formal", Source: logstore.TraceAuthorSDK},
+	}))
+	require.NoError(t, env.store.MarkTracesDirty(ctx, []logstore.TraceKey{{ProjectID: "p1", TraceID: "t1"}, {ProjectID: "p1", TraceID: "t2"}, {ProjectID: "p1", TraceID: "t3"}}))
+	require.NoError(t, env.service.FlushRollups(ctx))
+
+	summary, err := summarizeTraceExperiment(ctx, noPagingTraceStore{TraceStore: env.store, t: t}, "p1", "e1")
+	require.NoError(t, err)
+	assert.Equal(t, 2, summary.TraceCount)
+	assert.Equal(t, 1, summary.ErrorCount)
+	assert.Equal(t, 15, summary.TotalTokens)
+	assert.InDelta(t, 2000, summary.AvgDurationMs, 1e-6)
+	assert.Equal(t, map[string]float64{"acc": 0.75}, summary.Scores, "the mean of each trace's mean, as the trace rollups show it")
 }

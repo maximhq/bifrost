@@ -307,3 +307,21 @@ export interface TraceConnectInfo {
 	endpoints: Record<TraceSource, string>;
 	uploads_available: boolean;
 }
+/** An experiment an SDK registered (a Braintrust experiment or a Langfuse dataset run), with what its traces add up to. */
+export interface TraceExperiment {
+	project_id: string;
+	id: string;
+	name: string;
+	source: TraceSource;
+	dataset_name?: string;
+	created_at: string;
+	summary: {
+		trace_count: number;
+		error_count: number;
+		scores: Record<string, number>;
+		avg_duration_ms: number;
+		total_tokens: number;
+		total_cost: number;
+		truncated?: boolean;
+	};
+}

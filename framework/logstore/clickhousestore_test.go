@@ -2750,6 +2750,15 @@ func TestClickHouseTraceStore(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{TraceSourceBraintrust}, filterData.Sources)
 
+	// An experiment registered again keeps its first row, here too.
+	require.NoError(t, store.db.Exec("TRUNCATE TABLE trace_experiments").Error)
+	require.NoError(t, store.RegisterTraceExperiment(ctx, &TraceExperiment{ProjectID: "p1", ID: "exp-1", Name: "baseline", Source: TraceSourceBraintrust}))
+	require.NoError(t, store.RegisterTraceExperiment(ctx, &TraceExperiment{ProjectID: "p1", ID: "exp-1", Name: "renamed", Source: TraceSourceBraintrust}))
+	registered, err := store.ListTraceExperiments(ctx, []string{"p1"}, 10)
+	require.NoError(t, err)
+	require.Len(t, registered, 1)
+	assert.Equal(t, "baseline", registered[0].Name)
+
 	require.NoError(t, store.DeleteTraceScore(ctx, "p1", "sc1"))
 	scores, err := store.ListTraceScores(ctx, "p1", "t1")
 	require.NoError(t, err)
@@ -3030,6 +3039,17 @@ func TestClickHouseTraceRowVersions(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, found[0].LinkSnapshotParsed)
 		assert.Empty(t, found[0].LinkMethod)
+	})
+
+	t.Run("a second registration of an experiment does not replace the first", func(t *testing.T) {
+		require.NoError(t, store.db.Exec("TRUNCATE TABLE trace_experiments").Error)
+		// Two replicas that both found no row each insert one; the first insert must win.
+		require.NoError(t, store.db.Create(&TraceExperiment{ProjectID: "p1", ID: "race", Name: "first", Source: TraceSourceBraintrust, CreatedAt: t1}).Error)
+		require.NoError(t, store.db.Create(&TraceExperiment{ProjectID: "p1", ID: "race", Name: "second", Source: TraceSourceBraintrust, CreatedAt: t2}).Error)
+		require.NoError(t, store.db.Exec("OPTIMIZE TABLE trace_experiments FINAL").Error)
+		found, err := store.FindTraceExperiment(ctx, "p1", "race")
+		require.NoError(t, err)
+		assert.Equal(t, "first", found.Name)
 	})
 
 	t.Run("a clean mark does not replace a newer dirty mark", func(t *testing.T) {
