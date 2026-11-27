@@ -386,6 +386,44 @@ func TestSendBackCostChargesTheRoutingCallOncePerRequest(t *testing.T) {
 	}
 }
 
+// WithErrorCost prices an error made outside core's request flow (the HTTP transport
+// uses it for the error a stream plugin raises) the same way core prices its own: on a
+// copy, only with the setting on, and never twice.
+func TestWithErrorCostPricesAnOutsideErrorLikeCore(t *testing.T) {
+	catalog := &costCatalog{errorCost: testCost(0.1)}
+	newCtx := func() *schemas.BifrostContext {
+		ctx := newCostTestContext()
+		ctx.SetValue(schemas.BifrostContextKeyModelCatalog, catalog)
+		return ctx
+	}
+	newErr := func() *schemas.BifrostError {
+		return &schemas.BifrostError{Error: &schemas.ErrorField{Message: "blocked"}}
+	}
+
+	on := newSendBackCostClient(t, catalog, &costHookPlugin{}, true)
+	original := newErr()
+	priced := on.WithErrorCost(newCtx(), original)
+	if priced == original || priced.ExtraFields.Cost == nil || priced.ExtraFields.Cost.TotalCost != 0.1 {
+		t.Fatalf("WithErrorCost = %+v, want a copy with total 0.1", priced)
+	}
+	if original.ExtraFields.Cost != nil {
+		t.Fatal("WithErrorCost wrote the cost onto the error it was given")
+	}
+	if again := on.WithErrorCost(newCtx(), priced); again != priced {
+		t.Fatal("WithErrorCost priced an error that already had a cost")
+	}
+
+	off := newSendBackCostClient(t, catalog, &costHookPlugin{}, false)
+	if err := newErr(); off.WithErrorCost(newCtx(), err) != err {
+		t.Fatal("WithErrorCost priced an error with the setting off")
+	}
+
+	var noClient *Bifrost
+	if err := newErr(); noClient.WithErrorCost(newCtx(), err) != err {
+		t.Fatal("WithErrorCost on a nil client changed the error")
+	}
+}
+
 // Agent turns 2+ return early through continueOnServedRoute; they are priced
 // like any other request, which the agent loop's turn sum relies on.
 func TestSendBackCostPricesAgentContinuationTurns(t *testing.T) {

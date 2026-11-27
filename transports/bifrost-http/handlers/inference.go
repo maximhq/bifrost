@@ -2537,7 +2537,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 						var errorPayload interface{} = map[string]string{"error": err.Error()}
 						var structuredErr *schemas.StreamInterceptionError
 						if errors.As(err, &structuredErr) && structuredErr != nil {
-							if sanitized := lib.SanitizeBifrostErrorForClient(structuredErr.BifrostError); sanitized != nil {
+							// This error replaces the rest of the stream, including any error chunk
+							// core priced, so it carries the send-back cost itself.
+							priced := h.client.WithErrorCost(bifrostCtx, structuredErr.BifrostError)
+							if sanitized := lib.SanitizeBifrostErrorForClient(priced); sanitized != nil {
 								errorPayload = sanitized
 							}
 						}

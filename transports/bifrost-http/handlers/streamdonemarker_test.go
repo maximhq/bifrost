@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -38,15 +39,25 @@ func serveStreamingResponseWithConfig(t *testing.T, config *lib.Config, chunks [
 // runs on the request context before the handler, e.g. to install a trace completer.
 func serveStreamingResponseWithSetup(t *testing.T, config *lib.Config, setup func(*fasthttp.RequestCtx), chunks []*schemas.BifrostStreamChunk) string {
 	t.Helper()
+	return serveStreamingResponseWithClient(t, config, nil, setup, nil, chunks)
+}
+
+// serveStreamingResponseWithClient is serveStreamingResponseWithSetup with the handler's
+// core client and a hook on the request's BifrostContext, for tests of send-back cost.
+func serveStreamingResponseWithClient(t *testing.T, config *lib.Config, client *bifrost.Bifrost, setup func(*fasthttp.RequestCtx), ctxSetup func(*schemas.BifrostContext), chunks []*schemas.BifrostStreamChunk) string {
+	t.Helper()
 
 	handler := func(reqCtx *fasthttp.RequestCtx) {
 		if setup != nil {
 			setup(reqCtx)
 		}
-		h := &CompletionHandler{config: config}
+		h := &CompletionHandler{config: config, client: client}
 
 		base, cancel := context.WithCancel(context.Background())
 		bifrostCtx := schemas.NewBifrostContext(base, schemas.NoDeadline)
+		if ctxSetup != nil {
+			ctxSetup(bifrostCtx)
+		}
 
 		getStream := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			stream := make(chan *schemas.BifrostStreamChunk, len(chunks))
@@ -214,6 +225,75 @@ func TestStreamingResponsePanicErrorFrameStripsExtraFieldsInHeadersMode(t *testi
 	}
 	if strings.Contains(body, "extra_fields") {
 		t.Errorf("headers mode must strip extra_fields from the panic error frame, got:\n%s", body)
+	}
+}
+
+// streamBlockingPlugin stops every stream from its chunk hook with a structured error, as an
+// Enterprise guardrail does when it blocks a buffered stream.
+type streamBlockingPlugin struct {
+	fakeResponseHeadersPlugin
+	err *schemas.BifrostError
+}
+
+func (p *streamBlockingPlugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return nil, &schemas.StreamInterceptionError{BifrostError: p.err}
+}
+
+// errorCostCatalog prices every error at a fixed total. ctx.CalculateErrorCostBreakdown only
+// needs schemas.ErrorCostProvider from the catalog on the context.
+type errorCostCatalog struct{ total float64 }
+
+func (c errorCostCatalog) CalculateErrorCostBreakdown(*schemas.BifrostContext, *schemas.BifrostError) *schemas.BifrostCost {
+	return &schemas.BifrostCost{AdditionalCost: c.total, TotalCost: c.total}
+}
+
+// The error a transport plugin raises to stop a stream replaces the rest of the stream,
+// including any error chunk core priced, so with send-back cost on it must carry the cost
+// itself, priced on a copy so the plugin's own error is left as it was.
+func TestStreamingResponseInterceptionErrorCarriesSendBackCost(t *testing.T) {
+	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{
+		Account:      inferenceSetupAccount{url: "http://127.0.0.1:1"},
+		Logger:       bifrost.NewDefaultLogger(schemas.LogLevelError),
+		SendBackCost: true,
+	})
+	if err != nil {
+		t.Fatalf("init bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	for _, tc := range []struct {
+		name     string
+		override *bool
+		wantCost bool
+	}{
+		{name: "setting on", wantCost: true},
+		{name: "turned off for the request", override: schemas.Ptr(false), wantCost: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			blockErr := &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error:      &schemas.ErrorField{Message: "blocked by guardrail"},
+			}
+			plugin := &streamBlockingPlugin{fakeResponseHeadersPlugin{name: "stream-blocker"}, blockErr}
+			config := responseHeadersTestConfig(t, plugin)
+
+			body := serveStreamingResponseWithClient(t, config, client, nil, func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyModelCatalog, errorCostCatalog{total: 0.0042})
+				if tc.override != nil {
+					ctx.SetValue(schemas.BifrostContextKeySendBackCost, *tc.override)
+				}
+			}, []*schemas.BifrostStreamChunk{contentChunk("first")})
+
+			if !strings.Contains(body, "event: error\n") || !strings.Contains(body, "blocked by guardrail") {
+				t.Fatalf("expected the plugin's error frame, got:\n%s", body)
+			}
+			if got := strings.Contains(body, `"total_cost":0.0042`); got != tc.wantCost {
+				t.Errorf("error frame carries the cost = %v, want %v; body:\n%s", got, tc.wantCost, body)
+			}
+			if blockErr.ExtraFields.Cost != nil {
+				t.Errorf("the plugin's own error must not be written, got cost %+v", blockErr.ExtraFields.Cost)
+			}
+		})
 	}
 }
 

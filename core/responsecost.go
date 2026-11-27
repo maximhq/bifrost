@@ -64,6 +64,18 @@ func withRequestRoutingMetadata(ctx *schemas.BifrostContext, resp *schemas.Bifro
 	return priced
 }
 
+// WithErrorCost returns err with its send-back cost attached, for an error that
+// reaches the caller in place of one core priced, such as the error an HTTP stream
+// plugin raises to stop a stream. It prices like core's own errors: on a copy, and
+// err comes back unchanged when the setting is off, it already has a cost, nothing
+// is billable, or bifrost is nil.
+func (bifrost *Bifrost) WithErrorCost(ctx *schemas.BifrostContext, err *schemas.BifrostError) *schemas.BifrostError {
+	if bifrost == nil {
+		return err
+	}
+	return bifrost.withErrorCost(ctx, err)
+}
+
 // withErrorCost returns err with its cost attached, or err unchanged when the
 // setting is off, the cost is already set, nothing is billable, or err only
 // tells the stream to drop a chunk (a plugin's skip), which no client receives.
