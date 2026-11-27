@@ -167,6 +167,7 @@ type Bifrost struct {
 	keySelector                schemas.KeySelector                   // Custom key selector function
 	keyPoolFilter              schemas.KeyPoolFilter                 // optional hook to veto keys before selection (nil = all eligible)
 	sessionAffinity            schemas.SessionAffinity               // decides which route and key a session stays on; nil when none is configured
+	upstreamHealth             upstreamHealthTracker                 // per provider/model upstream outcomes behind UpstreamHealthSnapshot
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -7922,6 +7923,7 @@ func executeRequestWithRetries[T any](
 			// The hint belongs to the attempt, not the request: by the time the request ends on
 			// another key, its final error carries that key's answer, not this one's.
 			last.RetryAfter = bifrostError.ExtraFields.RetryAfter
+			last.AnsweredAt = time.Now()
 			reason := class.FailReason()
 			if reason == "" {
 				reason = "unknown"
@@ -8328,6 +8330,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 
 		var keys []schemas.Key
+		// poolSize is the number of keys the attempt chain may rotate across; the upstream health
+		// tracker starts a cooldown only once a refusal has come back from every one of them.
+		poolSize := 0
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
 		// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key
 		// batch/file/container operations that manage their own key lists.
@@ -8443,6 +8448,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						continue
 					}
 
+					poolSize = len(supportedKeys)
 					if len(supportedKeys) == 0 {
 						// SkipKeySelection path — keyProvider stays nil, zero Key is used.
 					} else if !canRotate {
@@ -8520,6 +8526,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		var heldBackError atomic.Bool
 		// Set once the current attempt's provider goroutine has ended the stream for plugins.
 		var streamEnded atomic.Bool
+		// Whether this provider's attempt chain speaks for the provider/model pair every reader
+		// of the upstream health tracker sees: only one on the shared key pool does.
+		recordHealth := model != "" && req.RequestType != schemas.ListModelsRequest &&
+			upstreamPoolShared(req.Context, baseProvider, req.RequestType)
 
 		// Execute request with retries. For streaming, the plugin pipeline,
 		// postHookRunner, and finalizer are allocated per-attempt inside the
@@ -8619,6 +8629,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						heldBackError.Store(true)
 						return nil, err
 					}
+					// The stream the client received ends here, on its provider goroutine: record
+					// how, before plugins can rewrite it. A startup error is the retry loop's, and
+					// the worker records the chain it ends. Reads only values fixed for this
+					// request, never the pooled req.
+					if recordHealth && IsFinalChunk(ctx) && !startup.IsStartupError(err) {
+						bifrost.recordUpstreamStreamEnd(provider.GetProviderKey(), originalModelRequested, err)
+					}
 					if err != nil {
 						streamusage.Estimate(ctx, &schemas.BifrostRequest{ChatRequest: attemptChat, ResponsesRequest: attemptResponses, TextCompletionRequest: attemptText}, attemptResolvedModel, err)
 					}
@@ -8712,6 +8729,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					result, bifrostError = fallback, nil
 				}
 			}
+		}
+
+		// Record what this provider's attempt chain says about the provider serving the model:
+		// a refusal that survived the key walk puts the pair in cooldown, a success clears it.
+		// A stream that started is recorded when it ends, by its postHookRunner.
+		if recordHealth && (bifrostError != nil || !IsStreamRequestType(req.RequestType)) {
+			bifrost.recordUpstreamOutcome(req.Context, provider.GetProviderKey(), model, bifrostError, poolSize)
 		}
 
 		// For streaming with an error, route release through the LAST attempt's

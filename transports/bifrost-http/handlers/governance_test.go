@@ -2455,6 +2455,132 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeyQuota_UpstreamHealthFoldsAllProviderModelLimits: a per-model limit the key
+// sets for every provider (a VK-scoped model config with no provider) is enforced on each
+// provider, so once it is exhausted the pair's effective_remaining_fraction must be 0, as it
+// is for a per-provider one.
+func TestGetVirtualKeyQuota_UpstreamHealthFoldsAllProviderModelLimits(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "Production",
+			IsActive: &active,
+			ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+				{ID: 7, VirtualKeyID: "vk-1", Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+			},
+		},
+		modelConfigs: []configstoreTables.TableModelConfig{{
+			ID:        "mc-gpt4o-all-providers",
+			Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+			ScopeID:   schemas.Ptr("vk-1"),
+			ModelName: "gpt-4o",
+			Budgets:   []configstoreTables.TableBudget{{ID: "b-gpt4o", MaxLimit: 10, CurrentUsage: 10, ResetDuration: "1d"}},
+		}},
+	}
+	h := &GovernanceHandler{configStore: store}
+	h.SetUpstreamHealthSource(func(time.Time) []schemas.UpstreamHealth {
+		return []schemas.UpstreamHealth{
+			{Provider: schemas.OpenAI, Model: "gpt-4o", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
+		}
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp struct {
+		UpstreamHealth []schemas.UpstreamHealth `json:"upstream_health"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp.UpstreamHealth) != 2 {
+		t.Fatalf("expected both reachable pairs, got %+v", resp.UpstreamHealth)
+	}
+	for _, entry := range resp.UpstreamHealth {
+		want := 1.0
+		if entry.Model == "gpt-4o" {
+			want = 0
+		}
+		if entry.EffectiveRemainingFraction != want {
+			t.Fatalf("expected %s effective_remaining_fraction %v, got %v", entry.Model, want, entry.EffectiveRemainingFraction)
+		}
+	}
+}
+
+// TestGetVirtualKeyQuota_UpstreamHealthAllowAllProviders: a key that allows all providers can send
+// to providers it has no config for, so their pairs are reported, not dropped as unreachable.
+func TestGetVirtualKeyQuota_UpstreamHealthAllowAllProviders(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:                "vk-1",
+			Name:              "Production",
+			IsActive:          &active,
+			AllowAllProviders: true,
+		},
+	}
+	h := &GovernanceHandler{configStore: store}
+	h.SetUpstreamHealthSource(func(time.Time) []schemas.UpstreamHealth {
+		return []schemas.UpstreamHealth{{Provider: schemas.Anthropic, Model: "claude-x", Status: schemas.UpstreamHealthCoolingDown}}
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp struct {
+		UpstreamHealth []schemas.UpstreamHealth `json:"upstream_health"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp.UpstreamHealth) != 1 || resp.UpstreamHealth[0].Provider != schemas.Anthropic || resp.UpstreamHealth[0].Available {
+		t.Fatalf("expected the cooling-down pair on the unnamed provider, got %+v", resp.UpstreamHealth)
+	}
+}
+
+// TestGetVirtualKeyQuota_OmitsProviderConfigKeys: the quota lookup loads each provider config's key
+// IDs to resolve key aliases, but the self-service response does not carry them.
+func TestGetVirtualKeyQuota_OmitsProviderConfigKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "Production",
+			IsActive: &active,
+			ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+				{ID: 7, VirtualKeyID: "vk-1", Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, Keys: []configstoreTables.TableKey{{ID: 3, KeyID: "provider-key-uuid"}}},
+			},
+		},
+	}
+	h := &GovernanceHandler{configStore: store}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if strings.Contains(string(ctx.Response.Body()), "provider-key-uuid") {
+		t.Fatalf("the quota response must not carry provider key IDs: %s", ctx.Response.Body())
+	}
+}
+
 // TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets verifies the
 // AP-managed-VK path: when a registered ExternalQuotaBudgetResolver returns budgets
 // (enterprise access-profile budgets, which carry the real usage), they REPLACE the VK's

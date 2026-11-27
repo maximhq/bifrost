@@ -2164,6 +2164,30 @@ func TestGetVirtualKeyByValue_ZeroCooldownRotationRevokesActiveGraceValue(t *tes
 	assert.Nil(t, stored.PreviousValueExpiresAt)
 }
 
+// The quota endpoint resolves key aliases through the keys a provider config allows, so the quota
+// lookup loads each provider config's key IDs.
+func TestGetVirtualKeyQuotaByValue_LoadsProviderConfigKeyIDs(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{ID: "quota-pc-key", Name: "quota-pc-key", Value: *schemas.NewSecretVar("sk-test"), Weight: 1.0}},
+	}))
+	vk := &tables.TableVirtualKey{ID: "vk-quota-keys", Name: "Quota Keys", Value: *schemas.NewSecretVar("vk-quota-keys-value"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	require.NoError(t, store.CreateVirtualKeyProviderConfig(ctx, &tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID: vk.ID,
+		Provider:     "openai",
+		Keys:         []tables.TableKey{{Name: "quota-pc-key"}},
+	}))
+
+	got, err := store.GetVirtualKeyQuotaByValue(ctx, "vk-quota-keys-value")
+	require.NoError(t, err)
+	require.Len(t, got.ProviderConfigs, 1)
+	assert.Equal(t, []string{"quota-pc-key"}, got.ProviderConfigs[0].KeyIDs())
+}
+
 func TestGetVirtualKeyQuotaByValue_GraceValueWithinWindow(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

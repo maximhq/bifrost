@@ -2351,6 +2351,53 @@ func TestGovernanceStore_ProviderScopedModelLimitMatchesEverySpelling(t *testing
 	assert.NoError(t, err, "another provider must not be governed by the openai-scoped budget")
 }
 
+// ModelConfigGoverns answers what a request-time limit lookup would: a gpt-4o config governs the
+// dated model on its provider (and on every provider when it names none), not a sibling model or
+// another provider, and an alias reaches the limit of the model the caller's usable keys map it to.
+func TestGovernanceStore_ModelConfigGovernsMatchesRequestLookup(t *testing.T) {
+	store, h := modelKeyStore(t)
+	openai := "openai"
+	all := schemas.WhiteList{"*"}
+	assert.True(t, store.ModelConfigGoverns("gpt-4o", &openai, schemas.OpenAI, "gpt-4o-2024-08-06", all))
+	assert.True(t, store.ModelConfigGoverns("gpt-4o", nil, schemas.Azure, "gpt-4o-2024-08-06", all))
+	assert.False(t, store.ModelConfigGoverns("gpt-4o", &openai, schemas.OpenAI, "gpt-4o-mini", all))
+	assert.False(t, store.ModelConfigGoverns("gpt-4o", &openai, schemas.Anthropic, "gpt-4o", all))
+
+	// Two keys map the alias to different models; only the keys the caller may use count.
+	bedrock := "bedrock"
+	const sonnet, opus = "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-opus-4-6"
+	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Bedrock: {
+			{ID: "key-sonnet", Models: all, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			{ID: "key-opus", Models: all, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: opus}}},
+		},
+	})
+	assert.True(t, store.ModelConfigGoverns(sonnet, &bedrock, schemas.Bedrock, "claude-sonnet", all))
+	assert.True(t, store.ModelConfigGoverns(opus, &bedrock, schemas.Bedrock, "claude-sonnet", all))
+	assert.True(t, store.ModelConfigGoverns(sonnet, &bedrock, schemas.Bedrock, "claude-sonnet", schemas.WhiteList{"key-sonnet"}))
+	assert.False(t, store.ModelConfigGoverns(opus, &bedrock, schemas.Bedrock, "claude-sonnet", schemas.WhiteList{"key-sonnet"}))
+	assert.False(t, store.ModelConfigGoverns(opus, &bedrock, schemas.Bedrock, "claude-sonnet", nil))
+}
+
+// ModelAccessAllows answers what inference's model check does for a provider config: a key alias
+// the usable keys map to an allowed model is allowed though the list does not name it, one only an
+// unusable key maps is not, and an alias whose target the config blacklists is refused.
+func TestGovernanceStore_ModelAccessAllowsKeyAliases(t *testing.T) {
+	store, h := modelKeyStore(t)
+	all := schemas.WhiteList{"*"}
+	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "key-1", Models: all, Aliases: schemas.KeyAliases{"friendly": {ModelID: "gpt-4o"}}}},
+	})
+	assert.True(t, store.ModelAccessAllows(schemas.OpenAI, "gpt-4o", schemas.WhiteList{"gpt-4o"}, nil, all))
+	assert.True(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o"}, nil, all))
+	assert.True(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o"}, nil, schemas.WhiteList{"key-1"}))
+	assert.False(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o"}, nil, schemas.WhiteList{"key-2"}))
+	assert.False(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o-mini"}, nil, all))
+	assert.False(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o", "friendly"}, schemas.BlackList{"gpt-4o"}, all))
+	assert.True(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o", "friendly"}, schemas.BlackList{"gpt-4o"}, schemas.WhiteList{"key-2"}))
+	assert.False(t, store.ModelAccessAllows(schemas.OpenAI, "gpt-4o", schemas.WhiteList{"gpt-4o"}, schemas.BlackList{"gpt-4o"}, all))
+}
+
 // The spelling an operator stores a provider-scoped config under is canonicalised the same way a
 // request is, on both the load path and the refresh path that follows a write, so existing rows keep
 // matching without a migration.

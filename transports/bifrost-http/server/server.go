@@ -1147,6 +1147,39 @@ func (s *BifrostHTTPServer) ModelConfigIndexKey(model string, provider *string) 
 	return governance.CanonicalModelConfigName(model, provider)
 }
 
+// modelConfigGoverner is the governance store's request-time model limit matching.
+type modelConfigGoverner interface {
+	ModelConfigGoverns(configModel string, configProvider *string, provider schemas.ModelProvider, model string, keyIDs schemas.WhiteList) bool
+}
+
+// modelConfigGoverns matches a model config to a request the way the governance store resolves
+// request limits; a store without that matching falls back to canonical spellings.
+func (s *BifrostHTTPServer) modelConfigGoverns(configModel string, configProvider *string, provider schemas.ModelProvider, model string, keyIDs schemas.WhiteList) bool {
+	if governancePlugin, err := s.getGovernancePlugin(); err == nil && governancePlugin != nil {
+		if store, ok := governancePlugin.GetGovernanceStore().(modelConfigGoverner); ok {
+			return store.ModelConfigGoverns(configModel, configProvider, provider, model, keyIDs)
+		}
+	}
+	return governance.CanonicalModelConfigName(configModel, configProvider) == governance.CanonicalModelConfigName(model, configProvider)
+}
+
+// modelAccessAllower is the governance store's request-time model access check for one provider
+// config.
+type modelAccessAllower interface {
+	ModelAccessAllows(provider schemas.ModelProvider, model string, allowed schemas.WhiteList, blacklisted schemas.BlackList, keyIDs schemas.WhiteList) bool
+}
+
+// modelAccessAllows decides a provider config's model access the way the governance store decides
+// it for inference; a store without that check matches names as written.
+func (s *BifrostHTTPServer) modelAccessAllows(provider schemas.ModelProvider, model string, allowed schemas.WhiteList, blacklisted schemas.BlackList, keyIDs schemas.WhiteList) bool {
+	if governancePlugin, err := s.getGovernancePlugin(); err == nil && governancePlugin != nil {
+		if store, ok := governancePlugin.GetGovernanceStore().(modelAccessAllower); ok {
+			return store.ModelAccessAllows(provider, model, allowed, blacklisted, keyIDs)
+		}
+	}
+	return allowed.IsAllowed(model) && !blacklisted.IsBlocked(model)
+}
+
 // modelConfigReloadReadTimeout bounds the store read a model config reload makes on the server's
 // own context, since it no longer inherits the caller's deadline.
 const modelConfigReloadReadTimeout = 30 * time.Second
@@ -3221,6 +3254,17 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		if s.SidekiqRunner != nil && s.Config != nil && s.Config.ConfigStore != nil {
 			governanceHandler.SetExpiryCleanupBackend(s.SidekiqRunner, s.notificationPublisher())
 		}
+		governanceHandler.SetUpstreamHealthSource(func(now time.Time) []schemas.UpstreamHealth {
+			if s.Client == nil {
+				return nil
+			}
+			return s.Client.UpstreamHealthSnapshot(now)
+		})
+		governanceHandler.SetModelConfigMatcher(s.modelConfigGoverns)
+		governanceHandler.SetModelAccessCheck(s.modelAccessAllows)
+		governanceHandler.SetKeylessProviderCheck(func(provider schemas.ModelProvider) bool {
+			return isKeylessProvider(provider, s.Config)
+		})
 		s.GovernanceHandler = governanceHandler
 	}
 	// Routing rules and the complexity analyzer config live in the config store. With the store

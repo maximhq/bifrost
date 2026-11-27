@@ -4265,7 +4265,10 @@ func (s *RDBConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value st
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
 		Preload("ProviderConfigs.Budgets").
-		Preload("ProviderConfigs.RateLimit")
+		Preload("ProviderConfigs.RateLimit").
+		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, key_id")
+		})
 	return s.findVirtualKeyByValue(baseQuery, value)
 }
 

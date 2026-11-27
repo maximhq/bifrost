@@ -290,6 +290,18 @@ type GovernanceHandler struct {
 	sidekiq           *sidekiq.Runner
 	notify            schemas.NotificationPublisher
 	expiryCleanupStop context.CancelFunc
+	// upstreamHealth reports the gateway's per provider/model upstream health for the quota
+	// endpoint. Set by SetUpstreamHealthSource; nil reports none.
+	upstreamHealth UpstreamHealthSource
+	// modelConfigMatcher matches the key's per-model limits to an upstream_health pair. Set by
+	// SetModelConfigMatcher; nil matches canonical spellings only.
+	modelConfigMatcher ModelConfigMatcher
+	// modelAccessCheck decides which pairs a provider config's model lists reach for
+	// upstream_health. Set by SetModelAccessCheck; nil matches names as written.
+	modelAccessCheck ModelAccessCheck
+	// keylessProvider tells keyless providers apart for upstream_health. Set by
+	// SetKeylessProviderCheck; nil treats every provider as requiring keys.
+	keylessProvider KeylessProviderCheck
 	// now is the clock, overridden in tests.
 	now func() time.Time
 }
@@ -6037,6 +6049,24 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	upstreamHealth := []schemas.UpstreamHealth{}
+	if source := h.upstreamHealth; source != nil {
+		match := h.modelConfigMatcher
+		if match == nil {
+			match = canonicalModelConfigMatch
+		}
+		access := h.modelAccessCheck
+		if access == nil {
+			access = literalModelAccess
+		}
+		upstreamHealth = vkUpstreamHealth(source(time.Now()), vk.ProviderConfigs, vk.AllowAllProviders, models, match, access, h.keylessProvider)
+	}
+	// The provider configs' keys are loaded only to resolve key aliases above; the response has
+	// never carried them, and a self-service caller has no use for provider key IDs.
+	for i := range vk.ProviderConfigs {
+		vk.ProviderConfigs[i].Keys = nil
+	}
+
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_key_name": vk.Name,
 		"is_active":        vk.IsActiveValue(),
@@ -6045,5 +6075,12 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"rate_limits":      rateLimits,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
+		// What the gateway itself has recently seen from each upstream provider/model pair
+		// this key can reach: a pair whose whole key pool was refused (rate limit, quota,
+		// credential, model access) is cooling_down with available=false until cooldown_until
+		// or until a request to it succeeds.
+		// Pairs that have only succeeded are absent and available.
+		"upstream_health":                upstreamHealth,
+		"upstream_health_window_seconds": int64(schemas.UpstreamHealthWindow / time.Second),
 	})
 }
