@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"bufio"
 	"bytes"
+	"io"
 	"io/fs"
 	"mime"
+	"net"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -270,6 +274,26 @@ func (h *UIHandler) serveDevDashboard(ctx *fasthttp.RequestCtx) bool {
 		return false
 	}
 
+	if websocket.FastHTTPIsWebSocketUpgrade(ctx) {
+		// An upgraded socket must never return to the HTTP client's pool.
+		var req fasthttp.Request
+		ctx.Request.CopyTo(&req)
+		upstreamAddr := h.uiDevClient.Addr
+		ctx.HijackSetNoResponse(true)
+		ctx.Hijack(func(client net.Conn) {
+			defer client.Close()
+			if err := proxyDevWebSocket(client, &req, upstreamAddr); err != nil {
+				_ = client.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				var response fasthttp.Response
+				response.SetStatusCode(fasthttp.StatusBadGateway)
+				response.SetBodyString("Failed to proxy dev UI WebSocket")
+				response.Header.SetConnectionClose()
+				_, _ = response.WriteTo(client)
+			}
+		})
+		return true
+	}
+
 	var req fasthttp.Request
 	var resp fasthttp.Response
 	ctx.Request.CopyTo(&req)
@@ -285,4 +309,62 @@ func (h *UIHandler) serveDevDashboard(ctx *fasthttp.RequestCtx) bool {
 
 	resp.CopyTo(&ctx.Response)
 	return true
+}
+
+// proxyDevWebSocket owns a dedicated upstream socket. Errors are returned only
+// before sending the upstream response, when a 502 can still be written safely.
+func proxyDevWebSocket(client net.Conn, req *fasthttp.Request, upstreamAddr string) error {
+	// Dial inside the hijack callback so a skipped callback cannot leak a socket.
+	upstream, err := fasthttp.DialTimeout(upstreamAddr, 5*time.Second)
+	if err != nil {
+		return err
+	}
+	defer upstream.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	if err := client.SetDeadline(deadline); err != nil {
+		return err
+	}
+	if err := upstream.SetDeadline(deadline); err != nil {
+		return err
+	}
+	req.URI().SetScheme("http")
+	req.URI().SetHost(uiDevServerAddr)
+	req.Header.SetHost(uiDevServerAddr)
+	if _, err := req.WriteTo(upstream); err != nil {
+		return err
+	}
+	reader := bufio.NewReader(upstream)
+	var response fasthttp.Response
+	if err := response.Read(reader); err != nil {
+		return err
+	}
+	if _, err := response.WriteTo(client); err != nil {
+		return nil // The response may already be partially written; do not send a 502.
+	}
+	if response.StatusCode() != fasthttp.StatusSwitchingProtocols {
+		return nil
+	}
+	// Handshake timeouts must not limit the lifetime of an HMR connection.
+	if err := client.SetDeadline(time.Time{}); err != nil {
+		return nil
+	}
+	if err := upstream.SetDeadline(time.Time{}); err != nil {
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(upstream, client)
+		_ = upstream.Close()
+		_ = client.SetDeadline(time.Now())
+		close(done)
+	}()
+	// Keep the reader: it may already contain frames received alongside the 101.
+	_, _ = io.Copy(client, reader)
+	_ = upstream.Close()
+	// fasthttp's hijacked Close can be a no-op. A deadline unblocks the other
+	// copy; join it before returning so fasthttp can safely recycle its wrapper.
+	_ = client.SetDeadline(time.Now())
+	<-done
+	return nil
 }
