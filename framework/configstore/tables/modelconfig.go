@@ -73,7 +73,6 @@ type SourceRef struct {
 	SourceName string `gorm:"-" json:"source_name,omitempty"`
 }
 
-
 // IsValidModelConfigScope reports whether scope is a recognized model config scope.
 func IsValidModelConfigScope(scope string) bool {
 	validModelConfigScopesMu.RLock()
@@ -133,6 +132,12 @@ type TableModelConfig struct {
 // TableName sets the table name for each model
 func (TableModelConfig) TableName() string {
 	return "governance_model_configs"
+}
+
+// IsHolderLevel reports whether the row covers all models on all providers: the only tier a request that
+// names neither (an MCP tool execution) reaches.
+func (mc *TableModelConfig) IsHolderLevel() bool {
+	return mc.ModelName == ModelConfigAllModels && mc.Provider == nil
 }
 
 // AfterFind propagates calendar_aligned down to owned budgets so the reset path reads

@@ -498,3 +498,32 @@ func TestTableBudgetBeforeSaveCountsTheBusinessUnitOwner(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "more than one owner")
 }
+
+// TestBudgetScopeSemantics pins which traffic each scope is charged by, which owners it needs, how
+// request types are classified, and that the empty value reads as the shared default.
+func TestBudgetScopeSemantics(t *testing.T) {
+	cases := []struct {
+		scope               LimitScope
+		valid               bool
+		model, mcp          bool
+		needsAllModelsOwner bool
+	}{
+		{"", true, true, true, false},
+		{LimitScopeShared, true, true, true, false},
+		{LimitScopeModel, true, true, false, false},
+		{LimitScopeMCP, true, false, true, true},
+		{"tools", false, true, true, false},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.valid, tc.scope.IsValid(), "IsValid(%q)", tc.scope)
+		assert.Equal(t, tc.model, tc.scope.AppliesTo(LimitScopeModel), "%q applies to model requests", tc.scope)
+		assert.Equal(t, tc.mcp, tc.scope.AppliesTo(LimitScopeMCP), "%q applies to MCP tool executions", tc.scope)
+		assert.Equal(t, tc.needsAllModelsOwner, tc.scope.NeedsAllModelsOwner(), "%q needs an all-models owner", tc.scope)
+	}
+	assert.Equal(t, LimitScopeMCP, RequestScope(schemas.MCPToolExecutionRequest))
+	for _, requestType := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ResponsesStreamRequest, schemas.EmbeddingRequest, schemas.BatchCreateRequest} {
+		assert.Equal(t, LimitScopeModel, RequestScope(requestType), "%s is model traffic", requestType)
+	}
+	assert.Equal(t, LimitPeriodKey("1d", ""), LimitPeriodKey("1d", LimitScopeShared))
+	assert.NotEqual(t, LimitPeriodKey("1d", LimitScopeShared), LimitPeriodKey("1d", LimitScopeMCP))
+}
