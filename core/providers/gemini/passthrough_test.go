@@ -94,3 +94,63 @@ func TestPassthroughFollowsFileDownloadRedirect(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "unregistered path, but no redirect handling either")
 	})
 }
+
+// TestPassthroughInteractionsReportsRun pins the Gemini route for stored interactions: a poll of a
+// finished run reports the run's usage on ProviderJob, to be settled once, and never on
+// PassthroughUsage, which governance and the request row would bill on every read. The stream route
+// does the same from its interaction.completed event.
+func TestPassthroughInteractionsReportsRun(t *testing.T) {
+	const completed = `{"id":"int_gem","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":1000,"total_output_tokens":50,"total_tokens":1050}}`
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1beta/interactions/int_gem", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("stream") == "true" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(`data: {"event_type":"interaction.completed","interaction":` + completed + "}\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(completed))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"},
+	}, testNoopLogger{})
+	key := schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}
+	req := &schemas.BifrostPassthroughRequest{Provider: schemas.Gemini, Method: http.MethodGet, Path: "/interactions/int_gem", APIVersion: "v1beta"}
+
+	check := func(label string, resp *schemas.BifrostPassthroughResponse) {
+		t.Helper()
+		require.NotNil(t, resp, label)
+		assert.Nil(t, resp.PassthroughUsage, "%s: a read of a stored run bills nothing on the request", label)
+		require.NotNil(t, resp.ProviderJob, label)
+		assert.Equal(t, "int_gem", resp.ProviderJob.ID, label)
+		assert.True(t, resp.ProviderJob.Terminal, label)
+		assert.False(t, resp.ProviderJob.Created, "%s: a poll does not create the run", label)
+		assert.Equal(t, "/interactions/int_gem", resp.ProviderJob.PollPath, label)
+		require.NotNil(t, resp.ProviderJob.Usage, label)
+		assert.Equal(t, 1050, resp.ProviderJob.Usage.LLMUsage.TotalTokens, label)
+		assert.Equal(t, "deep-research-preview-04-2026", resp.ServedModel, label)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Passthrough(ctx, key, req)
+	require.Nil(t, bifrostErr)
+	check("unary", resp)
+
+	streamReq := *req
+	streamReq.RawQuery = "stream=true"
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	stream, bifrostErr := provider.PassthroughStream(ctx, noHooks, nil, key, &streamReq)
+	require.Nil(t, bifrostErr)
+	var final *schemas.BifrostPassthroughResponse
+	for chunk := range stream {
+		if chunk.BifrostPassthroughResponse != nil && len(chunk.BifrostPassthroughResponse.Body) == 0 {
+			final = chunk.BifrostPassthroughResponse
+		}
+	}
+	check("stream", final)
+}

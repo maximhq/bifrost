@@ -111,9 +111,13 @@ func TestProviderToolValidation(t *testing.T) {
 
 		// ── Bedrock (web_search + code_interpreter supported via nova tools; web_fetch + MCP not) ──
 		{
-			name:     "Bedrock/web_search_allowed",
-			provider: schemas.Bedrock,
-			tools:    []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
+			// The WebSearchNova carve-out is Nova 2 only; Claude on Bedrock has no
+			// web_search, and InvokeModel rejects web_search_20250305 with 400.
+			name:      "Bedrock/web_search_rejected_for_claude",
+			provider:  schemas.Bedrock,
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
+			expectErr: true,
+			errSubstr: "web_search",
 		},
 		{
 			name:      "Bedrock/web_fetch_rejected",
@@ -123,9 +127,11 @@ func TestProviderToolValidation(t *testing.T) {
 			errSubstr: "web_fetch",
 		},
 		{
-			name:     "Bedrock/code_interpreter_allowed",
-			provider: schemas.Bedrock,
-			tools:    []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeCodeInterpreter}},
+			name:      "Bedrock/code_interpreter_rejected_for_claude",
+			provider:  schemas.Bedrock,
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeCodeInterpreter}},
+			expectErr: true,
+			errSubstr: "code_interpreter",
 		},
 		{
 			name:      "Bedrock/mcp_rejected",
@@ -864,11 +870,13 @@ func TestProviderAnthropicRequestPipeline(t *testing.T) {
 		},
 		// ── Bedrock: web_search rejected ──
 		{
-			name:     "Bedrock/web_search_allowed_in_pipeline",
+			name:     "Bedrock/web_search_dropped_for_claude_in_pipeline",
 			provider: schemas.Bedrock,
 			tools: []schemas.ResponsesTool{
 				{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{}},
 			},
+			expectToolDropped: true,
+			errSubstr:         "web_search",
 		},
 		// ── Bedrock: computer_use with structured outputs → correct headers ──
 		{
@@ -906,6 +914,8 @@ func TestProviderAnthropicRequestPipeline(t *testing.T) {
 					return
 				}
 				t.Fatalf("unexpected dropped tools: %v", dropped)
+			} else if tt.expectToolDropped {
+				t.Fatalf("expected a %s tool to be dropped for provider=%s model=%s, but none was", tt.errSubstr, tt.provider, model)
 			}
 
 			// Step 2: Convert bifrost request → anthropic request

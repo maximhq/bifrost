@@ -22,9 +22,17 @@ func TestGlobalProxyConfigToNetwork(t *testing.T) {
 		NoProxy:            ".internal",
 		Timeout:            7,
 		SkipTLSVerify:      true,
+		CACertPEM:          "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
 		EnableForSCIM:      true,
 		EnableForInference: true,
 		EnableForAPI:       true,
+	}
+	// A zero field in the fixture compares equal even when ToNetwork drops it.
+	fixture := reflect.ValueOf(stored)
+	for i := range fixture.NumField() {
+		if fixture.Field(i).IsZero() {
+			t.Errorf("fixture leaves %s unset: set it so ToNetwork is checked for it", fixture.Type().Field(i).Name)
+		}
 	}
 	got := stored.ToNetwork()
 	want := &network.GlobalProxyConfig{
@@ -36,6 +44,7 @@ func TestGlobalProxyConfigToNetwork(t *testing.T) {
 		NoProxy:            ".internal",
 		Timeout:            7,
 		SkipTLSVerify:      true,
+		CACertPEM:          "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
 		EnableForSCIM:      true,
 		EnableForInference: true,
 		EnableForAPI:       true,

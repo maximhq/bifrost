@@ -116,7 +116,7 @@ func createPrediction(
 	jsonBody []byte,
 	key schemas.Key,
 	url string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	stripPrefer bool,
 	logger schemas.Logger,
 	sendBackRawRequest bool,
@@ -449,7 +449,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToReplicateTextRequest(request) })
+		func() (*ReplicatePredictionRequest, error) { return ToReplicateTextRequest(request) })
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -537,7 +537,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			replicateReq, err := ToReplicateTextRequest(request)
 			if err != nil {
 				return nil, err
@@ -619,6 +619,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -701,6 +702,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 						rawEvent := ReplicateSSEEvent{Event: eventType, Data: eventData}
 						if eventJSON, err := providerUtils.MarshalSorted(rawEvent); err == nil {
 							response.ExtraFields.RawResponse = string(eventJSON)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatReplicateStreamEvent
 						}
 					}
 
@@ -799,7 +801,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToReplicateChatRequest(request) })
+		func() (*ReplicatePredictionRequest, error) { return ToReplicateChatRequest(request) })
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -887,7 +889,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			replicateReq, err := ToReplicateChatRequest(request)
 			if err != nil {
 				return nil, err
@@ -969,6 +971,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -1057,6 +1060,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 						rawEvent := ReplicateSSEEvent{Event: eventType, Data: eventData}
 						if eventJSON, err := providerUtils.MarshalSorted(rawEvent); err == nil {
 							response.ExtraFields.RawResponse = string(eventJSON)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatReplicateStreamEvent
 						}
 					}
 
@@ -1163,7 +1167,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToReplicateResponsesRequest(request) })
+		func() (*ReplicatePredictionRequest, error) { return ToReplicateResponsesRequest(request) })
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -1246,7 +1250,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToReplicateResponsesRequest(request) })
+		func() (*ReplicatePredictionRequest, error) { return ToReplicateResponsesRequest(request) })
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -1371,6 +1375,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -1408,8 +1413,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		outputIndex := 0
 		contentIndex := 0
 
-		// Accumulate raw responses for debugging
-		var rawResponseChunks []interface{}
 		sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 		sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
@@ -1427,12 +1430,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					provider.logger.Warn("Error reading stream: %v", readErr)
 					bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, readErr)
-
-					// Include accumulated raw responses in error
-					if sendBackRawResponse && len(rawResponseChunks) > 0 {
-						bifrostErr.ExtraFields.RawResponse = rawResponseChunks
-					}
-
 					enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
@@ -1451,10 +1448,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 				case "output":
 					// Text chunk received
 					if currentEvent.Data != "" {
-						// Accumulate raw response if enabled
-						if sendBackRawResponse {
-							rawResponseChunks = append(rawResponseChunks, currentEvent)
-						}
 
 						// Emit lifecycle events on first content
 						if !hasEmittedCreated {
@@ -1572,6 +1565,13 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 								ChunkIndex: sequenceNumber,
 							},
 						}
+						// Each output event rides on the delta carrying its text, as on the chat and text streams.
+						if sendBackRawResponse {
+							if eventJSON, err := providerUtils.MarshalSorted(currentEvent); err == nil {
+								deltaResp.ExtraFields.RawResponse = string(eventJSON)
+								deltaResp.ExtraFields.RawResponseFormat = schemas.RawResponseFormatReplicateStreamEvent
+							}
+						}
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
 							providerUtils.GetBifrostResponseForStreamResponse(nil, nil, deltaResp, nil, nil, nil),
 							responseChan, postHookSpanFinalizer)
@@ -1579,11 +1579,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 						hasReceivedContent = true
 					}
 				case "done":
-					// Accumulate done event in raw responses if enabled
-					if sendBackRawResponse {
-						rawResponseChunks = append(rawResponseChunks, currentEvent)
-					}
-
 					// Stream completed
 					if hasReceivedContent {
 						// response.output_text.done
@@ -1682,9 +1677,12 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 						providerUtils.ParseAndSetRawRequest(&completedResp.ExtraFields, jsonData)
 					}
 
-					// Set raw response if enabled
-					if sendBackRawResponse && len(rawResponseChunks) > 0 {
-						completedResp.ExtraFields.RawResponse = rawResponseChunks
+					// The done event rides on the completed response; output events already rode on their deltas.
+					if sendBackRawResponse {
+						if eventJSON, err := providerUtils.MarshalSorted(currentEvent); err == nil {
+							completedResp.ExtraFields.RawResponse = string(eventJSON)
+							completedResp.ExtraFields.RawResponseFormat = schemas.RawResponseFormatReplicateStreamEvent
+						}
 					}
 
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1694,11 +1692,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 					resp.CloseBodyStream()
 					return
 				case "error":
-					// Accumulate error event in raw responses if enabled
-					if sendBackRawResponse {
-						rawResponseChunks = append(rawResponseChunks, currentEvent)
-					}
-
 					// Handle error
 					errorMsg := "stream error"
 					if currentEvent.Data != "" {
@@ -1708,9 +1701,9 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 						errorMsg,
 						fmt.Errorf("stream error: %s", errorMsg))
 
-					// Include accumulated raw responses in error
-					if sendBackRawResponse && len(rawResponseChunks) > 0 {
-						bifrostErr.ExtraFields.RawResponse = rawResponseChunks
+					// The error event is the stream's last raw payload; earlier events already rode on their deltas.
+					if sendBackRawResponse {
+						bifrostErr.ExtraFields.RawResponse = []interface{}{currentEvent}
 					}
 
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1783,7 +1776,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			return ToReplicateImageGenerationInput(request)
 		})
 	if bifrostErr != nil {
@@ -1883,7 +1876,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			replicateReq, err := ToReplicateImageGenerationInput(request)
 			if err != nil {
 				return nil, err
@@ -1972,6 +1965,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -2210,7 +2204,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			return ToReplicateImageEditInput(request), nil
 		})
 	if bifrostErr != nil {
@@ -2311,7 +2305,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			replicateReq := ToReplicateImageEditInput(request)
 			replicateReq.Stream = schemas.Ptr(true)
 			return replicateReq, nil
@@ -2398,6 +2392,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
@@ -2621,7 +2616,7 @@ func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ReplicatePredictionRequest, error) {
 			return ToReplicateVideoGenerationInput(request)
 		})
 	if bifrostErr != nil {
@@ -3038,11 +3033,11 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 
 	// Initialize serial pagination helper (Replicate uses cursor-based pagination)
-	// allowNativeCursorFallback=false: Replicate's cursor is a full URL, so passing an
-	// unrecognised value through would produce a malformed request rather than a clean API error.
+	// allowNativeCursorFallback=false: an unrecognised value is a caller mistake and gets a
+	// clean 400 rather than being sent upstream as a cursor.
 	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, false)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
+		return nil, invalidPaginationCursorError(provider.logger, err)
 	}
 
 	// Get current key to query
@@ -3062,17 +3057,21 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL with query params
+	// Build URL with query params. The request always lands on the configured file
+	// endpoint; a stored cursor only ever contributes the cursor query parameter.
 	requestURL := provider.networkConfig.BaseURL + "/v1/files"
 	values := url.Values{}
 	if request.Limit > 0 {
 		values.Set("limit", fmt.Sprintf("%d", request.Limit))
 	}
-	// Use native cursor from serial helper (Replicate pagination URL)
 	if nativeCursor != "" {
-		// For Replicate, the cursor is actually the full next URL
-		requestURL = nativeCursor
-	} else if encodedValues := values.Encode(); encodedValues != "" {
+		pageCursor, cursorErr := replicateFileListPageCursor(provider.networkConfig.BaseURL, nativeCursor)
+		if cursorErr != nil {
+			return nil, invalidPaginationCursorError(provider.logger, cursorErr)
+		}
+		values.Set("cursor", pageCursor)
+	}
+	if encodedValues := values.Encode(); encodedValues != "" {
 		requestURL += "?" + encodedValues
 	}
 
@@ -3124,13 +3123,19 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 		})
 	}
 
-	// Build cursor for next request
-	// Replicate uses full URL for pagination
+	// Build cursor for next request. Replicate's "next" field is a link; only its cursor
+	// value is stored so the follow-up request is rebuilt on the configured endpoint.
 	var nextCursor string
 	hasMore := false
-	if replicateResp.Next != nil && *replicateResp.Next != "" {
-		nextCursor = *replicateResp.Next
-		hasMore = true
+	if replicateResp.Next != nil {
+		pageCursor, cursorErr := replicateNextPageCursor(*replicateResp.Next)
+		if cursorErr != nil {
+			return nil, providerUtils.NewBifrostOperationError("replicate file list returned a next link Bifrost cannot page from", cursorErr)
+		}
+		if pageCursor != "" {
+			nextCursor = pageCursor
+			hasMore = true
+		}
 	}
 
 	// Use helper to build proper cursor with key index

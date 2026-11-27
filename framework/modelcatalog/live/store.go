@@ -16,12 +16,15 @@
 package live
 
 import (
+	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 // Key identifies one cached response. KeyID is "" for keyless providers
@@ -34,12 +37,17 @@ type Key struct {
 
 // Entry is a single cached response.
 type Entry struct {
-	Models []string
+	Models  []string
+	Created map[string]int64 // provider-reported creation time in Unix seconds; untimed models are absent
 }
 
+// Store keeps the cached /v1/models responses and each provider's invalidation generation in
+// live-store tables. Writers hold mu and readers hold it shared, so a read sees an invalidation of
+// several entries whole, and UpsertIfCurrent compares the generation under the same lock the bump
+// takes.
 type Store struct {
-	mu      sync.RWMutex
-	entries map[Key]Entry
+	mu      sync.RWMutex // writers lock, readers read-lock
+	entries *livestore.Table[Key, Entry]
 	// gen counts invalidations per provider so a fetch that was already in
 	// flight when its key was deleted or disabled, or its provider removed,
 	// cannot re-add the entry the invalidation just dropped. Fetchers capture
@@ -49,7 +57,7 @@ type Store struct {
 	// Never pruned. Dropping a provider's counter on delete would reset it to
 	// 0, and a fetch still holding a pre-delete generation of 0 would then
 	// look current again after the provider was re-added.
-	gen    map[schemas.ModelProvider]uint64
+	gen    *livestore.Table[schemas.ModelProvider, uint64]
 	logger schemas.Logger
 
 	// writeGen counts entry mutations across all providers; the composer's
@@ -58,26 +66,57 @@ type Store struct {
 	writeGen atomic.Uint64
 }
 
-func New(logger schemas.Logger) *Store {
+// Names of the store's live-store tables. A process runs one model catalog, so
+// the names are fixed.
+const (
+	entriesTable     = "model_catalog_live_entries"
+	generationsTable = "model_catalog_live_generations"
+)
+
+// New constructs an empty Store keeping its entries and generations in live,
+// which is required.
+func New(live *livestore.Store, logger schemas.Logger) (*Store, error) {
+	if live == nil {
+		return nil, fmt.Errorf("live models: %w", livestore.ErrNoLiveStore)
+	}
 	if logger == nil {
 		logger = bifrost.NewNoOpLogger()
 	}
-	return &Store{
-		entries: make(map[Key]Entry),
-		gen:     make(map[schemas.ModelProvider]uint64),
-		logger:  logger,
+	entries, err := live.NewTable[Key, Entry](context.Background(), entriesTable)
+	if err != nil {
+		return nil, err
 	}
+	gen, err := live.NewTable[schemas.ModelProvider, uint64](context.Background(), generationsTable)
+	if err != nil {
+		_ = live.DropTable(context.Background(), entriesTable)
+		return nil, err
+	}
+	return &Store{entries: entries, gen: gen, logger: logger}, nil
+}
+
+// keysOf returns the keys of the provider's entries. Callers hold mu.
+func (s *Store) keysOf(provider schemas.ModelProvider) []Key {
+	var out []Key
+	s.entries.Range(func(k Key, _ Entry) bool {
+		if k.Provider == provider {
+			out = append(out, k)
+		}
+		return true
+	})
+	return out
 }
 
 // Upsert stores a successful fetch unconditionally. Use it for writes with no
 // in-flight window to lose a race in (seeding, tests); anything that fetches
 // from an upstream first should go through Generation + UpsertIfCurrent.
-func (s *Store) Upsert(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string) {
+// models is copied; the store takes ownership of created, so callers must not
+// modify it after the call.
+func (s *Store) Upsert(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string, created map[string]int64) {
 	cp := make([]string, len(models))
 	copy(cp, models)
 	k := Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}
 	s.mu.Lock()
-	s.entries[k] = Entry{Models: cp}
+	s.entries.Put(k, Entry{Models: cp, Created: created})
 	s.mu.Unlock()
 	s.writeGen.Add(1)
 }
@@ -92,11 +131,13 @@ func (s *Store) WriteGen() uint64 {
 func (s *Store) Generation(provider schemas.ModelProvider) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.gen[provider]
+	gen, _ := s.gen.Get(provider)
+	return gen
 }
 
 // UpsertIfCurrent stores a fetch only if nothing invalidated the provider
-// since gen was read, and reports whether it wrote.
+// since gen was read, and reports whether it wrote. Like Upsert, it copies
+// models and takes ownership of created.
 //
 // This is what keeps a deleted or disabled key's models from being resurrected
 // by a fetch that outlived it. The background refresher works from a key
@@ -104,16 +145,16 @@ func (s *Store) Generation(provider schemas.ModelProvider) uint64 {
 // may be gone. Its Invalidate already ran, and no later pass re-fetches or
 // prunes a key that is no longer configured, so an unguarded commit would
 // advertise that key's models until the process restarted.
-func (s *Store) UpsertIfCurrent(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string, gen uint64) bool {
+func (s *Store) UpsertIfCurrent(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string, created map[string]int64, gen uint64) bool {
 	cp := make([]string, len(models))
 	copy(cp, models)
 	k := Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.gen[provider] != gen {
+	if current, _ := s.gen.Get(provider); current != gen {
 		return false
 	}
-	s.entries[k] = Entry{Models: cp}
+	s.entries.Put(k, Entry{Models: cp, Created: created})
 	s.writeGen.Add(1)
 	return true
 }
@@ -125,7 +166,8 @@ func (s *Store) UpsertIfCurrent(provider schemas.ModelProvider, keyID string, un
 // write a pending fetch is about to make is exactly the case where there is
 // nothing cached yet, and that is the write this has to stop.
 func (s *Store) bumpLocked(provider schemas.ModelProvider) {
-	s.gen[provider]++
+	gen, _ := s.gen.Get(provider)
+	s.gen.Put(provider, gen+1)
 	s.writeGen.Add(1)
 }
 
@@ -134,8 +176,8 @@ func (s *Store) bumpLocked(provider schemas.ModelProvider) {
 // against the old credential) or when the key is deleted.
 func (s *Store) Invalidate(provider schemas.ModelProvider, keyID string) {
 	s.mu.Lock()
-	delete(s.entries, Key{Provider: provider, KeyID: keyID, Unfiltered: false})
-	delete(s.entries, Key{Provider: provider, KeyID: keyID, Unfiltered: true})
+	s.entries.Delete(Key{Provider: provider, KeyID: keyID, Unfiltered: false})
+	s.entries.Delete(Key{Provider: provider, KeyID: keyID, Unfiltered: true})
 	s.bumpLocked(provider)
 	s.mu.Unlock()
 }
@@ -144,10 +186,8 @@ func (s *Store) Invalidate(provider schemas.ModelProvider, keyID string) {
 // modes. Called on provider delete.
 func (s *Store) InvalidateProvider(provider schemas.ModelProvider) {
 	s.mu.Lock()
-	for k := range s.entries {
-		if k.Provider == provider {
-			delete(s.entries, k)
-		}
+	for _, k := range s.keysOf(provider) {
+		s.entries.Delete(k)
 	}
 	s.bumpLocked(provider)
 	s.mu.Unlock()
@@ -171,14 +211,10 @@ func (s *Store) InvalidateProvider(provider schemas.ModelProvider) {
 // re-fetch replaces them, and the pass was working from the pre-prune key set.
 func (s *Store) RetainKeys(provider schemas.ModelProvider, keep map[string]struct{}) {
 	s.mu.Lock()
-	for k := range s.entries {
-		if k.Provider != provider {
-			continue
+	for _, k := range s.keysOf(provider) {
+		if _, ok := keep[k.KeyID]; !ok {
+			s.entries.Delete(k)
 		}
-		if _, ok := keep[k.KeyID]; ok {
-			continue
-		}
-		delete(s.entries, k)
 	}
 	s.bumpLocked(provider)
 	s.mu.Unlock()
@@ -202,12 +238,35 @@ func (s *Store) UnfilteredModelsForProvider(provider schemas.ModelProvider) []st
 func (s *Store) Snapshot() map[Key]Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make(map[Key]Entry, len(s.entries))
-	for k, e := range s.entries {
+	out := make(map[Key]Entry)
+	s.entries.Range(func(k Key, e Entry) bool {
 		cp := make([]string, len(e.Models))
 		copy(cp, e.Models)
 		out[k] = Entry{Models: cp}
-	}
+		return true
+	})
+	return out
+}
+
+// CreatedForProvider returns the provider creation time of each model across
+// the provider's entries in the given mode, in Unix seconds. When keys report
+// different times for one model, the latest wins. Models without a reported
+// time are absent. The returned map is owned by the caller.
+func (s *Store) CreatedForProvider(provider schemas.ModelProvider, unfiltered bool) map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64)
+	s.entries.Range(func(k Key, e Entry) bool {
+		if k.Provider != provider || k.Unfiltered != unfiltered {
+			return true
+		}
+		for model, created := range e.Created {
+			if created > out[model] {
+				out[model] = created
+			}
+		}
+		return true
+	})
 	return out
 }
 
@@ -217,14 +276,15 @@ func (s *Store) unionForProvider(provider schemas.ModelProvider, unfiltered bool
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	seen := make(map[string]struct{})
-	for k, e := range s.entries {
+	s.entries.Range(func(k Key, e Entry) bool {
 		if k.Provider != provider || k.Unfiltered != unfiltered {
-			continue
+			return true
 		}
 		for _, m := range e.Models {
 			seen[m] = struct{}{}
 		}
-	}
+		return true
+	})
 	out := make([]string, 0, len(seen))
 	for m := range seen {
 		out = append(out, m)

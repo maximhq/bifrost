@@ -11,11 +11,12 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Save } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { ApiKeyFormFragment } from "../fragments";
-import { stripDatabricksAuthDiscriminator } from "./providerKeyForm.utils";
+import { applyAuthMethod } from "./providerKeyForm.utils";
 interface Props {
 	provider: ModelProvider;
 	keyId: string | null;
@@ -31,6 +32,8 @@ const providerKeyFormSchema = z.object({
 type ProviderKeyFormValues = z.infer<typeof modelProviderKeySchema>;
 
 export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: Props) {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [createProviderKey, { isLoading: isCreatingProviderKey }] = useCreateProviderKeyMutation();
 	const [updateProviderKey, { isLoading: isUpdatingProviderKey }] = useUpdateProviderKeyMutation();
@@ -70,49 +73,31 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 
 	const getTooltipContent = useCallback(() => {
 		if (!hasUpdateProviderAccess) {
-			return "You do not have permission to modify provider keys";
+			return t("providers.noPermissionModifyKeys");
 		}
 		if (!form.formState.isValid && form.formState.errors.root?.message) {
 			return form.formState.errors.root?.message;
 		}
 		if (!form.formState.isDirty) {
-			return "No changes made";
+			return t("providers.noChanges");
 		}
 		return null;
-	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty, hasUpdateProviderAccess]);
+	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty, hasUpdateProviderAccess, t]);
 
 	const onSubmit = (value: any) => {
 		if (isEditing && !currentKey) return;
-		// Strip internal _auth_type fields before sending to API
-		const key = { ...value.key };
-		if (key.azure_key_config) {
-			const { _auth_type, ...rest } = key.azure_key_config;
-			key.azure_key_config = rest;
-		}
-		if (key.vertex_key_config) {
-			const { _auth_type, ...rest } = key.vertex_key_config;
-			key.vertex_key_config = rest;
-		}
-		if (key.bedrock_key_config) {
-			const { _auth_type, ...rest } = key.bedrock_key_config;
-			key.bedrock_key_config = rest;
-		}
-		if (key.bedrock_mantle_key_config) {
-			const { _auth_type, ...rest } = key.bedrock_mantle_key_config;
-			key.bedrock_mantle_key_config = rest;
-		}
-		if (key.databricks_key_config) {
-			key.databricks_key_config = stripDatabricksAuthDiscriminator(key.databricks_key_config);
-		}
+		// The utility strips the UI-only _auth_type discriminators and says what the chosen
+		// method clears, since the update API keeps every field the payload omits.
+		const payload = applyAuthMethod(value.key, isEditing) as typeof value.key;
 		const mutation = isEditing
 			? updateProviderKey({
 					provider: provider.name,
 					keyId: currentKey!.id,
-					key,
+					key: payload,
 				})
 			: createProviderKey({
 					provider: provider.name,
-					key,
+					key: payload,
 				});
 
 		mutation
@@ -125,7 +110,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 					form.setError("key.name", { message: getErrorMessage(err) });
 					return;
 				}
-				toast.error(isEditing ? "Error updating key" : "Error creating key", {
+				toast.error(isEditing ? t("providers.errorUpdatingKey") : t("providers.errorCreatingKey"), {
 					description: getErrorMessage(err),
 				});
 			});
@@ -146,7 +131,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 				<div className="bg-card sticky bottom-0 border-t px-4 py-4 md:px-8">
 					<div className="flex justify-end space-x-3">
 						<Button type="button" variant="outline" onClick={onCancel} data-testid="key-cancel-btn">
-							Cancel
+							{tc("cancel")}
 						</Button>
 						<TooltipProvider>
 							<Tooltip>
@@ -159,7 +144,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 											data-testid="key-save-btn"
 										>
 											<Save className="h-4 w-4 shrink-0" />
-											Save
+											{tc("save")}
 										</Button>
 									</span>
 								</TooltipTrigger>

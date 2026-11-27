@@ -9,6 +9,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,9 +25,10 @@ import (
 func TestApplyRoutingRules_PinnedKeyReachesContext(t *testing.T) {
 	const pinnedKeyID = "pinned-key-abc-123"
 
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "pin-1",
 		Name:          "Pinned Key Rule",
 		CelExpression: "model == 'gpt-4o'",
@@ -43,7 +45,7 @@ func TestApplyRoutingRules_PinnedKeyReachesContext(t *testing.T) {
 		Priority: 0,
 	}))
 
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 
 	req := &schemas.BifrostRequest{
@@ -71,9 +73,10 @@ func TestApplyRoutingRules_PinnedKeyReachesContext(t *testing.T) {
 func TestApplyRoutingRules_FallbackKeyPinReachesRequest(t *testing.T) {
 	const fallbackKeyID = "fallback-key-xyz-789"
 
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "fb-pin-1",
 		Name:          "Pinned Fallback Rule",
 		CelExpression: "model == 'gpt-4o'",
@@ -89,7 +92,7 @@ func TestApplyRoutingRules_FallbackKeyPinReachesRequest(t *testing.T) {
 		Priority: 0,
 	}))
 
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 
 	req := &schemas.BifrostRequest{
@@ -143,10 +146,11 @@ func TestApplyRoutingRules_CustomProviderFallbackSurvivesRestart(t *testing.T) {
 	}
 	require.NoError(t, stored.AfterFind(nil))
 
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), stored))
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), stored))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 
 	// bifrost.Init now registers the custom provider, after the rules were loaded.
@@ -173,9 +177,10 @@ func TestApplyRoutingRules_CustomProviderFallbackSurvivesRestart(t *testing.T) {
 // under the same restricted-write block core installs around PreRequestHook,
 // and only for streaming request types.
 func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T) {
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "ttft-1",
 		Name:          "TTFT Rule",
 		CelExpression: "model == 'gpt-4o'",
@@ -186,7 +191,7 @@ func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T)
 		Enabled:         bifrost.Ptr(true),
 		Scope:           "global",
 	}))
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 
 	for _, tc := range []struct {
@@ -225,9 +230,10 @@ func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T)
 // Publishing the allowlist for the incoming model would prune providers the routed model is
 // actually allowed on.
 func TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules(t *testing.T) {
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "rewrite-1",
 		Name:          "Rewrite Model",
 		CelExpression: "model == 'gpt-4o'",
@@ -243,7 +249,7 @@ func TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules(t *testing.T) {
 	governance := NewMockGovernance()
 	governance.VirtualKeys["sk-bf-test"] = vk
 
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, governance)
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
 	require.NoError(t, err)
 
 	req := &schemas.BifrostRequest{
@@ -271,9 +277,10 @@ func TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules(t *testing.T) {
 // derived from that name can come back empty, which downstream layers treat as "no provider
 // permitted".
 func TestPreRequestHook_LargePayloadPublishesAllowlistBeforeRefinement(t *testing.T) {
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "rewrite-lp",
 		Name:          "Rewrite Model",
 		CelExpression: "model == 'gpt-4o'",
@@ -295,7 +302,7 @@ func TestPreRequestHook_LargePayloadPublishesAllowlistBeforeRefinement(t *testin
 		req.SetModel("azure-gpt-4o-mini-deployment")
 	}
 
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, governance)
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
 	require.NoError(t, err)
 
 	metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o"}
@@ -331,10 +338,11 @@ func fallbackMatrixPlugin(t *testing.T, storedFallbacks *string) *RoutingPlugin 
 		Scope:         "global",
 	}
 	require.NoError(t, stored.AfterFind(nil))
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), stored))
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), stored))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 	return plugin
 }
@@ -509,10 +517,11 @@ func TestApplyRoutingRules_SkippedFallbackIsLogged(t *testing.T) {
 				Scope:         "global",
 			}
 			require.NoError(t, stored.AfterFind(nil))
-			store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+			store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 			require.NoError(t, err)
-			require.NoError(t, store.UpsertRule(context.Background(), stored))
-			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+			t.Cleanup(store.Close)
+			require.NoError(t, store.Put(context.Background(), stored))
+			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 			require.NoError(t, err)
 
 			req := &schemas.BifrostRequest{
@@ -537,5 +546,134 @@ func TestApplyRoutingRules_SkippedFallbackIsLogged(t *testing.T) {
 				assert.Contains(t, routingWarnings[i], entry, "warning must name the skipped entry as configured")
 			}
 		})
+	}
+}
+
+// TestPreRequestHook_FallbackOutsideAccessIsLogged pins #3261. A rule fallback the request's own
+// access does not allow is refused by governance before it reaches its provider, and once the chain
+// runs out the caller is answered with the primary's error. The routing trail says so when the rule
+// matches, naming the rule, the fallback and why, so a misconfigured rule does not read as a
+// fallback that silently never ran. The chain itself is left as the rule wrote it, and a request
+// carrying no access has nothing to report.
+func TestPreRequestHook_FallbackOutsideAccessIsLogged(t *testing.T) {
+	vkAccess := grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}, KeyIDs: schemas.WhiteList{"*"}},
+		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"claude-sonnet-4"}, KeyIDs: schemas.WhiteList{"*"}},
+	}, nil)}, "", nil, grant.Union, nil)
+	const stored = `["anthropic/claude-sonnet-4","anthropic/claude-opus-4","groq/llama-3.1-8b-instant"]`
+	cases := []struct {
+		name         string
+		access       schemas.Access
+		wantWarnings []string
+	}{
+		{
+			name:   "fallbacks the access refuses are reported",
+			access: vkAccess,
+			wantWarnings: []string{
+				"fallback anthropic/claude-opus-4 will be refused by governance: model claude-opus-4 is not allowed on anthropic",
+				"fallback groq/llama-3.1-8b-instant will be refused by governance: provider groq is not allowed",
+			},
+		},
+		{name: "a request with no access reports nothing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := &configstoreTables.TableRoutingRule{
+				ID:            "fb-access-log",
+				Name:          "Access Log Rule",
+				CelExpression: "model == 'm'",
+				Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-5.4-mini"), Weight: 1.0}},
+				Fallbacks:     bifrost.Ptr(stored),
+				Enabled:       bifrost.Ptr(true),
+				Scope:         "global",
+			}
+			require.NoError(t, rule.AfterFind(nil))
+			store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
+			require.NoError(t, err)
+			t.Cleanup(store.Close)
+			require.NoError(t, store.Put(context.Background(), rule))
+			governance := NewMockGovernance()
+			governance.Access = tc.access
+			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
+			require.NoError(t, err)
+
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{Model: "m"},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
+			assert.Len(t, req.ChatRequest.Fallbacks, 3, "the chain stays as the rule wrote it")
+
+			var routingWarnings []string
+			for _, entry := range ctx.GetRoutingEngineLogs() {
+				if entry.Level == schemas.LogLevelWarn && strings.Contains(entry.Message, "fallback") {
+					routingWarnings = append(routingWarnings, entry.Message)
+				}
+			}
+			require.Len(t, routingWarnings, len(tc.wantWarnings), "routing log warnings: %v", routingWarnings)
+			for i, want := range tc.wantWarnings {
+				assert.Contains(t, routingWarnings[i], "Rule 'Access Log Rule'", "warning must name the rule")
+				assert.Contains(t, routingWarnings[i], want)
+			}
+		})
+	}
+}
+
+// TestPreRequestHook_LargePayloadDoesNotWarnAboutDroppedFallbacks pins that the large-payload
+// path, which routes a synthetic request and copies back only its provider and model, does not
+// warn about a rule fallback the request will never carry: no chain is attached, so nothing will
+// be refused.
+func TestPreRequestHook_LargePayloadDoesNotWarnAboutDroppedFallbacks(t *testing.T) {
+	rule := &configstoreTables.TableRoutingRule{
+		ID:            "fb-lp-access",
+		Name:          "Large Payload Rule",
+		CelExpression: "model == 'gpt-4o'",
+		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0}},
+		Fallbacks:     bifrost.Ptr(`["groq/llama-3.1-8b-instant"]`),
+		Enabled:       bifrost.Ptr(true),
+		Scope:         "global",
+	}
+	require.NoError(t, rule.AfterFind(nil))
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
+	require.NoError(t, err)
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), rule))
+	governance := NewMockGovernance()
+	governance.Access = grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}, KeyIDs: schemas.WhiteList{"*"}},
+	}, nil)}, "", nil, grant.Union, nil)
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
+	require.NoError(t, err)
+
+	metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o"}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, metadata)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{},
+	}
+	require.NoError(t, plugin.PreRequestHook(ctx, req))
+	require.Empty(t, req.ChatRequest.Fallbacks, "the large-payload path attaches no chain")
+
+	for _, entry := range ctx.GetRoutingEngineLogs() {
+		assert.NotContains(t, entry.Message, "will be refused by governance", "a fallback the request does not carry cannot be refused")
+	}
+}
+
+// BenchmarkWarnFallbacksOutsideAccess measures the access check a matched rule with fallbacks now
+// runs, on a chain the access allows in full: the common case, which logs nothing.
+func BenchmarkWarnFallbacksOutsideAccess(b *testing.B) {
+	governance := NewMockGovernance()
+	governance.Access = grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
+		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"claude-sonnet-4"}, KeyIDs: schemas.WhiteList{"*"}},
+		{Provider: "groq", AllowedModels: schemas.WhiteList{"llama-3.1-8b-instant"}, KeyIDs: schemas.WhiteList{"*"}},
+	}, nil)}, "", nil, grant.Union, nil)
+	plugin := &RoutingPlugin{governance: governance}
+	fallbacks := []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet-4"}, {Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+	b.ReportAllocs()
+	for b.Loop() {
+		plugin.warnFallbacksOutsideAccess(ctx, schemas.RoutingEngineRoutingRule, "Rule", "rule", fallbacks)
 	}
 }

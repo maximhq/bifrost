@@ -103,7 +103,7 @@ func TestOpenAIChatStreamUsageSSEFraming(t *testing.T) {
 				require.Nil(t, err)
 				router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, logger)
 				httpCtx := &fasthttp.RequestCtx{}
-				router.handleStreaming(httpCtx, ctx, route, stream, cancel)
+				router.handleStreaming(httpCtx, ctx, route, "", stream, cancel)
 				body, readErr := io.ReadAll(httpCtx.Response.BodyStream())
 				require.NoError(t, readErr)
 				// SSE dispatches only data fields; bare JSON is an unknown field and
@@ -123,5 +123,68 @@ func TestOpenAIChatStreamUsageSSEFraming(t *testing.T) {
 				require.Equal(t, append(frames, "[DONE]"), events, "wire stream: %s", body)
 			})
 		}
+	}
+}
+
+// A mid-stream provider error on the OpenAI integration's Responses routes must be
+// a typed "event: error" frame, the same framing the native /v1/responses handler
+// emits; chat streams keep bare data frames, and Anthropic keeps its own error event.
+func TestStreamErrorEventFramingPerRoute(t *testing.T) {
+	findRoute := func(routes []RouteConfig, method, path string) RouteConfig {
+		t.Helper()
+		for _, route := range routes {
+			if route.Method == method && route.Path == path {
+				return route
+			}
+		}
+		t.Fatalf("route %s %s not found", method, path)
+		return RouteConfig{}
+	}
+	openAIRoutes := CreateOpenAIRouteConfigs("/openai", &mockHandlerStore{})
+	anthropicRoutes := CreateAnthropicRouteConfigs("/anthropic", bifrost.NewNoOpLogger())
+	for _, tc := range []struct {
+		name        string
+		route       RouteConfig
+		requestType schemas.RequestType
+		wantPrefix  string
+		wantNoEvent bool
+		streamType  schemas.RequestType
+	}{
+		{"openai v1 responses", findRoute(openAIRoutes, "POST", "/openai/v1/responses"), schemas.ResponsesStreamRequest, "event: error\ndata: {", false, ""},
+		{"openai responses", findRoute(openAIRoutes, "POST", "/openai/responses"), schemas.ResponsesStreamRequest, "event: error\ndata: {", false, ""},
+		{"openai responses retrieve", findRoute(openAIRoutes, "GET", "/openai/v1/responses/{response_id}"), schemas.ResponsesRetrieveStreamRequest, "event: error\ndata: {", false, ""},
+		{"azure deployments responses", findRoute(openAIRoutes, "POST", "/openai/openai/deployments/{deploymentPath:*}"), schemas.ResponsesStreamRequest, "event: error\ndata: {", false, ""},
+		{"openai responses synthesized error", findRoute(openAIRoutes, "POST", "/openai/v1/responses"), "", "event: error\ndata: {", false, ""},
+		{"openai chat completions", findRoute(openAIRoutes, "POST", "/openai/v1/chat/completions"), schemas.ChatCompletionStreamRequest, "data: {", true, ""},
+		{"azure deployments chat", findRoute(openAIRoutes, "POST", "/openai/openai/deployments/{deploymentPath:*}"), schemas.ChatCompletionStreamRequest, "data: {", true, ""},
+		{"anthropic messages", findRoute(anthropicRoutes, "POST", "/anthropic/v1/messages"), schemas.ResponsesStreamRequest, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\"", false, ""},
+		{"azure deployments responses synthesized error", findRoute(openAIRoutes, "POST", "/openai/openai/deployments/{deploymentPath:*}"), "", "event: error\ndata: {", false, schemas.ResponsesStreamRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostErr := &schemas.BifrostError{
+				StatusCode: schemas.Ptr(fasthttp.StatusBadGateway),
+				Error:      &schemas.ErrorField{Message: "upstream stream failed"},
+			}
+			bifrostErr.ExtraFields.RequestType = tc.requestType
+			stream := make(chan *schemas.BifrostStreamChunk, 1)
+			stream <- &schemas.BifrostStreamChunk{BifrostError: bifrostErr}
+			close(stream)
+
+			parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+			router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+			httpCtx := &fasthttp.RequestCtx{}
+			router.handleStreaming(httpCtx, ctx, tc.route, tc.streamType, stream, cancel)
+			body, err := io.ReadAll(httpCtx.Response.BodyStream())
+			require.NoError(t, err)
+			wire := string(body)
+			require.True(t, strings.HasPrefix(wire, tc.wantPrefix), "wire stream: %q", wire)
+			require.Contains(t, wire, "upstream stream failed")
+			if tc.wantNoEvent {
+				require.NotContains(t, wire, "event:", "chat streams carry bare data frames: %q", wire)
+			}
+			require.NotContains(t, wire, "[DONE]")
+		})
 	}
 }

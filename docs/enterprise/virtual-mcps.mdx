@@ -6,7 +6,7 @@ icon: "layer-group"
 
 ## Overview
 
-**Virtual MCPs** are curated, addressable bundles of MCP tools served at `/mcp/<slug>` and attached to virtual keys. The core feature (creating vMCPs, tool selection, slugs, serving, and virtual-key assignment) is part of open-source Bifrost.
+**Virtual MCPs** are curated, addressable bundles of MCP tools served at `/mcp/<slug>` (`/<prefix>/mcp/<slug>` under a `server.base_path`) and attached to virtual keys. The core feature (creating vMCPs, tool selection, slugs, serving, and virtual-key assignment) is part of open-source Bifrost.
 
 <Info>
 Read **[Virtual MCPs](/mcp/virtual-mcps)** first for the core concepts, the create flow, the API, and how vMCPs are consumed through the MCP and LLM gateways. This page covers only what enterprise adds on top.
@@ -38,7 +38,7 @@ Each vMCP's **Access** tab also shows a read-only reverse lookup: the access pro
 - holds an attached virtual key, or
 - belongs to an attached team or customer.
 
-Operators without any of those relationships do not see the vMCP. Attach and detach on an access-profile-managed virtual key are rejected (`409`); attach/detach against a vMCP the operator can't see under DAC returns `404`.
+Operators without any of those relationships do not see the vMCP. Attach and detach on a virtual key whose owner holds an access profile are rejected (`409`); attach/detach against a vMCP the operator can't see under DAC returns `404`.
 
 ---
 

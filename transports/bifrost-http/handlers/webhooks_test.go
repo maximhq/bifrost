@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,9 +16,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/webhooks"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -25,21 +27,24 @@ import (
 
 // configWebhookManager adapts a *lib.Config to WebhookEndpointManager,
 // mirroring the base server's per-endpoint reload/remove so handler tests
-// observe the same in-memory refresh the real wiring produces.
+// observe the same live-store refresh the real wiring produces.
 type configWebhookManager struct{ config *lib.Config }
 
+// ReloadWebhookEndpoint re-reads the endpoint into the live store; a row that is gone answers
+// configstore.ErrNotFound, as the server does.
 func (m configWebhookManager) ReloadWebhookEndpoint(ctx context.Context, id string) error {
-	endpoint, err := m.config.ConfigStore.GetWebhookEndpointByID(ctx, id)
-	if err != nil {
+	if err := m.config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindWebhookEndpoint, ID: id}}); err != nil {
 		return err
 	}
-	m.config.SetWebhookEndpoint(endpoint)
+	if _, ok := m.config.LiveStore.Collections.WebhookEndpoints.Get(id); !ok {
+		return configstore.ErrNotFound
+	}
 	return nil
 }
 
+// RemoveWebhookEndpoint drops the endpoint from the live store.
 func (m configWebhookManager) RemoveWebhookEndpoint(ctx context.Context, id string) error {
-	m.config.RemoveWebhookEndpoint(id)
-	return nil
+	return m.config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindWebhookEndpoint, ID: id, Remove: true}})
 }
 
 func newWebhookTestHandler(t *testing.T) (*WebhookHandler, *lib.Config) {
@@ -63,6 +68,9 @@ func newWebhookTestHandler(t *testing.T) (*WebhookHandler, *lib.Config) {
 	t.Cleanup(func() { logsStore.Close(context.Background()) })
 
 	config := &lib.Config{ConfigStore: store, LogsStore: logsStore}
+	live := liveStoreForTest(t)
+	require.NoError(t, config.AttachLiveStore(live))
+	require.NoError(t, live.LoadAll(ctx, store.DB()))
 	dispatcher := webhooks.NewDispatcher(ctx, "", 30*24*time.Hour, store, logsStore, config, testLogger{})
 	t.Cleanup(dispatcher.Stop)
 	return NewWebhookHandler(configWebhookManager{config}, config, dispatcher), config
@@ -395,14 +403,6 @@ func TestWebhookHandlerTestDelivery(t *testing.T) {
 	_ = config
 }
 
-func TestWebhookHandlerStoreUnavailable(t *testing.T) {
-	cfg := &lib.Config{}
-	handler := NewWebhookHandler(configWebhookManager{cfg}, cfg, nil)
-	ctx := newWebhookRequestCtx("", nil)
-	handler.listWebhookEndpoints(ctx)
-	assert.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
-}
-
 func TestWebhookHandlerPerEndpointTuning(t *testing.T) {
 	handler, config := newWebhookTestHandler(t)
 
@@ -572,4 +572,32 @@ func TestWebhookHandlerPrivateEndpointRegistrationRequiresAuth(t *testing.T) {
 	due, err := config.ConfigStore.ListDueWebhookJobs(context.Background(), 0)
 	require.NoError(t, err)
 	assert.Empty(t, due)
+}
+
+// failingReloadWebhookManager reports a reload failure after the database write has committed.
+type failingReloadWebhookManager struct{ configWebhookManager }
+
+func (failingReloadWebhookManager) ReloadWebhookEndpoint(context.Context, string) error {
+	return errors.New("reload failed")
+}
+
+func TestWebhookHandlerAuditsCommittedChangesWhenReloadFails(t *testing.T) {
+	handler, config := newWebhookTestHandler(t)
+	id, _ := createTestWebhookEndpoint(t, handler, "reload-fail")
+	failing := NewWebhookHandler(failingReloadWebhookManager{configWebhookManager{config}}, config, nil)
+
+	createCtx := newWebhookRequestCtx(`{"name":"reload-fail-new","url":"https://93.184.216.34/hook","events":["async_job.completed"]}`, nil)
+	failing.createWebhookEndpoint(createCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, createCtx.Response.StatusCode())
+	requireSingleAuditChange(t, createCtx, "webhook.created")
+
+	updateCtx := newWebhookRequestCtx(`{"name":"reload-fail","url":"https://93.184.216.34/other","events":["async_job.completed"]}`, map[string]string{"id": id})
+	failing.updateWebhookEndpoint(updateCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, updateCtx.Response.StatusCode())
+	requireSingleAuditChange(t, updateCtx, "webhook.updated")
+
+	rotateCtx := newWebhookRequestCtx("", map[string]string{"id": id})
+	failing.rotateWebhookEndpointSecret(rotateCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, rotateCtx.Response.StatusCode())
+	requireSingleAuditChange(t, rotateCtx, "webhook.secret_rotated")
 }

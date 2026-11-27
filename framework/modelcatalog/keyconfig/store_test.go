@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 // --- test logger ---
@@ -39,9 +40,11 @@ func (l *recordingLogger) DebugCount() int {
 
 func ptrBool(b bool) *bool { return &b }
 
-func newStoreFromFixture(fixture map[schemas.ModelProvider][]schemas.Key) (*Store, *recordingLogger) {
+// newStoreFromFixture returns a store holding fixture, and the logger it writes to.
+func newStoreFromFixture(t *testing.T, fixture map[schemas.ModelProvider][]schemas.Key) (*Store, *recordingLogger) {
+	t.Helper()
 	log := &recordingLogger{}
-	s := New(log)
+	s := newTestStore(t, log)
 	s.Replace(fixture)
 	return s, log
 }
@@ -49,7 +52,7 @@ func newStoreFromFixture(fixture map[schemas.ModelProvider][]schemas.Key) (*Stor
 // --- behavioral tests ---
 
 func TestEmptyKeysAndStandardProviderRemoves(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: nil,
 	})
 	if got := s.AllowedFor(schemas.OpenAI); got != nil {
@@ -62,20 +65,56 @@ func TestEmptyKeysAndStandardProviderRemoves(t *testing.T) {
 
 func TestKeylessNonStandardProviderUnrestricted(t *testing.T) {
 	custom := schemas.ModelProvider("my-custom")
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
-		custom: nil,
-	})
-	allowed := s.AllowedFor(custom)
-	if !slices.Equal(allowed, schemas.WhiteList{"*"}) {
-		t.Errorf("keyless custom: AllowedFor = %v, want [*]", allowed)
+	replaced := newTestStore(t, nil)
+	replaced.Replace(map[schemas.ModelProvider][]schemas.Key{custom: nil}, custom)
+	set := newTestStore(t, nil)
+	set.SetKeylessProvider(custom, nil)
+	for name, s := range map[string]*Store{"Replace": replaced, "SetKeylessProvider": set} {
+		allowed := s.AllowedFor(custom)
+		if !slices.Equal(allowed, schemas.WhiteList{"*"}) {
+			t.Errorf("%s: keyless custom: AllowedFor = %v, want [*]", name, allowed)
+		}
+		if !s.IsAllowed(custom, "anything") {
+			t.Errorf("%s: keyless custom: IsAllowed = false for arbitrary model", name)
+		}
 	}
-	if !s.IsAllowed(custom, "anything") {
-		t.Error("keyless custom: IsAllowed = false for arbitrary model")
+}
+
+// TestKeylessFlagDoesNotUnrestrictStandardProvider pins that the keyless flag
+// only applies to custom providers: a standard provider with no keys is still
+// dropped.
+func TestKeylessFlagDoesNotUnrestrictStandardProvider(t *testing.T) {
+	s := newTestStore(t, nil)
+	s.SetKeylessProvider(schemas.OpenAI, nil)
+	if got := s.AllowedFor(schemas.OpenAI); got != nil {
+		t.Errorf("standard provider marked keyless with no keys: AllowedFor = %v, want nil", got)
+	}
+}
+
+// TestZeroKeyCustomProviderNotKeylessAbsent pins that a custom provider that
+// is not keyless and has no keys (e.g. its only key was rejected at save) can
+// serve nothing: it is absent from the store, so the catalog never offers it
+// as a candidate for a bare model name. Both write paths are covered.
+func TestZeroKeyCustomProviderNotKeylessAbsent(t *testing.T) {
+	custom := schemas.ModelProvider("my-custom")
+	replaced, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{custom: nil})
+	set := newTestStore(t, nil)
+	set.SetProvider(custom, []schemas.Key{})
+	for name, s := range map[string]*Store{"Replace": replaced, "SetProvider": set} {
+		if got := s.AllowedFor(custom); got != nil {
+			t.Errorf("%s: zero-key custom provider AllowedFor = %v, want nil", name, got)
+		}
+		if s.IsAllowed(custom, "text-embedding-005") {
+			t.Errorf("%s: zero-key custom provider IsAllowed = true, want false", name)
+		}
+		if got := s.Providers(); slices.Contains(got, custom) {
+			t.Errorf("%s: Providers() = %v, want %q absent", name, got, custom)
+		}
 	}
 }
 
 func TestUnrestrictedKeyImpliesWildcard(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}},
 		},
@@ -89,7 +128,7 @@ func TestUnrestrictedKeyImpliesWildcard(t *testing.T) {
 }
 
 func TestExplicitAllowFiltersBlacklistedPerKey(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{
 				ID:                "k1",
@@ -107,7 +146,7 @@ func TestExplicitAllowFiltersBlacklistedPerKey(t *testing.T) {
 }
 
 func TestBlacklistIntersectionAcrossKeys(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o", "o1"},
 				BlacklistedModels: schemas.BlackList{"o1", "gpt-3.5"}},
@@ -127,7 +166,7 @@ func TestBlacklistIntersectionAcrossKeys(t *testing.T) {
 }
 
 func TestDisabledKeyDoesNotAffectAggregates(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}},
 			{ID: "k2", Enabled: ptrBool(false), Models: schemas.WhiteList{"o1"}, BlacklistedModels: schemas.BlackList{"gpt-4o"}},
@@ -143,7 +182,7 @@ func TestDisabledKeyDoesNotAffectAggregates(t *testing.T) {
 }
 
 func TestBlockAllKeySkipped(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}},
 			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"o1"}, BlacklistedModels: schemas.BlackList{"*"}},
@@ -156,7 +195,7 @@ func TestBlockAllKeySkipped(t *testing.T) {
 }
 
 func TestEntriesForIncludesDisabled(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}},
 			{ID: "k2", Enabled: ptrBool(false), Models: schemas.WhiteList{"o1"}},
@@ -178,7 +217,7 @@ func TestEntriesForIncludesDisabled(t *testing.T) {
 }
 
 func TestEntryForLookup(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}},
 		},
@@ -196,7 +235,7 @@ func TestEntryForLookup(t *testing.T) {
 }
 
 func TestResolveAliasReturnsOwner(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{
 				ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"},
@@ -219,7 +258,7 @@ func TestResolveAliasReturnsOwner(t *testing.T) {
 }
 
 func TestResolveAliasMissing(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}}},
 	})
 	if _, ok := s.ResolveAlias(schemas.OpenAI, "nope"); ok {
@@ -231,7 +270,7 @@ func TestResolveAliasMissing(t *testing.T) {
 }
 
 func TestAliasCollisionLastEnabledWinsAndLogs(t *testing.T) {
-	s, log := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, log := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{
 				ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"},
@@ -253,7 +292,7 @@ func TestAliasCollisionLastEnabledWinsAndLogs(t *testing.T) {
 }
 
 func TestKeysAllowingModel(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o", "o1"}},
 			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}, BlacklistedModels: schemas.BlackList{"o1"}},
@@ -274,7 +313,7 @@ func TestKeysAllowingModel(t *testing.T) {
 }
 
 func TestSetProviderIsolated(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t, nil)
 	s.Replace(map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI:    {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 		schemas.Anthropic: {{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"claude-3-5-sonnet"}}},
@@ -293,7 +332,7 @@ func TestSetProviderIsolated(t *testing.T) {
 }
 
 func TestReplaceDropsDisappearedProviders(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t, nil)
 	s.Replace(map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI:    {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 		schemas.Anthropic: {{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"claude-3-5-sonnet"}}},
@@ -309,7 +348,7 @@ func TestReplaceDropsDisappearedProviders(t *testing.T) {
 }
 
 func TestSetProviderToEmptyDropsStandard(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t, nil)
 	s.Replace(map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
@@ -322,7 +361,7 @@ func TestSetProviderToEmptyDropsStandard(t *testing.T) {
 }
 
 func TestRemoveProvider(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	s.RemoveProvider(schemas.OpenAI)
@@ -332,7 +371,7 @@ func TestRemoveProvider(t *testing.T) {
 }
 
 func TestEntriesForReturnsDefensiveCopy(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	entries := s.EntriesFor(schemas.OpenAI)
@@ -349,7 +388,7 @@ func TestEntriesForReturnsDefensiveCopy(t *testing.T) {
 // Models write to allowed — they never mix.
 
 func TestAliases_WildcardModels_AllowedStaysWildcard(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.Bedrock: {
 			{
 				ID:      "bk1",
@@ -370,7 +409,7 @@ func TestAliases_WildcardModels_AllowedStaysWildcard(t *testing.T) {
 }
 
 func TestAliases_SpecificModels_AllowedDoesNotIncludeAliasName(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.Azure: {
 			{
 				ID:      "az1",
@@ -396,7 +435,7 @@ func TestAliases_EmptyModels_ProviderAbsent(t *testing.T) {
 	// Models=[] with aliases present: aliases are name swappers, not implicit
 	// model grants. Operators must explicitly list models in Models field.
 	// Provider should be absent from aggregates (no enabled allow path).
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.Bedrock: {
 			{
 				ID:      "bk1",
@@ -416,7 +455,7 @@ func TestAliases_EmptyModels_ProviderAbsent(t *testing.T) {
 func TestAllKeysBlockAll_ProviderAbsent(t *testing.T) {
 	// Every key has BlacklistedModels=["*"]. All are skipped by the aggregator,
 	// enabledKeysCount stays 0, provider is dropped from the store.
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}, BlacklistedModels: schemas.BlackList{"*"}},
 			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"o1"}, BlacklistedModels: schemas.BlackList{"*"}},
@@ -431,7 +470,7 @@ func TestAllKeysBlockAll_ProviderAbsent(t *testing.T) {
 }
 
 func TestExplicitModels_UnionAcrossEnabledKeys(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o", "o1"}},
 			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o", "gpt-4.5"}},
@@ -462,7 +501,7 @@ func TestExplicitModels_UnionAcrossEnabledKeys(t *testing.T) {
 // TestIsAllowed_ProviderAbsent ensures IsAllowed returns false
 // (deny-by-default) for a provider that has no cached state.
 func TestIsAllowed_ProviderAbsent(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{})
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{})
 	if s.IsAllowed(schemas.OpenAI, "gpt-4o") {
 		t.Error("IsAllowed on empty store = true, want false")
 	}
@@ -472,7 +511,7 @@ func TestIsAllowed_ProviderAbsent(t *testing.T) {
 // when the model is also in the allowed set — the per-key gating uses both,
 // but the aggregated view must respect the cross-key intersection blacklist.
 func TestIsAllowed_BlacklistWinsOverAllow(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}, BlacklistedModels: schemas.BlackList{"gpt-4o"}},
 			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}, BlacklistedModels: schemas.BlackList{"gpt-4o"}},
@@ -485,7 +524,7 @@ func TestIsAllowed_BlacklistWinsOverAllow(t *testing.T) {
 
 // TestProviders_EmptyStore exercises the no-state baseline.
 func TestProviders_EmptyStore(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{})
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{})
 	if got := s.Providers(); len(got) != 0 {
 		t.Errorf("Providers() on empty store = %v, want []", got)
 	}
@@ -494,7 +533,7 @@ func TestProviders_EmptyStore(t *testing.T) {
 // TestProviders_StandardWithKeys ensures a standard provider with at least
 // one enabled non-block-all key is enumerated.
 func TestProviders_StandardWithKeys(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI:    {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}}},
 		schemas.Anthropic: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}}},
 	})
@@ -509,7 +548,7 @@ func TestProviders_StandardWithKeys(t *testing.T) {
 // TestProviders_StandardWithoutKeys verifies a standard provider with no
 // enabled keys is dropped from the enumeration.
 func TestProviders_StandardWithoutKeys(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(false), Models: schemas.WhiteList{"*"}}},
 	})
 	if got := s.Providers(); len(got) != 0 {
@@ -523,7 +562,8 @@ func TestProviders_StandardWithoutKeys(t *testing.T) {
 // unrestricted via the allModelsAllowed branch.
 func TestProviders_KeylessNonStandardIncluded(t *testing.T) {
 	custom := schemas.ModelProvider("my-custom-bedrock")
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{custom: nil})
+	s := newTestStore(t, nil)
+	s.Replace(map[schemas.ModelProvider][]schemas.Key{custom: nil}, custom)
 	got := s.Providers()
 	if !slices.Contains(got, custom) {
 		t.Errorf("Providers() = %v, want to include %q (keyless non-standard provider)", got, custom)
@@ -539,7 +579,7 @@ func TestProviders_KeylessNonStandardIncluded(t *testing.T) {
 // enabledKeysCount and the model gets promoted to the provider-wide blacklist.
 // Without strings.ToLower in the count map, this would silently fail.
 func TestBlacklistIntersection_CaseInsensitive(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"gpt-4o"}},
 			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"GPT-4o"}},
@@ -559,7 +599,7 @@ func TestBlacklistIntersection_CaseInsensitive(t *testing.T) {
 // the model, so IsAllowed must return false (matching KeysAllowingModel) rather
 // than passing it through the gate only for routing to then fail.
 func TestIsAllowed_NoRoutableKey(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"gpt-4o-mini"}},
 			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}},
@@ -582,7 +622,7 @@ func TestIsAllowed_NoRoutableKey(t *testing.T) {
 // model (matching AllowedFor), even though the cross-key intersection is
 // computed case-insensitively.
 func TestBlacklistedFor_PreservesOriginalCasing(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"GPT-4o"}},
 			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"gpt-4o"}},
@@ -600,7 +640,7 @@ func TestBlacklistedFor_PreservesOriginalCasing(t *testing.T) {
 // the index. Without strings.ToLower, both would persist as separate entries
 // and the collision warning would never fire.
 func TestAliasIndex_CaseInsensitive_CollisionDetected(t *testing.T) {
-	s, log := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, log := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{
 				ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"},
@@ -628,7 +668,7 @@ func TestAliasIndex_CaseInsensitive_CollisionDetected(t *testing.T) {
 // case-normalisation contract — an alias defined as "best-claude" must
 // resolve regardless of the case used at the call site.
 func TestResolveAlias_CaseInsensitiveLookup(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{
 				ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"},
@@ -645,10 +685,10 @@ func TestResolveAlias_CaseInsensitiveLookup(t *testing.T) {
 }
 
 // TestNewNilLogger_DoesNotPanic exercises the NoOpLogger default path. If
-// New(nil) left logger as nil, the alias-collision Debug call would deref
+// New(live, nil) left logger as nil, the alias-collision Debug call would deref
 // nil and crash the test.
 func TestNewNilLogger_DoesNotPanic(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t, nil)
 	s.Replace(map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{
@@ -681,7 +721,7 @@ func TestReplace_AtomicSnapshot(t *testing.T) {
 	next := map[schemas.ModelProvider][]schemas.Key{
 		schemas.Bedrock: {{ID: "k", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}}},
 	}
-	s, _ := newStoreFromFixture(old)
+	s, _ := newStoreFromFixture(t, old)
 	oldSize, nextSize := len(old), len(next)
 
 	stop := make(chan struct{})
@@ -721,7 +761,7 @@ func TestReplace_AtomicSnapshot(t *testing.T) {
 }
 
 func TestRegexEntries_AggregateKeepsExactNamesNextToRegex(t *testing.T) {
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
 		schemas.OpenAI: {
 			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"regex:^gpt-4.*"}},
 			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}},
@@ -738,4 +778,84 @@ func TestRegexEntries_AggregateKeepsExactNamesNextToRegex(t *testing.T) {
 	if s.IsAllowed(schemas.OpenAI, "gpt-3.5-turbo") {
 		t.Error("IsAllowed(gpt-3.5-turbo) = true; want false")
 	}
+}
+
+func TestResolveAliasPatternFallback(t *testing.T) {
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Bedrock: {
+			{
+				ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"regex:claude-.*"},
+				Aliases: schemas.KeyAliases{
+					"regex:(claude-.*)": schemas.AliasConfig{ModelID: "global.anthropic.$1"},
+				},
+			},
+			{
+				ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"},
+				Aliases: schemas.KeyAliases{
+					"claude-opus-4-8": schemas.AliasConfig{ModelID: "us.anthropic.claude-opus-4-8"},
+				},
+			},
+		},
+	})
+	owner, ok := s.ResolveAlias(schemas.Bedrock, "claude-fable-5")
+	if !ok {
+		t.Fatal("ResolveAlias !ok for a name a pattern alias matches")
+	}
+	if owner.KeyID != "k1" || owner.Config.ModelID != "global.anthropic.claude-fable-5" {
+		t.Errorf("owner = %s/%q, want k1/global.anthropic.claude-fable-5", owner.KeyID, owner.Config.ModelID)
+	}
+	if owner.Config.ModelName != nil {
+		t.Errorf("owner.Config.ModelName = %q, want unset", *owner.Config.ModelName)
+	}
+	owner, ok = s.ResolveAlias(schemas.Bedrock, "claude-opus-4-8")
+	if !ok || owner.KeyID != "k2" {
+		t.Errorf("exact alias on k2 should win over k1's pattern, got %s ok=%v", owner.KeyID, ok)
+	}
+	if _, ok := s.ResolveAlias(schemas.Bedrock, "regex:(claude-.*)"); ok {
+		t.Error("ResolveAlias resolved the pattern text itself")
+	}
+	if _, ok := s.ResolveAlias(schemas.Bedrock, "mistral-large"); ok {
+		t.Error("ResolveAlias ok for a name no alias matches")
+	}
+}
+
+// TestResolveAliasPatternSkipsKeysThatCannotServe pins that a pattern is ignored when its own key's lists refuse the model.
+func TestResolveAliasPatternSkipsKeysThatCannotServe(t *testing.T) {
+	pattern := func(prefix string) schemas.KeyAliases {
+		return schemas.KeyAliases{"regex:(claude-.*)": schemas.AliasConfig{ModelID: prefix + ".$1"}}
+	}
+	s, _ := newStoreFromFixture(t, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Bedrock: {
+			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"claude-opus-5"}, Aliases: pattern("us")},
+			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"claude-haiku-5"}, Aliases: pattern("eu")},
+		},
+	})
+	for model, want := range map[string]string{
+		"claude-opus-5":   "k1/us.claude-opus-5",
+		"claude-sonnet-5": "k2/eu.claude-sonnet-5",
+		"claude-haiku-5":  "",
+	} {
+		got := ""
+		if owner, ok := s.ResolveAlias(schemas.Bedrock, model); ok {
+			got = owner.KeyID + "/" + owner.Config.ModelID
+		}
+		if got != want {
+			t.Errorf("ResolveAlias(%q) = %q, want %q", model, got, want)
+		}
+	}
+}
+
+// newTestStore returns a store over a new live store closed when the test ends.
+func newTestStore(t *testing.T, logger schemas.Logger) *Store {
+	t.Helper()
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(live.Close)
+	s, err := New(live, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }

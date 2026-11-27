@@ -2,10 +2,16 @@ package network
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +27,12 @@ import (
 
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // TestStaleConnectionRetryIfErr validates the error-matching logic of
@@ -871,6 +882,33 @@ func TestDialViaProxyTLSVerifiesTheProxy(t *testing.T) {
 	}
 }
 
+// TestDialPolicyPreservesConfiguredProxyTLS verifies guarded tunnels honor the
+// operator's HTTPS proxy TLS configuration while pinning the destination IP.
+func TestDialPolicyPreservesConfiguredProxyTLS(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "tls-policy")
+	previous := defaultFactory.Load()
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(previous) })
+	config := &GlobalProxyConfig{Enabled: true, EnableForAPI: true, Type: GlobalProxyTypeHTTP, URL: "https://127.0.0.1:" + recorder.Port(), SkipTLSVerify: true}
+	factory := NewHTTPClientFactory(config, noopTestLogger{})
+	SetDefaultHTTPClientFactory(factory)
+	proxyURL, err := url.Parse(config.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := NewDialPolicy((&net.Dialer{}).DialContext, func(context.Context, string) ([]net.IP, error) { return []net.IP{net.ParseIP("203.0.113.10")}, nil })
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := policy.DialContext(ctx, "tcp", "agent.example:443", proxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	hits := recorder.Seen()
+	if len(hits) != 1 || hits[0].Target != "203.0.113.10:443" {
+		t.Fatalf("proxy got %+v, want checked IP", hits)
+	}
+}
+
 // TestHTTPClientFactoryClientsAreLive pins that a client handed out before a proxy
 // change follows it: the same object goes direct, then through the proxy, then direct
 // again. Callers keep factory clients for their whole life (alerting senders, JWT
@@ -1289,5 +1327,330 @@ func TestDefaultHTTPClientFactoryGetter(t *testing.T) {
 	SetDefaultHTTPClientFactory(factory)
 	if DefaultHTTPClientFactory() != factory {
 		t.Fatal("want the registered factory")
+	}
+}
+
+// TestLiveFasthttpClientHonorsDisablePathNormalizing pins that a copy of the live
+// client with DisablePathNormalizing set still sends an escaped path segment (%2F)
+// as written, while a client that did not ask for it keeps fasthttp's default
+// normalization. The live client forwards to an inner client, and fasthttp applies
+// the inner client's setting right before writing the request.
+func TestLiveFasthttpClientHonorsDisablePathNormalizing(t *testing.T) {
+	const escaped = "/guardrail/arn:aws:bedrock:us-east-1:123456789012:guardrail%2Ftest/version/1/apply"
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan string, 4)
+	go func() {
+		_ = fasthttp.Serve(ln, func(ctx *fasthttp.RequestCtx) {
+			received <- string(ctx.RequestURI())
+		})
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	send := func(client *fasthttp.Client) string {
+		t.Helper()
+		req := fasthttp.AcquireRequest()
+		defer fasthttp.ReleaseRequest(req)
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseResponse(resp)
+		req.SetRequestURI("http://" + ln.Addr().String() + escaped)
+		if err := client.DoTimeout(req, resp, 5*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		return <-received
+	}
+
+	live := factory.GetFasthttpClient(ClientPurposeAPI)
+	raw := &fasthttp.Client{Transport: live.Transport, DisablePathNormalizing: true}
+
+	if got := send(raw); got != escaped {
+		t.Errorf("client with DisablePathNormalizing sent %q, want %q", got, escaped)
+	}
+	if got := send(live); got == escaped {
+		t.Errorf("default client sent %q unchanged, want fasthttp's normalized path", got)
+	}
+}
+
+// TestRawPathInnerClientFollowsProxyUpdates pins that UpdateProxyConfig drops the
+// raw-path inner client along with the default one, so a request that keeps escaped
+// path segments never reuses a client built for the previous proxy config.
+func TestRawPathInnerClientFollowsProxyUpdates(t *testing.T) {
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	key := fasthttpClientKey{purpose: ClientPurposeAPI, rawPath: true}
+
+	first := factory.currentFasthttpClientFor(key)
+	if !first.DisablePathNormalizing {
+		t.Fatal("raw-path inner client must have DisablePathNormalizing set")
+	}
+	if factory.currentFasthttpClient(ClientPurposeAPI).DisablePathNormalizing {
+		t.Fatal("default inner client must keep fasthttp's path normalization")
+	}
+
+	factory.UpdateProxyConfig(&GlobalProxyConfig{})
+	if second := factory.currentFasthttpClientFor(key); second == first {
+		t.Error("raw-path inner client survived UpdateProxyConfig")
+	}
+}
+
+// TestGRPCGuardedProxyRebinding uses a real gRPC exchange through CONNECT.
+// The mocked DNS record changes from public to private before a new connection.
+func TestGRPCGuardedProxyRebinding(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(server, healthServer)
+	go server.Serve(listener)
+	defer server.Stop()
+	var tunnels atomic.Int32
+	var connectTarget atomic.Value
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			t.Error("expected CONNECT")
+			http.Error(w, "CONNECT required", 405)
+			return
+		}
+		tunnels.Add(1)
+		connectTarget.Store(r.Host)
+		upstream, err := net.Dial("tcp", listener.Addr().String())
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		downstream, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			upstream.Close()
+			return
+		}
+		defer downstream.Close()
+		defer upstream.Close()
+		_, _ = downstream.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		done := make(chan struct{})
+		go func() { _, _ = io.Copy(upstream, downstream); upstream.Close(); close(done) }()
+		_, _ = io.Copy(downstream, upstream)
+		downstream.Close()
+		<-done
+	}))
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	var private atomic.Bool
+	var resolutions atomic.Int32
+	var blocked atomic.Bool
+	resolve := func(ctx context.Context, host string) ([]net.IP, error) {
+		resolutions.Add(1)
+		ip := net.ParseIP("203.0.113.10")
+		if private.Load() {
+			ip = net.ParseIP("10.0.0.10")
+		}
+		ips, err := publicTargetCheck(hostResolver{host: []net.IP{ip}}, nil)(ctx, host)
+		if err != nil {
+			blocked.Store(true)
+		}
+		return ips, err
+	}
+	policy := NewDialPolicy((&net.Dialer{}).DialContext, resolve)
+	newClient := func() *grpc.ClientConn {
+		conn, err := grpc.NewClient("passthrough:///agent.example:9000", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithNoProxy(), grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
+			return policy.DialContext(ctx, "tcp", addr, proxyURL)
+		}))
+		require.NoError(t, err)
+		return conn
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	conn := newClient()
+	result, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, result.Status)
+	require.Equal(t, "203.0.113.10:9000", connectTarget.Load())
+	require.EqualValues(t, 1, tunnels.Load())
+	conn.Close()
+	private.Store(true)
+	conn = newClient()
+	defer conn.Close()
+	ctx2, cancel2 := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel2()
+	_, err = healthpb.NewHealthClient(conn).Check(ctx2, &healthpb.HealthCheckRequest{})
+	require.Error(t, err)
+	require.True(t, blocked.Load(), "private DNS answer must be rejected by policy")
+	require.GreaterOrEqual(t, resolutions.Load(), int32(2))
+	require.EqualValues(t, 1, tunnels.Load(), "private answer must not reach CONNECT proxy")
+}
+
+// tlsTarget is an HTTPS server for upstream.test whose certificate is signed by a CA
+// generated for the test, standing in for a provider (or a TLS-inspecting proxy's forged
+// certificate for it). caPEM is that CA.
+func tlsTarget(t *testing.T) (addr, caPEM string) {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "target test CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caCert, _ := x509.ParseCertificate(caDER)
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "upstream.test"}, DNSNames: []string{"upstream.test"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, KeyUsage: x509.KeyUsageDigitalSignature,
+	}, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}}}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return server.Listener.Addr().String(), string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))
+}
+
+// tunnelingHTTPSProxy is an https:// forward proxy (httptest's certificate, which no
+// system trusts) that tunnels every CONNECT to upstreamAddr. caPEM is its certificate.
+func tunnelingHTTPSProxy(t *testing.T, upstreamAddr string) (proxyURL, caPEM string) {
+	t.Helper()
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "CONNECT only", http.StatusMethodNotAllowed)
+			return
+		}
+		upstream, err := net.Dial("tcp", upstreamAddr)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			upstream.Close()
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+		go func() { _, _ = io.Copy(upstream, conn); upstream.Close() }()
+		go func() { _, _ = io.Copy(conn, upstream); conn.Close() }()
+	}))
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return "https://" + server.Listener.Addr().String(), string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
+}
+
+// TestGlobalProxyTLSScope pins what the global proxy's TLS settings cover, for the
+// factory's fasthttp and net/http clients. skip_tls_verify skips only the certificate of
+// the https:// proxy itself: targets reached through the proxy are always verified, so a
+// TLS-inspecting proxy cannot pass off a forged certificate. ca_cert_pem is trusted for
+// both hops: the proxy's own certificate and certificates through the proxy (a
+// TLS-inspecting proxy's CA).
+func TestGlobalProxyTLSScope(t *testing.T) {
+	targetAddr, targetCA := tlsTarget(t)
+	proxyURL, proxyCA := tunnelingHTTPSProxy(t, targetAddr)
+	_, targetPort, _ := net.SplitHostPort(targetAddr)
+	targetURL := "https://upstream.test:" + targetPort + "/"
+
+	for _, tc := range []struct {
+		name    string
+		skip    bool
+		caPEM   string
+		wantErr string
+	}{
+		{"skip covers the proxy hop only, not the target", true, "", "certificate"},
+		{"skip for the hop, target verified by the proxy CA", true, targetCA, ""},
+		{"no skip: the CA verifies the proxy and the target", false, proxyCA + targetCA, ""},
+		{"no skip, CA for the target only: the proxy hop is verified and refused", false, targetCA, "certificate"},
+	} {
+		cfg := enabledFor(ClientPurposeAPI, GlobalProxyTypeHTTP, proxyURL)
+		cfg.SkipTLSVerify = tc.skip
+		cfg.CACertPEM = tc.caPEM
+		factory := NewHTTPClientFactory(cfg, noopTestLogger{})
+
+		t.Run("fasthttp/"+tc.name, func(t *testing.T) {
+			req := fasthttp.AcquireRequest()
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseRequest(req)
+			defer fasthttp.ReleaseResponse(resp)
+			req.SetRequestURI(targetURL)
+			assertTLSOutcome(t, factory.GetFasthttpClient(ClientPurposeAPI).DoTimeout(req, resp, 5*time.Second), tc.wantErr)
+		})
+		t.Run("net/http/"+tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			r, _ := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+			resp, err := factory.GetHTTPClient(ClientPurposeAPI).Do(r)
+			if err == nil {
+				resp.Body.Close()
+			}
+			assertTLSOutcome(t, err, tc.wantErr)
+		})
+	}
+}
+
+func assertTLSOutcome(t *testing.T, err error, wantErr string) {
+	t.Helper()
+	if wantErr == "" {
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatalf("request succeeded, want a %q failure: an unverified certificate was accepted", wantErr)
+	}
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("got %v, want a %q failure", err, wantErr)
+	}
+}
+
+// TestGlobalProxyCAFollowsUpdates pins that clients handed out before a CA was added
+// trust it on their next request: the settings page adds the CA to a running server
+// through UpdateProxyConfig, and callers keep their factory clients for life.
+func TestGlobalProxyCAFollowsUpdates(t *testing.T) {
+	targetAddr, targetCA := tlsTarget(t)
+	proxyURL, proxyCA := tunnelingHTTPSProxy(t, targetAddr)
+	_, targetPort, _ := net.SplitHostPort(targetAddr)
+	targetURL := "https://upstream.test:" + targetPort + "/"
+
+	cfg := enabledFor(ClientPurposeAPI, GlobalProxyTypeHTTP, proxyURL)
+	factory := NewHTTPClientFactory(cfg, noopTestLogger{})
+	fasthttpClient := factory.GetFasthttpClient(ClientPurposeAPI)
+	httpClient := factory.GetHTTPClient(ClientPurposeAPI)
+	send := func() (error, error) {
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+		req.SetRequestURI(targetURL)
+		fastErr := fasthttpClient.DoTimeout(req, resp, 5*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		r, _ := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		res, httpErr := httpClient.Do(r)
+		if httpErr == nil {
+			res.Body.Close()
+		}
+		return fastErr, httpErr
+	}
+
+	if fastErr, httpErr := send(); fastErr == nil || httpErr == nil {
+		t.Fatalf("without the CA both requests must fail verification, got fasthttp=%v net/http=%v", fastErr, httpErr)
+	}
+	updated := *cfg
+	updated.CACertPEM = proxyCA + targetCA
+	factory.UpdateProxyConfig(&updated)
+	if fastErr, httpErr := send(); fastErr != nil || httpErr != nil {
+		t.Fatalf("after adding the CA both requests must pass, got fasthttp=%v net/http=%v", fastErr, httpErr)
 	}
 }

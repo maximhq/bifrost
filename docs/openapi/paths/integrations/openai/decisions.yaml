@@ -1,0 +1,44 @@
+# OpenAI Integration - Decisions Endpoints
+
+decisions:
+  post:
+    operationId: openaiCreateDecision
+    summary: Evaluate a decision (OpenAI format)
+    description: |
+      OpenAI's Decisions API: asks an ordered list of questions about an input
+      and returns one answer per question, in order. Any decision model can
+      answer: OpenAI's decisions models such as `gpt-6-luna`, Typesafe's jev
+      models, or any chat model through structured output. The request is
+      OpenAI's: a top-level `state` and a field a question, choice, or level
+      does not define (such as `criteria`) are rejected rather than
+      translated, while other top-level fields are forwarded unchanged.
+      Answers come back in OpenAI's response shape, with `name: null` for a
+      question sent without a name, plus Bifrost's `extra_fields` as on the
+      other OpenAI routes; when raw responses are enabled and OpenAI served
+      the request, OpenAI's own response body is returned instead.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/decisions`).
+    tags:
+    - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/decisions.yaml#/OpenAIDecisionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/decisions.yaml#/OpenAIDecisionResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

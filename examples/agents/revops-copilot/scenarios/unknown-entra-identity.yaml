@@ -1,0 +1,9 @@
+description: An Entra app Bifrost does not map to a service account. Set UNMAPPED_ENTRA_CLIENT_ID and UNMAPPED_ENTRA_CLIENT_SECRET for an app registration with no Bifrost mapping. Runs in entra mode only.
+surface: 1-ingress-identity
+kind: llm
+auth_mode: entra
+caller: UNMAPPED_
+requires: [UNMAPPED_ENTRA_CLIENT_ID]
+prompt: ping
+expect:
+  surface: 1-ingress-identity

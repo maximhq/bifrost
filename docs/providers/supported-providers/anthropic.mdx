@@ -91,6 +91,107 @@ case schemas.Anthropic:
 
 Use `network_config.beta_header_overrides` when you need to override the default Anthropic beta-header support matrix for a provider.
 
+## Workload Identity Federation
+
+A key can authenticate without an API key by exchanging an OIDC identity token issued to the workload, such as a Kubernetes projected service account token, for a short-lived Anthropic access token. Bifrost caches the access token and exchanges again before it expires.
+
+Before configuring Bifrost, register the federation issuer and create a service account and federation rule in the Claude Console. See Anthropic's [Workload Identity Federation guide](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation).
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Add or edit an Anthropic key and open the **Workload Identity** tab.
+2. Enter the **Federation Rule ID**, **Organization ID** and **Service Account ID**. Set **Workspace ID** when the rule spans several workspaces.
+3. Under **Identity Token Source**, choose **Token File** and enter the token's path, or choose **Token** and paste the token.
+4. Save the key.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "anthropic": {
+      "keys": [
+        {
+          "name": "anthropic-wif",
+          "models": ["*"],
+          "weight": 1.0,
+          "anthropic_key_config": {
+            "workload_identity": {
+              "federation_rule_id": "env.ANTHROPIC_FEDERATION_RULE_ID",
+              "organization_id": "env.ANTHROPIC_ORGANIZATION_ID",
+              "service_account_id": "env.ANTHROPIC_SERVICE_ACCOUNT_ID",
+              "identity_source": {
+                "type": "file",
+                "path": "/var/run/secrets/anthropic.com/token"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+For a token supplied directly, use `"identity_source": {"type": "inline", "token": "env.ANTHROPIC_IDENTITY_TOKEN"}`.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Anthropic:
+	return []schemas.Key{{
+		Name:   "anthropic-wif",
+		Models: []string{"*"},
+		Weight: 1.0,
+		AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
+			WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+				FederationRuleID: *schemas.NewSecretVar("env.ANTHROPIC_FEDERATION_RULE_ID"),
+				OrganizationID:   *schemas.NewSecretVar("env.ANTHROPIC_ORGANIZATION_ID"),
+				ServiceAccountID: *schemas.NewSecretVar("env.ANTHROPIC_SERVICE_ACCOUNT_ID"),
+				IdentitySource: &schemas.IdentitySource{
+					Type: schemas.IdentitySourceFile,
+					Path: schemas.NewSecretVar("/var/run/secrets/anthropic.com/token"),
+				},
+			},
+		},
+	}}, nil
+```
+
+</Tab>
+</Tabs>
+
+On Kubernetes, run the Bifrost pod as the service account the rule matches and project a token with the rule's audience.
+
+```yaml
+spec:
+  serviceAccountName: bifrost
+  volumes:
+    - name: anthropic-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: https://api.anthropic.com
+              expirationSeconds: 600
+              path: token
+  containers:
+    - name: bifrost
+      volumeMounts:
+        - name: anthropic-token
+          mountPath: /var/run/secrets/anthropic.com
+          readOnly: true
+```
+
+<Note>
+- **API key wins**: a key with a non-empty `value` uses that value and ignores `workload_identity`.
+- **Token file location**: the file must be under `/var/run/secrets` or `/run/secrets`. To read from other directories, set `BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS` on the Bifrost server to a comma-separated list, which replaces the defaults. It is read from the environment only.
+- **Token rotation**: Kubernetes tokens are accepted only once. Set the rule's `token_lifetime_seconds` to at least the projection's `expirationSeconds`, so the kubelet writes a new token before Bifrost needs a new access token.
+- **Inline tokens**: a token set as `inline` or pasted in the Web UI stays the same until the key is updated. Exchanges fail once it expires, or, if it carries a `jti`, as soon as the first access token needs renewing. Use a token file for long-running workloads.
+- **Several clusters**: each cluster has its own OIDC issuer, and a rule is bound to one issuer. Register one issuer and rule per cluster, set `federation_rule_id` to an `env.` reference, and give each cluster its own rule ID in that variable.
+</Note>
+
 ## Beta Headers
 
 Bifrost automatically manages Anthropic beta headers - detecting required headers from request features and injecting them. Headers are validated per provider to prevent unsupported headers from reaching the upstream API.
@@ -134,13 +235,14 @@ Bifrost automatically manages Anthropic beta headers - detecting required header
 | `response_format` | Converted to `output_format` |
 | `tools` | Schema restructured (see [Tool Conversion](#tool-conversion)) |
 | `tool_choice` | Type mapped (see [Tool Conversion](#tool-conversion)) |
+| `parallel_tool_calls` | `false` → `tool_choice.disable_parallel_tool_use` |
 | `reasoning` | Mapped to `thinking` (see [Reasoning / Thinking](#reasoning--thinking)) |
 | `user` | Wrapped in `metadata.user_id` |
 | `top_k` | Via `extra_params` (Anthropic-specific) |
 
 ### Dropped Parameters
 
-The following parameters are silently ignored: `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `seed`, `parallel_tool_calls`, `service_tier`
+The following parameters are silently ignored: `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `seed`, `service_tier`
 
 ### Extra Parameters
 
@@ -395,6 +497,7 @@ The Responses API uses the same underlying `/v1/messages` endpoint but converts 
 | `instructions` | Becomes system message |
 | `tools` | Schema restructured (see [Chat Completions](#1-chat-completions)) |
 | `tool_choice` | Type mapped (see [Chat Completions](#1-chat-completions)) |
+| `parallel_tool_calls` | `false` → `tool_choice.disable_parallel_tool_use` |
 | `reasoning` | Mapped to `thinking` (see [Reasoning / Thinking](#reasoning--thinking)) |
 | `user` | Wrapped in `metadata.user_id` |
 | `text` | Converted to `output_format` |

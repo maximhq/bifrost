@@ -2,9 +2,14 @@ package modelcatalog
 
 import (
 	"context"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
@@ -33,6 +38,33 @@ func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider s
 		}
 	}
 	return mc.datasheet.GetCapabilityEntry(model, provider)
+}
+
+// GetMaxOutputTokens returns the datasheet max_output_tokens for a
+// (model, provider) pair, or 0 when the catalog has none. Memoized per catalog
+// generation, misses included: on a miss the capability lookup scans the whole
+// sheet, which is too slow to repeat on every request.
+func (mc *ModelCatalog) GetMaxOutputTokens(model string, provider schemas.ModelProvider) int {
+	if mc == nil || model == "" {
+		return 0
+	}
+	compute := func() int {
+		if entry := mc.GetModelCapabilityEntryForModel(model, provider); entry != nil && entry.MaxOutputTokens != nil {
+			return *entry.MaxOutputTokens
+		}
+		return 0
+	}
+	// "Nothing known" (0) is kept only for catalogNegativeTTL, so model names nobody serves do not
+	// accumulate.
+	return mc.maxOutputTokens.GetOrCompute(livestore.EncodeKey(string(provider), model), func() (int, time.Duration, bool) {
+		tokens := compute()
+		// So is a cap found for a name the provider does not list, such as a version suffix on a
+		// listed model: callers can send any number of those.
+		if tokens == 0 || !mc.listedFor(provider, model) {
+			return tokens, catalogNegativeTTL, true
+		}
+		return tokens, 0, true
+	})
 }
 
 // GetCatalogPricingOverrides returns the scoped pricing overrides relevant to
@@ -74,6 +106,25 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 // CalculateCost computes the dollar cost for a Bifrost response.
 func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *PricingLookupScopes) float64 {
 	return mc.datasheet.CalculateCost(result, (*datasheet.LookupScopes)(scopes))
+}
+
+// SetIgnoreProviderCost toggles whether the provider's self-reported usage.cost
+// is ignored, so the request is priced from the catalog and pricing overrides.
+func (mc *ModelCatalog) SetIgnoreProviderCost(provider schemas.ModelProvider, ignore bool) {
+	mc.datasheet.SetIgnoreProviderCost(provider, ignore)
+}
+
+// ReplaceIgnoreProviderCost resets the set of providers whose reported cost is ignored.
+func (mc *ModelCatalog) ReplaceIgnoreProviderCost(providers []schemas.ModelProvider) {
+	mc.datasheet.ReplaceIgnoreProviderCost(providers)
+}
+
+// IsProviderCostIgnored reports whether the provider's self-reported cost is ignored.
+func (mc *ModelCatalog) IsProviderCostIgnored(provider schemas.ModelProvider) bool {
+	if mc == nil {
+		return false
+	}
+	return mc.datasheet.IsProviderCostIgnored(provider)
 }
 
 // CalculateCostBreakdown computes the per-category cost breakdown (input /
@@ -126,16 +177,32 @@ func (mc *ModelCatalog) UpsertModelPricingAttributes(ctx context.Context, model 
 	return mc.datasheet.UpsertModelPricingAttributes(ctx, model, provider, attrs)
 }
 
+// SetPricingOverrides replaces the overrides requests are priced with. A catalog
+// from Init follows the live store's pricing overrides on its own; a test
+// catalog, whose store loads nothing, sets them here.
 func (mc *ModelCatalog) SetPricingOverrides(rows []configstoreTables.TablePricingOverride) error {
 	return mc.datasheet.SetOverrides(rows)
 }
 
-func (mc *ModelCatalog) UpsertPricingOverrides(rows ...*configstoreTables.TablePricingOverride) error {
-	return mc.datasheet.UpsertOverrides(rows...)
-}
-
-func (mc *ModelCatalog) DeletePricingOverride(id string) {
-	mc.datasheet.DeleteOverride(id)
+// applyPricingOverrides prices requests with every override the live store
+// holds, in the order the database lists them: creation time, then ID. A set
+// that does not convert is logged and the previous set kept, as a reload that
+// failed kept it.
+func (mc *ModelCatalog) applyPricingOverrides() {
+	var rows []configstoreTables.TablePricingOverride
+	mc.store.Collections.PricingOverrides.Range(func(o *registry.PricingOverride) bool {
+		rows = append(rows, o.TablePricingOverride)
+		return true
+	})
+	slices.SortFunc(rows, func(a, b configstoreTables.TablePricingOverride) int {
+		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	if err := mc.datasheet.SetOverrides(rows); err != nil {
+		mc.logger.Error("failed to apply pricing overrides: %v", err)
+	}
 }
 
 // CalculateVideoCostDetails prices a video job from its merged request/response

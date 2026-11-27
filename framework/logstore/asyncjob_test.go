@@ -2,12 +2,14 @@ package logstore
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
@@ -485,4 +487,142 @@ func TestAsyncJobCleaner_ReapsExpiredWebhookDeliveries(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, err = store.FindWebhookDeliveryByID(ctx, "d-live")
 	assert.NoError(t, err)
+}
+
+// TestAsyncPollResultKeepsGoType pins that ToResponse hands Go callers the plain
+// response pointer even when usage reported a zero; zeros are restored on marshal.
+func TestAsyncPollResultKeepsGoType(t *testing.T) {
+	raw := `{"id":"usage-job","usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`
+	chat := (&AsyncJob{RequestType: schemas.ChatCompletionRequest, Response: raw}).ToResponse()
+	chatResult, ok := chat.Result.(*schemas.BifrostChatResponse)
+	require.True(t, ok, "chat Result is %T", chat.Result)
+	assert.True(t, chatResult.Usage.PromptTokensExplicitZero)
+	text := (&AsyncJob{RequestType: schemas.TextCompletionRequest, Response: raw}).ToResponse()
+	_, ok = text.Result.(*schemas.BifrostTextCompletionResponse)
+	require.True(t, ok, "text Result is %T", text.Result)
+	for _, resp := range []*schemas.AsyncJobResponse{chat, text} {
+		wire, err := sonic.ConfigStd.Marshal(resp)
+		require.NoError(t, err)
+		var poll struct {
+			Result struct{ Usage json.RawMessage }
+		}
+		require.NoError(t, json.Unmarshal(wire, &poll))
+		assert.JSONEq(t, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`, string(poll.Result.Usage))
+	}
+}
+
+// TestAsyncResultKeepsDefaultEncoding pins that persisted async results keep the
+// pre-fix sonic.Marshal bytes; only Chat/Text with an explicit zero are wrapped.
+func TestAsyncResultKeepsDefaultEncoding(t *testing.T) {
+	const model = "fixture<b>&</b>"
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}
+	for _, tc := range []struct {
+		name string
+		resp any
+	}{
+		{"nonzero chat", &schemas.BifrostChatResponse{ID: "c", Model: model, Usage: usage}},
+		{"nonzero text", &schemas.BifrostTextCompletionResponse{ID: "t", Model: model, Usage: usage}},
+		{"responses", &schemas.BifrostResponsesResponse{Model: model}},
+		{"embedding", &schemas.BifrostEmbeddingResponse{Model: model}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := sonic.Marshal(tc.resp)
+			require.NoError(t, err)
+			got, err := marshalAsyncResponse(tc.resp)
+			require.NoError(t, err)
+			require.Equal(t, string(want), string(got))
+		})
+	}
+	t.Run("explicit zero chat", func(t *testing.T) {
+		zero := &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}
+		got, err := marshalAsyncResponse(&schemas.BifrostChatResponse{ID: "z", Model: model, Usage: zero})
+		require.NoError(t, err)
+		require.Contains(t, string(got), `"model":"`+model+`"`, "wrapper keeps default encoding")
+		require.Contains(t, string(got), `"prompt_tokens":0`)
+	})
+}
+
+// Exercise the persisted job and polling response, not just the provider's wire wrapper.
+func TestAsyncCompletionPreservesZeroUsage(t *testing.T) {
+	executor := newTestAsyncExecutor(t)
+	for _, text := range []bool{false, true} {
+		for _, usage := range []string{
+			`{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`,
+			`{"prompt_tokens":12,"completion_tokens":0,"total_tokens":12}`,
+			`{"prompt_tokens":0,"total_tokens":12}`, `{"total_tokens":12}`,
+			`{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}`,
+		} {
+			kind := schemas.ChatCompletionRequest
+			if text {
+				kind = schemas.TextCompletionRequest
+			}
+			t.Run(string(kind)+"/"+usage, func(t *testing.T) {
+				raw := []byte(`{"id":"usage-job","usage":` + usage + `}`)
+				chat := &schemas.BifrostChatResponse{}
+				require.NoError(t, schemas.Unmarshal(raw, chat))
+				chat.Usage.PreserveTokenCountZeros(raw, "usage.prompt_tokens", "usage.completion_tokens")
+				var response any = chat
+				if text {
+					response = chat.ToTextCompletionResponse()
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				job, err := executor.SubmitJob(ctx, 3600, func(*schemas.BifrostContext) (any, *schemas.BifrostError) { return response, nil }, kind)
+				require.NoError(t, err)
+				job = waitForJobStatus(t, executor.logstore, job.ID)
+				require.Equal(t, schemas.AsyncJobStatusCompleted, job.Status)
+				var stored struct{ Usage json.RawMessage }
+				require.NoError(t, json.Unmarshal([]byte(job.Response), &stored))
+				assert.JSONEq(t, usage, string(stored.Usage), "persisted usage")
+				// Also seed an already-correct row: fixing only the executor must not hide the polling bug.
+				for _, row := range []*AsyncJob{job, {RequestType: kind, Response: string(raw)}} {
+					wire, err := schemas.MarshalSorted(row.ToResponse())
+					require.NoError(t, err)
+					var poll struct {
+						Result struct {
+							ID    string
+							Usage json.RawMessage
+						}
+					}
+					require.NoError(t, json.Unmarshal(wire, &poll))
+					assert.Equal(t, "usage-job", poll.Result.ID)
+					assert.JSONEq(t, usage, string(poll.Result.Usage), "polled usage")
+				}
+			})
+		}
+	}
+}
+
+// Run against the current implementation and the pre-fix serialization overlay.
+func BenchmarkAsyncCompletionUsage(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		usage *schemas.BifrostLLMUsage
+	}{
+		{"nonzero", &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}},
+		{"zero", &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}},
+		{"missing", &schemas.BifrostLLMUsage{TotalTokens: 12}},
+	} {
+		response := &schemas.BifrostChatResponse{ID: "bench", Model: "fixture", Usage: tc.usage}
+		body, err := schemas.MarshalSorted(response.WithPreservedUsage())
+		if err != nil {
+			b.Fatal(err)
+		}
+		job := &AsyncJob{ID: "job-bench", RequestType: schemas.ChatCompletionRequest, Status: schemas.AsyncJobStatusCompleted, Response: string(body)}
+		b.Run(tc.name+"/write", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := marshalAsyncResponse(response); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(tc.name+"/poll", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := schemas.MarshalSorted(job.ToResponse()); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

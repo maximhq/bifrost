@@ -9,6 +9,8 @@ export class DashboardPage extends BasePage {
   // Main elements
   readonly pageTitle: Locator
   readonly dateTimePicker: Locator
+  readonly refreshButton: Locator
+  readonly exportTrigger: Locator
 
   // Chart cards
   readonly logVolumeChart: Locator
@@ -32,6 +34,8 @@ export class DashboardPage extends BasePage {
     // Main elements
     this.pageTitle = page.getByRole('heading', { name: /Dashboard/i })
     this.dateTimePicker = page.locator('[data-testid="dashboard-date-picker"]')
+    this.refreshButton = page.getByTestId('dashboard-refresh-btn')
+    this.exportTrigger = page.getByTestId('dashboard-export-trigger')
 
     // Chart cards - using data-testid for robust selectors
     this.logVolumeChart = page.locator('[data-testid="chart-log-volume"]')
@@ -50,6 +54,15 @@ export class DashboardPage extends BasePage {
     // Model filters - select trigger inside each chart's actions area (opens dropdown; Radix uses role=combobox or data-slot=select-trigger)
     this.costModelFilter = page.locator('[data-testid="chart-cost-total-actions"]').locator('[role="combobox"], [data-slot="select-trigger"]').first()
     this.usageModelFilter = page.locator('[data-testid="chart-model-usage-actions"]').locator('[role="combobox"], [data-slot="select-trigger"]').first()
+  }
+
+  /**
+   * Starts a PDF export of every tab from the export menu. Resolves once the item is clicked, not when the file lands.
+   */
+  async startPdfExportAllTabs(): Promise<void> {
+    await this.exportTrigger.click()
+    await this.page.getByTestId('export-pdf-item').hover()
+    await this.page.getByTestId('export-pdf-all-tabs').click()
   }
 
   /**
@@ -99,14 +112,17 @@ export class DashboardPage extends BasePage {
     '24h': 'Last 24 hours',
     '7d': 'Last 7 days',
     '30d': 'Last 30 days',
+    today: 'Today',
+    this_week: 'This week',
+    this_month: 'This month',
   }
 
   /**
    * Get the date picker trigger button (the button that shows the current period and opens the popover).
-   * Identified by having the calendar icon so we don't match preset buttons inside the popover.
+   * Looked up by test id so preset buttons inside the popover never match.
    */
   getDatePickerTrigger(): Locator {
-    return this.page.locator('button').filter({ has: this.page.locator('svg') }).filter({ hasText: /Last|Pick/i }).first()
+    return this.page.getByTestId('dashboard-filter-daterange')
   }
 
   /**
@@ -122,7 +138,7 @@ export class DashboardPage extends BasePage {
   /**
    * Select a predefined time period
    */
-  async selectTimePeriod(period: '1h' | '6h' | '24h' | '7d' | '30d'): Promise<void> {
+  async selectTimePeriod(period: keyof typeof DashboardPage.PERIOD_LABELS): Promise<void> {
     await this.closePopups()
 
     const trigger = this.getDatePickerTrigger()
@@ -132,7 +148,8 @@ export class DashboardPage extends BasePage {
     await this.page.waitForSelector('[data-radix-popper-content-wrapper]', { timeout: 5000 }).catch(() => {})
 
     const label = DashboardPage.PERIOD_LABELS[period]
-    await this.page.getByRole('button', { name: label }).click()
+    // Scope to the popover: the trigger itself is labelled with the current period.
+    await this.page.locator('[data-radix-popper-content-wrapper]').getByRole('button', { name: label, exact: true }).click()
 
     // Wait for dialog to close
     await this.page.locator('[data-radix-popper-content-wrapper]').waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})

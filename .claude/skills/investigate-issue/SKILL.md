@@ -574,6 +574,51 @@ every issue type -- bug, feature, refactor -- not only bugs.
 If the change is exempt (no wire-visible effect, or behaviour no HTTP request can reach),
 say so explicitly in the report instead of silently omitting the case.
 
+**MCP issues** take MCP harness cases instead of provider-harness cases: anything about MCP
+clients and their upstream auth, connection types, `/mcp` and `/mcp/<slug>`, tool
+execution, MCP tools in inference or code mode, filtering, Virtual MCPs, per-user
+discovery and sessions, MCP logs or the Bifrost MCP. A fix that also changes how a
+provider converts tool definitions or tool calls needs a provider-harness case as well.
+Plan the cases from
+`.claude/skills/mcp-harness/SKILL.md` section 3 for the kind of change (every connection
+type, auth mode and surface it reaches, not only the one the issue names), add them to
+`tests/e2e/api/runners/build-mcp-harness.mjs`, and run them red before the fix and green
+after with `TESTS=<ID>,<ID> make run-mcp-harness-test`. The MCP harness is hermetic, so
+this run is yours, not the user's.
+
+**Semantic cache issues** take semantic cache wiring cases instead of provider-harness
+cases: anything about the `semantic_cache` plugin and its config, what a request writes,
+hits or misses and what a hit replays, `cache_debug` and the `x-bifrost-cache-*` headers,
+the `x-bf-cache-*` request headers, identity scoping, the cache clear endpoints or the
+vector stores. Plan the cases from `.claude/skills/semantic-cache-wiring/SKILL.md`
+section 3 for the kind of change (both cache modes, and every request type, route and
+stream it reaches, not only the one the issue names), add them to
+`tests/e2e/api/runners/build-semantic-cache-wiring.mjs`, regenerate the collection, and
+run the offline checks from skill section 5 (unit tests on the plugin's fake stores, the
+transport tests, `node tests/e2e/api/runners/lib/semantic-cache-wiring.test.mjs`). Most of
+the plugin package's existing tests need `OPENAI_API_KEY` and a running Weaviate and skip
+themselves without them, so report a skip as a skip, never as a pass. The whole plugin
+package and the suite's live run need provider keys and are paid, so hand the user both,
+scoped to the folders the change reaches (skill section 5), instead of the
+provider-harness command. A change that also alters what a provider receives or returns
+on a request the cache does not answer takes a provider-harness case as well, and the
+hand-over includes its provider-harness command too.
+
+**Routing issues** take routing harness cases instead of provider-harness cases: anything
+about routing rules, model routers or the complexity router, the model catalog and key
+aliases, a model named without a provider, virtual key routing and governance load
+balancing, key selection, key pins or direct keys, session affinity, fallbacks and retries,
+or `routing_info` and the routing log. Plan the cases from
+`.claude/skills/routing-harness/SKILL.md` section 3 for the kind of change (every scope,
+config, fallback source and entry point it reaches, not only the one the issue names), add
+them to `tests/e2e/api/runners/build-routing-wiring.mjs` or
+`build-model-catalog-wiring.mjs`, extending the generator in the same change when it has
+no step for a case, regenerate the collections, and run the Go tests and
+`node tests/e2e/api/collections/collection-scripts.test.mjs`. The live runs are paid, so
+hand the user those runs (skill section 5) instead of the provider-harness command, and the
+provider-harness command as well when the fix also changes what a provider receives or
+returns, or touches an existing routing folder there.
+
 ## Step 6: Present Findings
 
 Present everything to the user in this structured format:
@@ -753,6 +798,18 @@ This does not apply to Feature or Docs issues -- AGENTS.md scopes "red before gr
 fixes. For those, tests are added per the Test Plan after the implementation, and Step 5f is
 skipped.
 
+### 7a-branch. Branch Name
+
+Before the first commit, check `git branch --show-current`. Branch names are
+`fix/<area>-<noun>` for Bug issues and `feat/<area>-<noun>` for Feature issues (e.g.
+`fix/list-models-aggregate-pagination`): lowercase, hyphenated, describing the change.
+Never put a username or handle in the name (`akshaydeo/...`), and never an issue number
+or the issue title verbatim. Workspace tooling often creates the branch as
+`<user>/<issue-title-slug>`; if so, and no PR exists yet
+(`gh pr list --head "$(git branch --show-current)" --state open` is empty), rename it with
+`gt rename <type>/<area>-<noun>` (or `git branch -m` when the branch is not gt-tracked).
+If a PR already exists, keep the name: renaming strands it.
+
 ### 7b. Create a Todo List
 
 Create a todo item for each change in the plan. For Bug issues the regression test already
@@ -813,7 +870,13 @@ Once all approved changes are applied:
    make run-e2e FLOW=<feature>
    ```
 
-2. Run the provider harness (mandatory for every non-exempt wire-visible change, always scoped;
+   For an MCP change, also run its MCP harness cases from Step 5g here
+   (`TESTS=<ID>,<ID> make run-mcp-harness-test`). That harness is hermetic, so the run is
+   yours and needs no spend approval. An MCP change skips item 2 unless it also changes how
+   a provider converts tool definitions or tool calls.
+
+2. Run the provider harness (mandatory for every non-exempt wire-visible change except MCP
+   behaviour, always scoped;
    the exemptions are AGENTS.md's: no wire-visible effect, or behaviour no HTTP request can
    reach, and an exempt change must say so in the report). It is a paid live sweep
    against real provider accounts: the unfiltered collection is ~1,900 requests. The scope keeps

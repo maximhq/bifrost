@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +15,7 @@ import (
 // Nested identifiers accept secret references just like credential fields. They
 // must retain literals and references without exposing resolved env/vault values
 // or modifying the live configuration during redaction.
-func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
+func TestRedactedKeys_NestedSecretVars(t *testing.T) {
 	const canary = "synthetic-nested-secretvar-canary-0123456789"
 	const envRef = "env.BIFROST_NESTED_REDACTION_TEST"
 	const vaultRef = "vault.bifrost-test/nested-redaction"
@@ -41,7 +42,7 @@ func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
 					Runtime: secret(), ControlPlane: secret(), Mantle: secret(), AgentRuntime: secret(), S3: secret(),
 				}
 			}
-			config := ProviderConfig{Keys: []schemas.Key{{
+			keys := []schemas.Key{{
 				ID: "nested-key", Name: "nested-key",
 				Aliases: schemas.KeyAliases{
 					"rich": {
@@ -50,22 +51,27 @@ func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
 						AzureAliasCfg:   &schemas.AzureAliasCfg{Endpoint: secret()},
 						VertexAliasCfg:  &schemas.VertexAliasCfg{ProjectNumber: secret()},
 						BedrockAliasCfg: &schemas.BedrockAliasCfg{InferenceProfileARN: secret()},
+						BasetenAliasCfg: &schemas.BasetenAliasCfg{DeploymentURL: secret()},
 					},
 					"legacy-project": {ModelID: "legacy-model", VertexAliasCfg: &schemas.VertexAliasCfg{ProjectID: secret()}},
 					"simple":         {ModelID: "simple-model"},
 				},
 				BedrockKeyConfig:       &schemas.BedrockKeyConfig{ProjectID: secret(), Endpoints: endpoints()},
 				BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{ProjectID: secret(), Endpoints: endpoints()},
-			}}}
+				SageMakerKeyConfig:     &schemas.SageMakerKeyConfig{Region: secret(), Endpoints: &schemas.SageMakerEndpoints{Runtime: secret()}},
+			}}
 			fields := func(key schemas.Key) map[string]*schemas.SecretVar {
 				alias := key.Aliases["rich"]
 				result := map[string]*schemas.SecretVar{
 					"alias.region": alias.Region, "alias.project_id": alias.ProjectID,
 					"alias.endpoint": alias.AzureAliasCfg.Endpoint, "alias.project_number": alias.VertexAliasCfg.ProjectNumber,
 					"alias.inference_profile_arn": alias.BedrockAliasCfg.InferenceProfileARN,
+					"alias.deployment_url":        alias.BasetenAliasCfg.DeploymentURL,
 					"alias.legacy_project_id":     key.Aliases["legacy-project"].VertexAliasCfg.ProjectID,
 					"bedrock.project_id":          key.BedrockKeyConfig.ProjectID,
 					"mantle.project_id":           key.BedrockMantleKeyConfig.ProjectID,
+					"sagemaker.region":            key.SageMakerKeyConfig.Region,
+					"sagemaker.runtime":           key.SageMakerKeyConfig.Endpoints.Runtime,
 				}
 				for name, ep := range map[string]*schemas.BedrockEndpoints{
 					"bedrock": key.BedrockKeyConfig.Endpoints, "mantle": key.BedrockMantleKeyConfig.Endpoints,
@@ -78,29 +84,29 @@ func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
 				}
 				return result
 			}
-			originals := fields(config.Keys[0])
+			originals := fields(keys[0])
 			for name, original := range originals {
 				// An unresolved reference would otherwise make the leak check pass.
 				require.Equal(t, canary, original.GetValue(), "setup: %s must resolve", name)
 			}
-			before, err := json.Marshal(config)
+			before, err := json.Marshal(keys)
 			require.NoError(t, err)
-			redacted := config.Redacted()
+			redacted := RedactedKeys(keys)
 			data, err := json.Marshal(redacted)
 			require.NoError(t, err)
 			if source.ref != "" {
 				assert.NotContains(t, string(data), canary)
 				assert.Contains(t, string(data), source.ref)
 			}
-			assert.Equal(t, "model-id", redacted.Keys[0].Aliases["rich"].ModelID)
-			assert.Equal(t, "alias metadata", redacted.Keys[0].Aliases["rich"].Description)
+			assert.Equal(t, "model-id", redacted[0].Aliases["rich"].ModelID)
+			assert.Equal(t, "alias metadata", redacted[0].Aliases["rich"].Description)
 			assert.Contains(t, string(data), `"simple":"simple-model"`)
 			// The legacy Vertex project is promoted by MarshalJSON; it must be
 			// redacted before that promotion too.
-			legacyJSON, err := json.Marshal(redacted.Keys[0].Aliases["legacy-project"])
+			legacyJSON, err := json.Marshal(redacted[0].Aliases["legacy-project"])
 			require.NoError(t, err)
 			assert.Contains(t, string(legacyJSON), `"project_id"`)
-			for name, field := range fields(redacted.Keys[0]) {
+			for name, field := range fields(redacted[0]) {
 				t.Run(name, func(t *testing.T) {
 					require.NotNil(t, field)
 					assert.Equal(t, source.ref, field.GetRawRef())
@@ -115,18 +121,123 @@ func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
 					assert.Equal(t, canary, originals[name].GetValue(), "redaction must not alias live secrets")
 				})
 			}
-			delete(redacted.Keys[0].Aliases, "simple")
-			after, err := json.Marshal(config)
+			delete(redacted[0].Aliases, "simple")
+			after, err := json.Marshal(keys)
 			require.NoError(t, err)
 			assert.JSONEq(t, string(before), string(after), "redaction must not modify live config")
 		})
 	}
 }
 
-// TestProviderConfig_Redacted_AutoMasksEnvBackedFields verifies that env-backed
-// values in provider config fields are redacted in the JSON output of a Redacted()
-// ProviderConfig, including fields like Azure Endpoint.
-func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
+// TestRedactedKeys_AutoMasksEnvBackedFields verifies that env-backed
+// values in key config fields are redacted in the JSON output of RedactedKeys,
+// including fields like Azure Endpoint.
+func TestRedactedKeys_OAuthKeyConfig(t *testing.T) {
+	keys := []schemas.Key{{
+		ID:   "k1",
+		Name: "oauth",
+		OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantClientCredentials,
+			TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			ClientID:     schemas.NewSecretVar("client-id-value"),
+			ClientSecret: schemas.NewSecretVar("client-secret-value"),
+			PrivateKey:   schemas.NewSecretVar("-----BEGIN RSA PRIVATE KEY-----"),
+			Scopes:       []string{"inference"},
+			Audience:     "api://acme",
+			ExtraParams:  map[string]string{"resource": "api://acme", "client_assertion": "assertion-secret-value"},
+		},
+	}}
+
+	redacted := RedactedKeys(keys)
+	require.Len(t, redacted, 1)
+	got := redacted[0].OAuthKeyConfig
+	require.NotNil(t, got)
+	assert.Equal(t, "https://idp.example/oauth2/token", got.TokenURL.GetValue(), "the token URL is an address and stays readable")
+	assert.NotEqual(t, "client-id-value", got.ClientID.GetValue())
+	assert.NotEqual(t, "client-secret-value", got.ClientSecret.GetValue())
+	assert.NotEqual(t, "-----BEGIN RSA PRIVATE KEY-----", got.PrivateKey.GetValue())
+	assert.Equal(t, []string{"inference"}, got.Scopes)
+	assert.Equal(t, "api://acme", got.Audience)
+	// extra_params is a free-form form-parameter map, so a caller may have put a credential in
+	// it; every value is masked on the way out and the keys stay visible.
+	require.Len(t, got.ExtraParams, 2)
+	assert.NotEqual(t, "assertion-secret-value", got.ExtraParams["client_assertion"])
+	assert.NotEqual(t, "api://acme", got.ExtraParams["resource"])
+	// The original is untouched.
+	assert.Equal(t, "client-secret-value", keys[0].OAuthKeyConfig.ClientSecret.GetValue())
+	assert.Equal(t, "assertion-secret-value", keys[0].OAuthKeyConfig.ExtraParams["client_assertion"])
+}
+
+// TestRedactedKeys_OAuthExtraParamsMaskTheLiteralString pins that extra_params
+// values are masked as the strings they are. They are sent to the token endpoint verbatim, so
+// a value that merely looks like a secret reference ("env.production") must not be resolved
+// on the way out: an unset variable would mask to "", which an update then saves as "".
+func TestRedactedKeys_OAuthExtraParamsMaskTheLiteralString(t *testing.T) {
+	keys := []schemas.Key{{
+		ID:   "k1",
+		Name: "oauth",
+		OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantClientCredentials,
+			TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			ClientID:     schemas.NewSecretVar("client-id-value"),
+			ClientSecret: schemas.NewSecretVar("client-secret-value"),
+			ExtraParams:  map[string]string{"resource": "env.production", "tenant": "vault.tenants/acme", "short": "abc"},
+		},
+	}}
+
+	got := RedactedKeys(keys)[0].OAuthKeyConfig.ExtraParams
+	require.Len(t, got, 3)
+	for name, original := range keys[0].OAuthKeyConfig.ExtraParams {
+		masked := got[name]
+		assert.NotEmpty(t, masked, "%s: a non-empty parameter must mask to a non-empty placeholder", name)
+		assert.NotEqual(t, original, masked, "%s: the value must be masked", name)
+		assert.True(t, (&schemas.SecretVar{Val: masked}).IsMaskedPlaceholder(),
+			"%s: the mask %q must be recognised as a placeholder so an update restores the stored value", name, masked)
+	}
+	assert.Equal(t, "env."+strings.Repeat("*", 24)+"tion", got["resource"], "the literal string is masked, not the variable it names")
+}
+
+// TestRedactedKeys_AnthropicKeyConfig pins the workload identity redaction: literal
+// identifiers and the token file path stay readable, an env-backed identifier is masked, and the
+// identity token is always masked, without touching or aliasing the live config.
+func TestRedactedKeys_AnthropicKeyConfig(t *testing.T) {
+	t.Setenv("REDACTION_TEST_ANTHROPIC_SVAC", "svac_from_environment_0123")
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
+	keys := []schemas.Key{{
+		ID:   "k1",
+		Name: "anthropic-wif",
+		AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
+			WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+				FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+				OrganizationID:   *schemas.NewSecretVar("8c1d0f5e-0000-4000-8000-000000000001"),
+				ServiceAccountID: *schemas.NewSecretVar("env.REDACTION_TEST_ANTHROPIC_SVAC"),
+				WorkspaceID:      schemas.NewSecretVar("wrkspc_01ghi"),
+				IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar(jwt)},
+			},
+		},
+	}}
+
+	redacted := RedactedKeys(keys)
+	require.Len(t, redacted, 1)
+	require.True(t, redacted[0].AnthropicKeyConfig.HasWorkloadIdentity())
+	got := redacted[0].AnthropicKeyConfig.WorkloadIdentity
+	assert.Equal(t, "fdrl_01abc", got.FederationRuleID.GetValue())
+	assert.Equal(t, "8c1d0f5e-0000-4000-8000-000000000001", got.OrganizationID.GetValue())
+	assert.Equal(t, "wrkspc_01ghi", got.WorkspaceID.GetValue())
+	assert.Equal(t, schemas.IdentitySourceInline, got.IdentitySource.Type)
+	assert.NotContains(t, got.ServiceAccountID.GetValue(), "from_environment", "an env-backed identifier must be masked")
+	assert.Equal(t, "env.REDACTION_TEST_ANTHROPIC_SVAC", got.ServiceAccountID.GetRawRef(), "the reference stays visible")
+	assert.NotEqual(t, jwt, got.IdentitySource.Token.GetValue())
+	assert.True(t, got.IdentitySource.Token.IsMaskedPlaceholder(), "the token mask must be recognised so an update restores the stored token")
+
+	live := keys[0].AnthropicKeyConfig.WorkloadIdentity
+	assert.Equal(t, jwt, live.IdentitySource.Token.GetValue(), "the original is untouched")
+	assert.NotSame(t, live.IdentitySource, got.IdentitySource)
+	assert.NotSame(t, live, got)
+	assert.NotSame(t, live.WorkspaceID, got.WorkspaceID)
+}
+
+func TestRedactedKeys_AutoMasksEnvBackedFields(t *testing.T) {
 	t.Setenv("MY_AZURE_ENDPOINT_SECRET", "https://secret-resource.openai.azure.com")
 
 	endpoint := schemas.NewSecretVar("env.MY_AZURE_ENDPOINT_SECRET")
@@ -134,24 +245,22 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	require.Equal(t, "https://secret-resource.openai.azure.com", endpoint.GetValue(),
 		"setup: Endpoint should be resolved")
 
-	config := ProviderConfig{
-		Keys: []schemas.Key{{
-			ID:    "k1",
-			Name:  "test",
-			Value: schemas.SecretVar{Val: ""},
-			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint: *endpoint,
-			},
-		}},
-	}
+	keys := []schemas.Key{{
+		ID:    "k1",
+		Name:  "test",
+		Value: schemas.SecretVar{Val: ""},
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint: *endpoint,
+		},
+	}}
 
-	redacted := config.Redacted()
+	redacted := RedactedKeys(keys)
 	require.NotNil(t, redacted)
-	require.Len(t, redacted.Keys, 1)
-	require.NotNil(t, redacted.Keys[0].AzureKeyConfig)
+	require.Len(t, redacted, 1)
+	require.NotNil(t, redacted[0].AzureKeyConfig)
 
 	// Marshal the Endpoint field as it would be sent to the UI.
-	data, err := json.Marshal(redacted.Keys[0].AzureKeyConfig.Endpoint)
+	data, err := json.Marshal(redacted[0].AzureKeyConfig.Endpoint)
 	require.NoError(t, err)
 
 	var out struct {
@@ -168,27 +277,25 @@ func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	assert.Equal(t, "env", out.SecretType, "type field must be preserved")
 }
 
-// TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields verifies that the
+// TestRedactedKeys_DoesNotMaskPlainNonSecretFields verifies that the
 // auto-redaction does NOT touch plain (non-env-backed) values. A plain endpoint
 // URL must show as-is in the UI.
-func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
-	config := ProviderConfig{
-		Keys: []schemas.Key{{
-			ID:    "k1",
-			Name:  "test",
-			Value: schemas.SecretVar{Val: ""},
-			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint: *schemas.NewSecretVar("https://foo.openai.azure.com"),
-			},
-		}},
-	}
+func TestRedactedKeys_DoesNotMaskPlainNonSecretFields(t *testing.T) {
+	keys := []schemas.Key{{
+		ID:    "k1",
+		Name:  "test",
+		Value: schemas.SecretVar{Val: ""},
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint: *schemas.NewSecretVar("https://foo.openai.azure.com"),
+		},
+	}}
 
-	redacted := config.Redacted()
+	redacted := RedactedKeys(keys)
 	require.NotNil(t, redacted)
-	require.Len(t, redacted.Keys, 1)
-	require.NotNil(t, redacted.Keys[0].AzureKeyConfig)
+	require.Len(t, redacted, 1)
+	require.NotNil(t, redacted[0].AzureKeyConfig)
 
-	data, err := json.Marshal(redacted.Keys[0].AzureKeyConfig.Endpoint)
+	data, err := json.Marshal(redacted[0].AzureKeyConfig.Endpoint)
 	require.NoError(t, err)
 
 	var out struct {
@@ -202,30 +309,40 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 	assert.Equal(t, out.SecretType, string(schemas.SecretTypePlainText))
 }
 
-// TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex verifies that
+// The redacted config is what the providers API serves and what the UI edits, and it rebuilds each
+// key field by field, so a key's content-logging decision must be carried over as is (nil stays
+// inherit, not false).
+func TestRedactedKeys_KeepsContentLoggingDecision(t *testing.T) {
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		keys := []schemas.Key{{ID: "k1", Name: "test", Value: *schemas.NewSecretVar("sk-test"), DisableContentLogging: decision}}
+		redacted := RedactedKeys(keys)
+		require.Len(t, redacted, 1)
+		assert.Equal(t, decision, redacted[0].DisableContentLogging)
+	}
+}
+
+// TestRedactedKeys_PreservesSecretVarReferenceForVertex verifies that
 // env-backed Vertex fields appear in the redacted output with the env reference
 // intact and the resolved value masked. This is the user-facing fix for the
 // "I see resolved env values in the UI" bug.
-func TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex(t *testing.T) {
+func TestRedactedKeys_PreservesSecretVarReferenceForVertex(t *testing.T) {
 	t.Setenv("MY_VERTEX_PROJECT_ID_SECRET", "super-secret-project-12345")
 
 	projectID := schemas.NewSecretVar("env.MY_VERTEX_PROJECT_ID_SECRET")
 	require.Equal(t, "super-secret-project-12345", projectID.GetValue())
 
-	config := ProviderConfig{
-		Keys: []schemas.Key{{
-			ID:    "k1",
-			Name:  "test",
-			Value: schemas.SecretVar{Val: ""},
-			VertexKeyConfig: &schemas.VertexKeyConfig{
-				ProjectID: *projectID,
-				Region:    *schemas.NewSecretVar("us-central1"),
-			},
-		}},
-	}
+	keys := []schemas.Key{{
+		ID:    "k1",
+		Name:  "test",
+		Value: schemas.SecretVar{Val: ""},
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *projectID,
+			Region:    *schemas.NewSecretVar("us-central1"),
+		},
+	}}
 
-	redacted := config.Redacted()
-	data, err := json.Marshal(redacted.Keys[0].VertexKeyConfig.ProjectID)
+	redacted := RedactedKeys(keys)
+	data, err := json.Marshal(redacted[0].VertexKeyConfig.ProjectID)
 	require.NoError(t, err)
 
 	var out struct {
@@ -241,79 +358,75 @@ func TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex(t *testing
 	assert.Equal(t, "env", out.SecretType)
 }
 
-// TestProviderConfig_Redacted_DoesNotMutateOriginal ensures Redacted() does not
-// mutate the original config in memory. The inference path reads from the in-memory
+// TestRedactedKeys_DoesNotMutateOriginal ensures RedactedKeys does not
+// mutate the original keys in memory. The inference path reads from the in-memory
 // config and calls GetValue() to build outgoing LLM requests.
-func TestProviderConfig_Redacted_DoesNotMutateOriginal(t *testing.T) {
+func TestRedactedKeys_DoesNotMutateOriginal(t *testing.T) {
 	t.Setenv("MY_REAL_KEY", "sk-real-secret-1234567890abcdef")
 
 	keyValue := schemas.NewSecretVar("env.MY_REAL_KEY")
 	require.Equal(t, "sk-real-secret-1234567890abcdef", keyValue.GetValue())
 
-	config := ProviderConfig{
-		Keys: []schemas.Key{{
-			ID:    "k1",
-			Name:  "test",
-			Value: *keyValue,
-		}},
-	}
+	keys := []schemas.Key{{
+		ID:    "k1",
+		Name:  "test",
+		Value: *keyValue,
+	}}
 
-	redacted := config.Redacted()
+	redacted := RedactedKeys(keys)
 	_, err := json.Marshal(redacted)
 	require.NoError(t, err)
 
 	// Original must still hold the resolved value.
-	assert.Equal(t, "sk-real-secret-1234567890abcdef", config.Keys[0].Value.GetValue(),
-		"Redacted() or MarshalJSON mutated the original key Value")
+	assert.Equal(t, "sk-real-secret-1234567890abcdef", keys[0].Value.GetValue(),
+		"RedactedKeys or MarshalJSON mutated the original key Value")
 }
 
-// TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets is a high-level smoke
+// TestRedactedKeys_FullJSONHasNoLeakedEnvSecrets is a high-level smoke
 // test: build a config containing env-backed values across multiple provider types
 // and assert that no resolved secret string appears anywhere in the marshaled
 // redacted JSON.
-func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
+func TestRedactedKeys_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 	t.Setenv("LEAK_TEST_AZURE_ENDPOINT", "https://leaked-azure.example.com")
 	t.Setenv("LEAK_TEST_VERTEX_PROJECT", "leaked-vertex-project-id")
 	t.Setenv("LEAK_TEST_BEDROCK_ACCESS", "AKIAIOSFODNN7LEAKED1")
 	t.Setenv("LEAK_TEST_OPENAI_KEY", "sk-leaked-openai-key-1234567890")
 
-	config := ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:    "openai-k",
-				Name:  "openai",
-				Value: *schemas.NewSecretVar("env.LEAK_TEST_OPENAI_KEY"),
+	keys := []schemas.Key{
+		{
+			ID:    "openai-k",
+			Name:  "openai",
+			Value: *schemas.NewSecretVar("env.LEAK_TEST_OPENAI_KEY"),
+		},
+		{
+			ID:    "azure-k",
+			Name:  "azure",
+			Value: schemas.SecretVar{Val: ""},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("env.LEAK_TEST_AZURE_ENDPOINT"),
 			},
-			{
-				ID:    "azure-k",
-				Name:  "azure",
-				Value: schemas.SecretVar{Val: ""},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("env.LEAK_TEST_AZURE_ENDPOINT"),
-				},
+		},
+		{
+			ID:    "vertex-k",
+			Name:  "vertex",
+			Value: schemas.SecretVar{Val: ""},
+			VertexKeyConfig: &schemas.VertexKeyConfig{
+				ProjectID: *schemas.NewSecretVar("env.LEAK_TEST_VERTEX_PROJECT"),
+				Region:    *schemas.NewSecretVar("us-central1"),
 			},
-			{
-				ID:    "vertex-k",
-				Name:  "vertex",
-				Value: schemas.SecretVar{Val: ""},
-				VertexKeyConfig: &schemas.VertexKeyConfig{
-					ProjectID: *schemas.NewSecretVar("env.LEAK_TEST_VERTEX_PROJECT"),
-					Region:    *schemas.NewSecretVar("us-central1"),
-				},
-			},
-			{
-				ID:    "bedrock-k",
-				Name:  "bedrock",
-				Value: schemas.SecretVar{Val: ""},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("env.LEAK_TEST_BEDROCK_ACCESS"),
-					SecretKey: schemas.SecretVar{Val: ""},
-				},
+		},
+		{
+			ID:    "bedrock-k",
+			Name:  "bedrock",
+			Value: schemas.SecretVar{Val: ""},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("env.LEAK_TEST_BEDROCK_ACCESS"),
+				SecretKey: schemas.SecretVar{Val: ""},
 			},
 		},
 	}
 
-	redacted := config.Redacted()
+	redacted := RedactedKeys(keys)
 	data, err := json.Marshal(redacted)
 	require.NoError(t, err)
 	jsonStr := string(data)
@@ -342,86 +455,118 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 	}
 }
 
-// TestProviderConfig_Redacted_SurfacesLiteralIdentifiers pins the rule that a
+// TestRedactedKeys_SurfacesLiteralIdentifiers pins the rule that a
 // region or a self-hosted service URL is an identifier, not a credential: when
 // it is stored as a literal it must read back verbatim so the update form shows
 // something an operator can actually read.
-func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
-	config := ProviderConfig{
-		Keys: []schemas.Key{{
-			ID:    "k1",
-			Name:  "test",
-			Value: schemas.SecretVar{Val: ""},
-			VertexKeyConfig: &schemas.VertexKeyConfig{
-				Region: *schemas.NewSecretVar("us-central1"),
-			},
-			BedrockKeyConfig: &schemas.BedrockKeyConfig{
-				AccessKey: schemas.SecretVar{Val: ""},
-				SecretKey: schemas.SecretVar{Val: ""},
-				Region:    schemas.NewSecretVar("us-east-1"),
-			},
-			BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
-				AccessKey: schemas.SecretVar{Val: ""},
-				SecretKey: schemas.SecretVar{Val: ""},
-				Region:    schemas.NewSecretVar("us-east-1"),
-			},
-			VLLMKeyConfig: &schemas.VLLMKeyConfig{
-				URL: *schemas.NewSecretVar("http://vllm.internal.example.com:8000"),
-			},
-			OllamaKeyConfig: &schemas.OllamaKeyConfig{
-				URL: *schemas.NewSecretVar("http://ollama.internal.example.com:11434"),
-			},
-			SGLKeyConfig: &schemas.SGLKeyConfig{
-				URL: *schemas.NewSecretVar("http://sgl.internal.example.com:30000"),
-			},
-		}},
-	}
+func TestRedactedKeys_SurfacesLiteralIdentifiers(t *testing.T) {
+	keys := []schemas.Key{{
+		ID:    "k1",
+		Name:  "test",
+		Value: schemas.SecretVar{Val: ""},
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			Region: *schemas.NewSecretVar("us-central1"),
+		},
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: schemas.SecretVar{Val: ""},
+			SecretKey: schemas.SecretVar{Val: ""},
+			Region:    schemas.NewSecretVar("us-east-1"),
+		},
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: schemas.SecretVar{Val: ""},
+			SecretKey: schemas.SecretVar{Val: ""},
+			Region:    schemas.NewSecretVar("us-east-1"),
+		},
+		SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+			Region: schemas.NewSecretVar("us-west-2"),
+		},
+		VLLMKeyConfig: &schemas.VLLMKeyConfig{
+			URL: *schemas.NewSecretVar("http://vllm.internal.example.com:8000"),
+		},
+		OllamaKeyConfig: &schemas.OllamaKeyConfig{
+			URL: *schemas.NewSecretVar("http://ollama.internal.example.com:11434"),
+		},
+		SGLKeyConfig: &schemas.SGLKeyConfig{
+			URL: *schemas.NewSecretVar("http://sgl.internal.example.com:30000"),
+		},
+		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{
+			AccountID: *schemas.NewSecretVar("0123456789abcdef0123456789abcdef"),
+		},
+	}}
 
-	redacted := config.Redacted()
+	redacted := RedactedKeys(keys)
 	require.NotNil(t, redacted)
-	require.Len(t, redacted.Keys, 1)
-	key := redacted.Keys[0]
+	require.Len(t, redacted, 1)
+	key := redacted[0]
 
 	assert.Equal(t, "us-central1", key.VertexKeyConfig.Region.GetValue())
 	assert.Equal(t, "us-east-1", key.BedrockKeyConfig.Region.GetValue())
 	assert.Equal(t, "us-east-1", key.BedrockMantleKeyConfig.Region.GetValue())
+	assert.Equal(t, "us-west-2", key.SageMakerKeyConfig.Region.GetValue())
 	assert.Equal(t, "http://vllm.internal.example.com:8000", key.VLLMKeyConfig.URL.GetValue())
 	assert.Equal(t, "http://ollama.internal.example.com:11434", key.OllamaKeyConfig.URL.GetValue())
 	assert.Equal(t, "http://sgl.internal.example.com:30000", key.SGLKeyConfig.URL.GetValue())
+	assert.Equal(t, "0123456789abcdef0123456789abcdef", key.CloudflareKeyConfig.AccountID.GetValue())
 
 	// The redacted copy must not alias the live config: these are pointer
 	// fields, and an API response handing out the live SecretVar would let a
 	// caller edit the running configuration.
-	assert.NotSame(t, config.Keys[0].BedrockKeyConfig.Region, key.BedrockKeyConfig.Region)
-	assert.NotSame(t, config.Keys[0].BedrockMantleKeyConfig.Region, key.BedrockMantleKeyConfig.Region)
+	assert.NotSame(t, keys[0].BedrockKeyConfig.Region, key.BedrockKeyConfig.Region)
+	assert.NotSame(t, keys[0].BedrockMantleKeyConfig.Region, key.BedrockMantleKeyConfig.Region)
+	assert.NotSame(t, keys[0].SageMakerKeyConfig.Region, key.SageMakerKeyConfig.Region)
 }
 
-// TestProviderConfig_Redacted_MasksSecretBackedIdentifiers is the other half of
+// TestRedactedKeys_SageMakerCredentials pins that SageMaker's AWS credentials are
+// masked even as literals, while the non-secret region reads back verbatim.
+func TestRedactedKeys_SageMakerCredentials(t *testing.T) {
+	keys := []schemas.Key{{
+		ID: "sm", Name: "sm",
+		SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+			AccessKey:       *schemas.NewSecretVar("AKIAEXAMPLESAGEMAKER1"),
+			SecretKey:       *schemas.NewSecretVar("wJalrXUtnFEMI-sagemaker-secret-example"),
+			SessionToken:    schemas.NewSecretVar("session-token-sagemaker-example"),
+			Region:          schemas.NewSecretVar("us-east-1"),
+			RoleARN:         schemas.NewSecretVar("arn:aws:iam::123456789012:role/sagemaker-example"),
+			ExternalID:      schemas.NewSecretVar("external-id-sagemaker-example"),
+			RoleSessionName: schemas.NewSecretVar("session-name-sagemaker-example"),
+		},
+	}}
+
+	redacted := RedactedKeys(keys)
+	data, err := json.Marshal(redacted)
+	require.NoError(t, err)
+	for _, secret := range []string{"AKIAEXAMPLESAGEMAKER1", "wJalrXUtnFEMI-sagemaker-secret-example", "session-token-sagemaker-example",
+		"arn:aws:iam::123456789012:role/sagemaker-example", "external-id-sagemaker-example", "session-name-sagemaker-example"} {
+		assert.NotContains(t, string(data), secret)
+	}
+	assert.Equal(t, "us-east-1", redacted[0].SageMakerKeyConfig.Region.GetValue())
+	assert.Equal(t, "AKIAEXAMPLESAGEMAKER1", keys[0].SageMakerKeyConfig.AccessKey.GetValue(), "redaction must not modify live config")
+}
+
+// TestRedactedKeys_MasksSecretBackedIdentifiers is the other half of
 // the rule: an operator who deliberately sourced a region or URL from env/vault
 // still gets the resolved value masked, with the reference intact for the UI.
-func TestProviderConfig_Redacted_MasksSecretBackedIdentifiers(t *testing.T) {
+func TestRedactedKeys_MasksSecretBackedIdentifiers(t *testing.T) {
 	t.Setenv("LEAK_TEST_REGION", "ap-southeast-2")
 	t.Setenv("LEAK_TEST_VLLM_URL", "http://vllm-secret.internal.example.com:8000")
 
-	config := ProviderConfig{
-		Keys: []schemas.Key{{
-			ID:    "k1",
-			Name:  "test",
-			Value: schemas.SecretVar{Val: ""},
-			BedrockKeyConfig: &schemas.BedrockKeyConfig{
-				AccessKey: schemas.SecretVar{Val: ""},
-				SecretKey: schemas.SecretVar{Val: ""},
-				Region:    schemas.NewSecretVar("env.LEAK_TEST_REGION"),
-			},
-			VLLMKeyConfig: &schemas.VLLMKeyConfig{
-				URL: *schemas.NewSecretVar("env.LEAK_TEST_VLLM_URL"),
-			},
-		}},
-	}
-	require.Equal(t, "ap-southeast-2", config.Keys[0].BedrockKeyConfig.Region.GetValue(),
+	keys := []schemas.Key{{
+		ID:    "k1",
+		Name:  "test",
+		Value: schemas.SecretVar{Val: ""},
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: schemas.SecretVar{Val: ""},
+			SecretKey: schemas.SecretVar{Val: ""},
+			Region:    schemas.NewSecretVar("env.LEAK_TEST_REGION"),
+		},
+		VLLMKeyConfig: &schemas.VLLMKeyConfig{
+			URL: *schemas.NewSecretVar("env.LEAK_TEST_VLLM_URL"),
+		},
+	}}
+	require.Equal(t, "ap-southeast-2", keys[0].BedrockKeyConfig.Region.GetValue(),
 		"setup: region should resolve from the environment")
 
-	redacted := config.Redacted()
+	redacted := RedactedKeys(keys)
 	data, err := json.Marshal(redacted)
 	require.NoError(t, err)
 	jsonStr := string(data)
@@ -434,4 +579,134 @@ func TestProviderConfig_Redacted_MasksSecretBackedIdentifiers(t *testing.T) {
 		assert.Contains(t, jsonStr, ref,
 			"env var reference %q missing from redacted JSON output", ref)
 	}
+}
+
+// TestProviderConfig_InjectedToolsSurvivesRedactionAndHash covers the two copies of
+// ProviderConfig that are built field by field: Redacted (GET responses) and
+// GenerateConfigHash (config.json vs DB drift detection).
+func TestProviderConfig_InjectedToolsSurvivesRedactionAndHash(t *testing.T) {
+	cfg := ProviderConfig{InjectedTools: []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+	}}
+	assert.Equal(t, cfg.InjectedTools, cfg.Redacted().InjectedTools)
+
+	withTool, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	without, err := (&ProviderConfig{}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, without, withTool)
+
+	cfg.InjectedTools[0].ToolName = "web_search"
+	changed, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, withTool, changed)
+
+	cfg.InjectedTools[0].Name = "search"
+	renamed, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, changed, renamed, "the model-facing name is part of the config")
+
+	empty, err := (&ProviderConfig{InjectedTools: []schemas.InjectedTool{}}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.Equal(t, without, empty, "an empty list is the same config as none")
+}
+
+// TestProviderConfig_PassthroughSurvivesRedactionAndHash covers Redacted and the config
+// hash. A nil policy writes nothing to the hash, so existing providers keep their hash;
+// an empty allowlist hashes differently because it forwards nothing.
+func TestProviderConfig_PassthroughSurvivesRedactionAndHash(t *testing.T) {
+	cfg := ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{"POST"}, Path: "/v1/chat/completions"},
+	}}}
+	assert.Equal(t, cfg.Passthrough, cfg.Redacted().Passthrough)
+
+	withPolicy, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	without, err := (&ProviderConfig{}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, without, withPolicy)
+
+	cfg.Passthrough.AllowedRoutes = append(cfg.Passthrough.AllowedRoutes, schemas.PassthroughRouteRule{Path: "/v1/files/**"})
+	widened, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, withPolicy, widened)
+
+	off, err := (&ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{}}}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, without, off, "an empty allowlist is a different config from no policy")
+}
+
+// TestClientConfig_Redacted_ClientGatewayTelemetry pins that the config API never
+// returns a client gateway telemetry credential: header values and an env-backed
+// endpoint are fully masked with their references kept, a plain endpoint URL
+// stays readable, and the live configuration is not modified.
+func TestClientConfig_Redacted_ClientGatewayTelemetry(t *testing.T) {
+	const canary = "synthetic-otel-token-canary-0123456789"
+	t.Setenv("BIFROST_TEST_OTEL_TOKEN", canary)
+	t.Setenv("BIFROST_TEST_OTEL_ENDPOINT", "https://collector.internal.example.com")
+	live := &ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+		IssuerURL: schemas.NewSecretVar("https://bifrost.example.com"),
+		Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{
+			Enabled: true,
+			Telemetry: &tables.ClientGatewayTelemetryConfig{
+				Enabled: true,
+				Destinations: []tables.ClientGatewayTelemetryDestination{
+					{Endpoint: schemas.NewSecretVar("https://otel.example.com"), Headers: map[string]*schemas.SecretVar{"authorization": schemas.NewSecretVar("env.BIFROST_TEST_OTEL_TOKEN")}},
+					{Endpoint: schemas.NewSecretVar("env.BIFROST_TEST_OTEL_ENDPOINT")},
+				},
+			},
+		}},
+	}}
+
+	redacted := live.Redacted()
+	out, err := json.Marshal(redacted)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), canary, "a header credential leaked")
+	assert.NotContains(t, string(out), "collector.internal.example.com", "an env-backed endpoint leaked")
+	assert.Contains(t, string(out), "https://otel.example.com", "a plain endpoint URL stays readable")
+	assert.Contains(t, string(out), "env.BIFROST_TEST_OTEL_TOKEN", "the header reference stays visible")
+
+	liveTelemetry := live.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry
+	assert.Equal(t, canary, liveTelemetry.Destinations[0].Headers["authorization"].GetValue(), "redaction modified the live config")
+	assert.Equal(t, "https://collector.internal.example.com", liveTelemetry.Destinations[1].Endpoint.GetValue())
+
+	// A redacted header read back from the dashboard resolves from its reference again.
+	var roundTrip tables.ClientGatewayTelemetryDestination
+	require.NoError(t, json.Unmarshal(mustMarshal(t, redacted.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations[0]), &roundTrip))
+	assert.Equal(t, canary, roundTrip.Headers["authorization"].GetValue())
+}
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
+}
+
+// TestRedactedKey_MasksValueKeepsIdentifiers pins the single-key redaction the key handlers use:
+// the value is masked, identifiers stay readable, Models and BlacklistedModels come back as empty
+// lists rather than nil, Enabled is copied rather than shared, and the input key is unchanged.
+func TestRedactedKey_MasksValueKeepsIdentifiers(t *testing.T) {
+	enabled := true
+	key := schemas.Key{ID: "k1", Name: "primary", Value: *schemas.NewSecretVar("sk-live-secret-0123456789"), Weight: 2, Enabled: &enabled}
+
+	redacted := RedactedKey(key)
+
+	assert.Equal(t, "k1", redacted.ID)
+	assert.Equal(t, "primary", redacted.Name)
+	assert.Equal(t, 2.0, redacted.Weight)
+	assert.NotEqual(t, "sk-live-secret-0123456789", redacted.Value.GetValue())
+	assert.True(t, redacted.Value.IsRedacted())
+	require.NotNil(t, redacted.Models)
+	require.NotNil(t, redacted.BlacklistedModels)
+	assert.Empty(t, redacted.Models)
+	assert.Empty(t, redacted.BlacklistedModels)
+	require.NotNil(t, redacted.Enabled)
+	assert.True(t, *redacted.Enabled)
+	assert.NotSame(t, key.Enabled, redacted.Enabled)
+
+	assert.Equal(t, "sk-live-secret-0123456789", key.Value.GetValue(), "the input key is left untouched")
+	assert.Nil(t, key.Models)
+	assert.Nil(t, key.BlacklistedModels)
+	assert.Equal(t, []schemas.Key{redacted}, RedactedKeys([]schemas.Key{key}), "RedactedKeys redacts each key the same way")
 }

@@ -216,3 +216,118 @@ export function createPerUserOAuthClientData(overrides: Partial<MCPClientConfig>
     ...overrides,
   })
 }
+
+// ---------------------------------------------------------------------------
+// OpenAPI connection type
+// ---------------------------------------------------------------------------
+
+/**
+ * A minimal OpenAPI 3.0 document with three supported operations, one
+ * unsupported one (multipart upload) and an API-key security scheme. Fields are
+ * written in the order they should appear; it is serialized once as document
+ * text, which is the spec itself and not an API payload.
+ */
+export const PETSTORE_OPENAPI_SPEC = {
+  openapi: '3.0.3',
+  info: { title: 'E2E Petstore', version: '1.0.0', description: 'Pets for the end-to-end suite.' },
+  servers: [{ url: 'https://petstore.example.com/v1' }],
+  components: {
+    securitySchemes: {
+      ApiKeyAuth: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+    },
+  },
+  security: [{ ApiKeyAuth: [] }],
+  paths: {
+    '/pets': {
+      get: {
+        operationId: 'listPets',
+        summary: 'List all pets',
+        parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer' } }],
+        responses: { '200': { description: 'ok' } },
+      },
+      post: {
+        operationId: 'createPet',
+        summary: 'Create a pet',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } } } },
+        },
+        responses: { '201': { description: 'created' } },
+      },
+    },
+    '/pets/{petId}': {
+      get: {
+        operationId: 'getPetById',
+        summary: 'Info for a specific pet',
+        parameters: [{ name: 'petId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'ok' } },
+      },
+    },
+    '/pets/{petId}/photo': {
+      post: {
+        operationId: 'uploadPetPhoto',
+        parameters: [{ name: 'petId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { content: { 'multipart/form-data': { schema: { type: 'object' } } } },
+        responses: { '200': { description: 'ok' } },
+      },
+    },
+  },
+}
+
+export const PETSTORE_OPENAPI_SPEC_TEXT = JSON.stringify(PETSTORE_OPENAPI_SPEC, null, 2)
+
+/** The same API as YAML, for the Upload source; fewer operations so the two are distinguishable. */
+export const PETSTORE_OPENAPI_SPEC_YAML = [
+  'openapi: 3.0.3',
+  'info:',
+  '  title: E2E Petstore YAML',
+  '  version: 2.0.0',
+  'servers:',
+  '  - url: https://petstore.example.com/v2',
+  'paths:',
+  '  /pets:',
+  '    get:',
+  '      operationId: listPets',
+  '      responses:',
+  "        '200':",
+  '          description: ok',
+  '  /pets/{petId}:',
+  '    get:',
+  '      operationId: getPetById',
+  '      parameters:',
+  '        - name: petId',
+  '          in: path',
+  '          required: true',
+  '          schema:',
+  '            type: string',
+  '      responses:',
+  "        '200':",
+  '          description: ok',
+  '    delete:',
+  '      operationId: deletePet',
+  '      parameters:',
+  '        - name: petId',
+  '          in: path',
+  '          required: true',
+  '          schema:',
+  '            type: string',
+  '      responses:',
+  "        '204':",
+  '          description: deleted',
+  '',
+].join('\n')
+
+/** A JSON document that is not an OpenAPI description at all. */
+export const NOT_AN_OPENAPI_SPEC_TEXT = JSON.stringify({ title: 'not a spec', paths: {} })
+
+export function createOpenAPIClientData(overrides: Partial<MCPClientConfig> = {}): MCPClientConfig {
+  return {
+    name: `openapi_test_${Date.now()}`,
+    connectionType: 'openapi',
+    openapiSourceMode: 'paste',
+    openapiSpecText: PETSTORE_OPENAPI_SPEC_TEXT,
+    authType: 'none',
+    isPingAvailable: true,
+    ...overrides,
+  }
+}

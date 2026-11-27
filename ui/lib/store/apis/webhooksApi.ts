@@ -11,6 +11,7 @@ import {
 	WebhookEvent,
 	WebhookSecretResponse,
 } from "@/lib/types/webhooks";
+import { getPeriodTimezone } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 
 // Shapes list params for the wire: empty values are dropped and the events
@@ -46,6 +47,8 @@ const buildWebhookDeliveryParams = (params: SearchWebhookDeliveriesParams): Reco
 	// the handler, so the two never disagree about which range was requested.
 	if (params.period) {
 		out.period = params.period;
+		const timezone = getPeriodTimezone(params.period);
+		if (timezone) out.timezone = timezone;
 	} else {
 		if (params.start_time) out.start_time = params.start_time;
 		if (params.end_time) out.end_time = params.end_time;

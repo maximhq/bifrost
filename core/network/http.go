@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -68,7 +69,10 @@ type GlobalProxyConfig struct {
 	Password      string          `json:"password,omitempty"`        // Optional authentication password
 	NoProxy       string          `json:"no_proxy,omitempty"`        // Comma-separated list of hosts to bypass proxy
 	Timeout       int             `json:"timeout,omitempty"`         // Connection timeout in seconds
-	SkipTLSVerify bool            `json:"skip_tls_verify,omitempty"` // Skip TLS certificate verification
+	SkipTLSVerify bool            `json:"skip_tls_verify,omitempty"` // Skip verifying the certificate of an https:// proxy itself (never the targets)
+	// CACertPEM is the proxy's CA: trusted for the TLS hop to an https:// proxy and for
+	// TLS through a TLS-inspecting proxy, on top of the system roots.
+	CACertPEM string `json:"ca_cert_pem,omitempty"`
 	// Entity enablement flags
 	EnableForSCIM      bool `json:"enable_for_scim"`      // Enable proxy for SCIM requests (enterprise only)
 	EnableForInference bool `json:"enable_for_inference"` // Enable proxy for inference requests
@@ -87,6 +91,9 @@ type GlobalProxyConfig struct {
 type HTTPClientFactory struct {
 	mu          sync.RWMutex
 	proxyConfig *GlobalProxyConfig
+	// proxyRoots is the system pool plus proxyConfig.CACertPEM, nil when there is no CA
+	// (the system roots). Built once per proxy config, not per dial.
+	proxyRoots *x509.CertPool
 
 	// Live clients returned to callers, one per key. Never replaced.
 	liveFasthttp map[ClientPurpose]*fasthttp.Client
@@ -94,7 +101,7 @@ type HTTPClientFactory struct {
 
 	// Inner clients built for the current proxy config, lazily. UpdateProxyConfig
 	// drops them so the next request builds new ones.
-	fasthttpClients map[ClientPurpose]*fasthttp.Client
+	fasthttpClients map[fasthttpClientKey]*fasthttp.Client
 	httpClients     map[httpClientKey]*http.Client
 
 	// Fasthttp read/write buffer sizes. Zero unless a caller opts in via
@@ -128,9 +135,10 @@ func WithFasthttpBufferSizes(read, write int) FactoryOption {
 func NewHTTPClientFactory(proxyConfig *GlobalProxyConfig, logger schemas.Logger, opts ...FactoryOption) *HTTPClientFactory {
 	f := &HTTPClientFactory{
 		proxyConfig:     proxyConfig,
+		proxyRoots:      proxyRootPool(proxyConfig, logger),
 		liveFasthttp:    make(map[ClientPurpose]*fasthttp.Client, 3),
 		liveHTTP:        make(map[httpClientKey]*http.Client, 3),
-		fasthttpClients: make(map[ClientPurpose]*fasthttp.Client, 3),
+		fasthttpClients: make(map[fasthttpClientKey]*fasthttp.Client, 3),
 		httpClients:     make(map[httpClientKey]*http.Client, 3),
 		logger:          logger,
 	}
@@ -149,7 +157,8 @@ func (f *HTTPClientFactory) UpdateProxyConfig(config *GlobalProxyConfig) {
 	oldFasthttp := f.fasthttpClients
 	oldHTTP := f.httpClients
 	f.proxyConfig = config
-	f.fasthttpClients = make(map[ClientPurpose]*fasthttp.Client, 3)
+	f.proxyRoots = proxyRootPool(config, f.logger)
+	f.fasthttpClients = make(map[fasthttpClientKey]*fasthttp.Client, 3)
 	f.httpClients = make(map[httpClientKey]*http.Client, 3)
 	f.mu.Unlock()
 
@@ -174,7 +183,7 @@ func (f *HTTPClientFactory) ApplyOptions(opts ...FactoryOption) {
 	}
 	oldFasthttp := f.fasthttpClients
 	oldHTTP := f.httpClients
-	f.fasthttpClients = make(map[ClientPurpose]*fasthttp.Client, 3)
+	f.fasthttpClients = make(map[fasthttpClientKey]*fasthttp.Client, 3)
 	f.httpClients = make(map[httpClientKey]*http.Client, 3)
 	f.mu.Unlock()
 	for _, client := range oldFasthttp {
@@ -271,10 +280,35 @@ func (f *HTTPClientFactory) GetFasthttpClient(purpose ClientPurpose) *fasthttp.C
 	return client
 }
 
+// IsLiveFasthttpClient reports whether client was handed out by GetFasthttpClient. Its
+// Transport forwards every request to the factory's inner client, so replacing the
+// transport or the dialer would take the request (for every holder of the shared
+// client) off the factory's proxy.
+func IsLiveFasthttpClient(client *fasthttp.Client) bool {
+	if client == nil {
+		return false
+	}
+	_, ok := client.Transport.(*liveFasthttpTransport)
+	return ok
+}
+
+// fasthttpClientKey identifies an inner fasthttp client. rawPath selects the variant
+// that sends the request path exactly as written; fasthttp applies that setting from
+// the client that sends the request, so it cannot be a per-request choice.
+type fasthttpClientKey struct {
+	purpose ClientPurpose
+	rawPath bool
+}
+
 // currentFasthttpClient returns the inner fasthttp client for the current proxy config.
 func (f *HTTPClientFactory) currentFasthttpClient(purpose ClientPurpose) *fasthttp.Client {
+	return f.currentFasthttpClientFor(fasthttpClientKey{purpose: purpose})
+}
+
+// currentFasthttpClientFor returns the inner fasthttp client for key, building it on first use.
+func (f *HTTPClientFactory) currentFasthttpClientFor(key fasthttpClientKey) *fasthttp.Client {
 	f.mu.RLock()
-	client, ok := f.fasthttpClients[purpose]
+	client, ok := f.fasthttpClients[key]
 	f.mu.RUnlock()
 	if ok {
 		return client
@@ -282,11 +316,12 @@ func (f *HTTPClientFactory) currentFasthttpClient(purpose ClientPurpose) *fastht
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if client, ok := f.fasthttpClients[purpose]; ok {
+	if client, ok := f.fasthttpClients[key]; ok {
 		return client
 	}
-	client = f.createFasthttpClient(purpose)
-	f.fasthttpClients[purpose] = client
+	client = f.createFasthttpClient(key.purpose)
+	client.DisablePathNormalizing = key.rawPath
+	f.fasthttpClients[key] = client
 	return client
 }
 
@@ -299,8 +334,12 @@ type liveFasthttpTransport struct {
 	purpose ClientPurpose
 }
 
-func (t *liveFasthttpTransport) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, resp *fasthttp.Response) (bool, error) {
-	return false, t.factory.currentFasthttpClient(t.purpose).Do(req, resp)
+func (t *liveFasthttpTransport) RoundTrip(outer *fasthttp.HostClient, req *fasthttp.Request, resp *fasthttp.Response) (bool, error) {
+	// A caller that set DisablePathNormalizing on a copy of the live client wants
+	// escaped path segments such as %2F kept; the inner client sending the request
+	// must carry the same setting or fasthttp resets it to the inner client's value.
+	key := fasthttpClientKey{purpose: t.purpose, rawPath: outer != nil && outer.DisablePathNormalizing}
+	return false, t.factory.currentFasthttpClientFor(key).Do(req, resp)
 }
 
 // GetHTTPClient returns the live net/http client for purpose. The same client is
@@ -315,9 +354,10 @@ func (f *HTTPClientFactory) GetHTTPClient(purpose ClientPurpose) *http.Client {
 
 // HTTPClientWithTLS returns a live net/http client for purpose that uses tlsConfig
 // for TLS to the target, for callers that bring their own CA or client certificate.
-// Proxy settings follow purpose like GetHTTPClient. The global skip_tls_verify still
-// applies on top. The factory keeps one client per tlsConfig pointer, so pass the same
-// *tls.Config for the life of the caller rather than a new one per request.
+// Proxy settings follow purpose like GetHTTPClient. The global proxy CA is added to
+// tlsConfig's roots; the global skip_tls_verify covers only the hop to an https://
+// proxy, never the target. The factory keeps one client per tlsConfig pointer, so pass
+// the same *tls.Config for the life of the caller rather than a new one per request.
 func (f *HTTPClientFactory) HTTPClientWithTLS(purpose ClientPurpose, tlsConfig *tls.Config) *http.Client {
 	return f.liveHTTPClient(httpClientKey{purpose: purpose, tls: tlsConfig})
 }
@@ -335,6 +375,26 @@ type DialPolicy struct {
 // it checked or an error to refuse the target.
 func NewDialPolicy(dial func(ctx context.Context, netw, addr string) (net.Conn, error), resolveTarget func(ctx context.Context, host string) ([]net.IP, error)) *DialPolicy {
 	return &DialPolicy{dial: dial, resolveTarget: resolveTarget}
+}
+
+// DialContext connects under the policy, tunneling to a validated IP when a
+// proxy is configured. The proxy never resolves the destination itself.
+func (p *DialPolicy) DialContext(ctx context.Context, netw, addr string, proxyURL *url.URL) (net.Conn, error) {
+	if proxyURL == nil {
+		return p.dial(ctx, netw, addr)
+	}
+	if factory := defaultFactory.Load(); factory != nil {
+		factory.mu.RLock()
+		configuredURL := factory.proxyURLForPurpose(ClientPurposeAPI)
+		if configuredURL != nil && configuredURL.String() == proxyURL.String() {
+			config := *factory.proxyConfig
+			roots := factory.proxyRoots
+			factory.mu.RUnlock()
+			return policyProxyDial(p, proxyURL, &config, config.proxyTLS(roots))(ctx, netw, addr)
+		}
+		factory.mu.RUnlock()
+	}
+	return policyProxyDial(p, proxyURL, &GlobalProxyConfig{}, nil)(ctx, netw, addr)
 }
 
 // SSRFPolicy is the standard policy for user-controlled URLs: public targets only,
@@ -615,15 +675,11 @@ func (f *HTTPClientFactory) createFasthttpClient(purpose ClientPurpose) *fasthtt
 
 	f.configureFasthttpProxy(client, purpose)
 
-	// Configure TLS if skip verification is set
+	// TLS to targets: always verified, against the system roots plus the proxy's CA
+	// (a TLS-inspecting proxy re-signs targets with it). skip_tls_verify covers only
+	// the https:// proxy's own certificate (see configureFasthttpProxy).
 	if f.proxyConfig != nil {
-		if f.proxyConfig.SkipTLSVerify {
-			f.logger.Warn("skipping TLS verification for fasthttp client because skip TLS verify is set to true. It's not recommended to use this in production.")
-		}
-		client.TLSConfig = &tls.Config{
-			InsecureSkipVerify: f.proxyConfig.SkipTLSVerify,
-			MinVersion:         tls.VersionTLS12,
-		}
+		client.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: f.proxyRoots}
 	}
 
 	return client
@@ -720,6 +776,7 @@ func (f *HTTPClientFactory) configureFasthttpProxy(client *fasthttp.Client, purp
 		return
 	}
 	proxyCfg := f.proxyConfig
+	hopTLS := proxyCfg.proxyTLS(f.proxyRoots)
 	client.DialTimeout = func(addr string, timeout time.Duration) (net.Conn, error) {
 		if timeout <= 0 || timeout > ProxyHandshakeTimeout {
 			timeout = ProxyHandshakeTimeout
@@ -729,7 +786,7 @@ func (f *HTTPClientFactory) configureFasthttpProxy(client *fasthttp.Client, purp
 		if connectDirect(DialAddrHost(addr), proxyCfg) {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 		}
-		return DialViaProxyTLS(ctx, proxyURL, addr, proxyCfg.proxyTLS())
+		return DialViaProxyTLS(ctx, proxyURL, addr, hopTLS)
 	}
 }
 
@@ -779,28 +836,37 @@ func (f *HTTPClientFactory) createHTTPClient(key httpClientKey) *http.Client {
 		TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 	}
 
-	// TLS: the caller's settings (HTTPClientWithTLS), with the global
-	// skip_tls_verify layered on top.
+	// TLS to targets: the caller's settings (HTTPClientWithTLS), always verified,
+	// with the proxy's CA added to the roots (a TLS-inspecting proxy re-signs targets
+	// with it). skip_tls_verify covers only the https:// proxy's own certificate.
 	if key.tls != nil {
 		transport.TLSClientConfig = key.tls.Clone()
 	}
 	if f.proxyConfig != nil {
-		if f.proxyConfig.SkipTLSVerify {
-			f.logger.Warn("skipping TLS verification for net/http client because skip TLS verify is set to true. It's not recommended to use this in production.")
-		}
 		if transport.TLSClientConfig == nil {
 			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 		}
-		if f.proxyConfig.SkipTLSVerify {
-			transport.TLSClientConfig.InsecureSkipVerify = true
+		if f.proxyRoots != nil {
+			transport.TLSClientConfig.RootCAs = f.proxyRootsWith(transport.TLSClientConfig.RootCAs)
 		}
 	}
 
 	proxyURL := f.proxyURLForPurpose(key.purpose)
-	if proxyURL != nil {
+	// net/http uses TLSClientConfig for the hop to an https:// proxy as well as for the
+	// target, so an https:// proxy is dialed here instead (DialViaProxyTLS with the hop's
+	// own TLS config) and the transport sees a ready tunnel.
+	tunnelHTTPS := proxyURL != nil && proxyURL.Scheme == "https"
+	if proxyURL != nil && !tunnelHTTPS {
 		f.configureHTTPProxy(transport, proxyURL)
-	} else if key.compat {
+	} else if proxyURL == nil && key.compat {
 		transport.Proxy = defaultTransportProxy
+	}
+	directDial := transport.DialContext
+	if policy := key.policy; policy != nil {
+		directDial = policy.dial
+	}
+	if tunnelHTTPS {
+		transport.DialContext = f.httpsProxyDial(proxyURL, directDial)
 	}
 
 	var roundTripper http.RoundTripper = transport
@@ -827,7 +893,7 @@ func (f *HTTPClientFactory) createHTTPClient(key httpClientKey) *http.Client {
 			// connection is a tunnel the dialer opens to an address the policy checked.
 			transport.Proxy = nil
 			transport.ProxyConnectHeader = nil
-			transport.DialContext = policyProxyDial(policy, proxyURL, f.proxyConfig, f.proxyConfig.proxyTLS())
+			transport.DialContext = policyProxyDial(policy, proxyURL, f.proxyConfig, f.proxyConfig.proxyTLS(f.proxyRoots))
 		}
 	}
 
@@ -871,8 +937,32 @@ func policyProxyDial(policy *DialPolicy, proxyURL *url.URL, proxyCfg *GlobalProx
 	}
 }
 
-// proxyURLForPurpose returns the proxy URL (with credentials) for purpose, or nil when
-// the proxy is off for purpose or not configured. The caller holds f.mu.
+// proxyRootsWith returns base plus the proxy's CA, or the proxy roots (system pool plus
+// CA) when base is nil. The caller holds f.mu.
+func (f *HTTPClientFactory) proxyRootsWith(base *x509.CertPool) *x509.CertPool {
+	if base == nil {
+		return f.proxyRoots
+	}
+	merged := base.Clone()
+	merged.AppendCertsFromPEM([]byte(f.proxyConfig.CACertPEM))
+	return merged
+}
+
+// httpsProxyDial is the DialContext of a net/http transport behind an https:// proxy:
+// no_proxy, local and metadata targets through direct, every other target through a
+// tunnel opened by DialViaProxyTLS, whose TLS to the proxy honours skip_tls_verify and
+// the proxy CA. The caller holds f.mu.
+func (f *HTTPClientFactory) httpsProxyDial(proxyURL *url.URL, direct func(ctx context.Context, netw, addr string) (net.Conn, error)) func(ctx context.Context, netw, addr string) (net.Conn, error) {
+	proxyCfg := f.proxyConfig
+	hopTLS := proxyCfg.proxyTLS(f.proxyRoots)
+	return func(ctx context.Context, netw, addr string) (net.Conn, error) {
+		if connectDirect(DialAddrHost(addr), proxyCfg) {
+			return direct(ctx, netw, addr)
+		}
+		return DialViaProxyTLS(ctx, proxyURL, addr, hopTLS)
+	}
+}
+
 // ProxyURLForPurpose returns the global proxy URL that applies to purpose, or nil when
 // the global proxy is off or not enabled for it. Dialers that guard destinations use it
 // to recognise a dial addressed to the proxy itself.
@@ -882,6 +972,8 @@ func (f *HTTPClientFactory) ProxyURLForPurpose(purpose ClientPurpose) *url.URL {
 	return f.proxyURLForPurpose(purpose)
 }
 
+// proxyURLForPurpose returns the proxy URL (with credentials) for purpose, or nil when
+// the proxy is off for purpose or not configured. The caller holds f.mu.
 func (f *HTTPClientFactory) proxyURLForPurpose(purpose ClientPurpose) *url.URL {
 	if !f.isProxyEnabledForPurpose(purpose) || f.proxyConfig.URL == "" {
 		return nil
@@ -933,11 +1025,31 @@ func (f *HTTPClientFactory) configureHTTPProxy(transport *http.Transport, proxyU
 	}
 }
 
-// proxyTLS is the TLS config for reaching an https:// global proxy: the system roots,
-// or no verification when skip_tls_verify is set (it already covers every TLS session
-// the global proxy carries).
-func (c *GlobalProxyConfig) proxyTLS() *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: c != nil && c.SkipTLSVerify}
+// proxyTLS is the TLS config for the hop to an https:// global proxy: verified against
+// roots (the system pool plus the proxy CA, or nil for the system roots), or not at all
+// when skip_tls_verify is set. skip_tls_verify covers only this hop; targets reached
+// through the proxy are always verified.
+func (c *GlobalProxyConfig) proxyTLS(roots *x509.CertPool) *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, InsecureSkipVerify: c != nil && c.SkipTLSVerify}
+}
+
+// proxyRootPool is the system pool plus the proxy's CA, or nil when the config has no
+// CA. A CA that does not parse is logged and ignored (the API refuses one on save).
+func proxyRootPool(cfg *GlobalProxyConfig, logger schemas.Logger) *x509.CertPool {
+	if cfg == nil || strings.TrimSpace(cfg.CACertPEM) == "" {
+		return nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM([]byte(cfg.CACertPEM)) {
+		if logger != nil {
+			logger.Warn("global proxy ca_cert_pem holds no valid PEM certificate; using the system roots")
+		}
+		return nil
+	}
+	return pool
 }
 
 // connectDirect reports whether a request for host skips the proxy: a no_proxy match,
@@ -994,12 +1106,13 @@ func (f *HTTPClientFactory) GRPCDialer(purpose ClientPurpose) func(ctx context.C
 		f.mu.RLock()
 		proxyURL := f.proxyURLForPurpose(purpose)
 		proxyCfg := f.proxyConfig
+		roots := f.proxyRoots
 		f.mu.RUnlock()
 
 		if proxyURL == nil || connectDirect(DialAddrHost(addr), proxyCfg) {
 			return (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", addr)
 		}
-		return DialViaProxyTLS(ctx, proxyURL, addr, proxyCfg.proxyTLS())
+		return DialViaProxyTLS(ctx, proxyURL, addr, proxyCfg.proxyTLS(roots))
 	}
 }
 
@@ -1042,27 +1155,89 @@ func DialViaProxyTLS(ctx context.Context, proxyURL *url.URL, addr string, proxyT
 		}
 		return socks.(xproxy.ContextDialer).DialContext(ctx, "tcp", addr)
 	case "http", "":
-		return dialHTTPConnect(ctx, dialer, proxyURL, addr, nil)
+		return dialHTTPConnect(ctx, dialer.DialContext, proxyURL, addr, nil)
 	case "https":
-		cfg := &tls.Config{MinVersion: tls.VersionTLS12}
-		if proxyTLS != nil {
-			cfg = proxyTLS.Clone()
-		}
-		if cfg.ServerName == "" {
-			cfg.ServerName = proxyURL.Hostname()
-		}
-		// The tunnel speaks HTTP/1.1 CONNECT; never let ALPN pick h2 for the proxy hop.
-		cfg.NextProtos = []string{"http/1.1"}
-		return dialHTTPConnect(ctx, dialer, proxyURL, addr, cfg)
+		return dialHTTPConnect(ctx, dialer.DialContext, proxyURL, addr, httpsProxyHopConfig(proxyURL, proxyTLS))
 	default:
 		return nil, fmt.Errorf("unsupported proxy scheme %q", proxyURL.Scheme)
 	}
 }
 
-// dialHTTPConnect opens a tunnel to addr through an HTTP proxy with CONNECT. A non-nil
-// proxyTLS wraps the proxy connection in TLS first (an https proxy).
-func dialHTTPConnect(ctx context.Context, dialer *net.Dialer, proxyURL *url.URL, addr string, proxyTLS *tls.Config) (net.Conn, error) {
-	conn, err := dialer.DialContext(ctx, "tcp", proxyDialAddr(proxyURL))
+// httpsProxyHopConfig is the TLS config for the hop to an https proxy: a copy of
+// proxyTLS (nil means the system roots), named for the proxy's host and limited to
+// HTTP/1.1, since the tunnel speaks CONNECT and ALPN must never pick h2 for it.
+func httpsProxyHopConfig(proxyURL *url.URL, proxyTLS *tls.Config) *tls.Config {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if proxyTLS != nil {
+		cfg = proxyTLS.Clone()
+	}
+	if cfg.ServerName == "" {
+		cfg.ServerName = proxyURL.Hostname()
+	}
+	cfg.NextProtos = []string{"http/1.1"}
+	return cfg
+}
+
+// DialHTTPSProxyWithHopTLS makes transport reach an https:// proxy with hopTLS instead
+// of TLSClientConfig, which net/http otherwise uses for the TLS session to the proxy as
+// well as to the target. A request whose Proxy func picks an https:// proxy is handed to
+// DialContext as a direct one, and DialContext opens a CONNECT tunnel to the target over
+// TLS to the proxy, reaching the proxy with the transport's own DialContext so its dial
+// policy still applies to the proxy address. net/http then speaks TLS to the target over
+// that tunnel with TLSClientConfig, as it would after its own CONNECT. The proxy picked
+// for each target host:port is kept until a later request picks another.
+func DialHTTPSProxyWithHopTLS(transport *http.Transport, hopTLS *tls.Config) {
+	proxy := transport.Proxy
+	if proxy == nil {
+		return
+	}
+	var viaHTTPSProxy sync.Map // target host:port -> *url.URL
+	transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		proxyURL, err := proxy(req)
+		addr := canonicalTargetAddr(req.URL)
+		if err != nil || proxyURL == nil || proxyURL.Scheme != "https" {
+			viaHTTPSProxy.Delete(addr)
+			return proxyURL, err
+		}
+		viaHTTPSProxy.Store(addr, proxyURL)
+		return nil, nil
+	}
+	direct := transport.DialContext
+	if direct == nil {
+		direct = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	}
+	transport.DialContext = func(ctx context.Context, netw, addr string) (net.Conn, error) {
+		value, ok := viaHTTPSProxy.Load(addr)
+		if !ok {
+			return direct(ctx, netw, addr)
+		}
+		proxyURL := value.(*url.URL)
+		if _, ok := ctx.Deadline(); !ok {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, ProxyHandshakeTimeout)
+			defer cancel()
+		}
+		return dialHTTPConnect(ctx, direct, proxyURL, addr, httpsProxyHopConfig(proxyURL, hopTLS))
+	}
+}
+
+// canonicalTargetAddr is the host:port net/http dials for a direct request to u.
+func canonicalTargetAddr(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" || u.Scheme == "wss" {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port)
+}
+
+// dialHTTPConnect opens a tunnel to addr through an HTTP proxy with CONNECT, reaching the
+// proxy with dial. A non-nil proxyTLS wraps the proxy connection in TLS first (an https
+// proxy).
+func dialHTTPConnect(ctx context.Context, dial func(ctx context.Context, netw, addr string) (net.Conn, error), proxyURL *url.URL, addr string, proxyTLS *tls.Config) (net.Conn, error) {
+	conn, err := dial(ctx, "tcp", proxyDialAddr(proxyURL))
 	if err != nil {
 		return nil, fmt.Errorf("dial proxy: %w", err)
 	}
