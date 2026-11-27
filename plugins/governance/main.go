@@ -16,6 +16,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/livestore"
@@ -702,7 +703,7 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 		if access != nil && runsAsWritten(ctx) {
 			access = literalAccessFor(access, p.modelCatalog, p.live)
 		}
-		return resolveLimitsWith(ctx, p.store, access, evaluationRequest.Provider, evaluationRequest.Model)
+		return resolveLimitsWith(ctx, p.store, access, evaluationRequest.RequestType, evaluationRequest.Provider, evaluationRequest.Model)
 	}()
 
 	// The order of everything below is load bearing:
@@ -946,6 +947,56 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	access := p.newAccess(ctx, bases, levelMode, scoping, mode)
 	g.SetAccess(access)
 	return access, nil
+}
+
+// budgetSettingsReader reads a budget's stored settings without the copy LoadBudget returns.
+// LocalGovernanceStore implements it, and so does any store embedding it.
+type budgetSettingsReader interface {
+	budgetSettings(id string) (*configstoreTables.TableBudget, bool)
+}
+
+// budgetSettingsOf returns the settings of budget id, or nil when the store holds none. Read once
+// per budget on every request, so a store that can lend its settings is read without allocating;
+// any other store falls back to LoadBudget's copy.
+func budgetSettingsOf(ctx context.Context, store GovernanceStore, id string) *configstoreTables.TableBudget {
+	if reader, ok := store.(budgetSettingsReader); ok {
+		settings, _ := reader.budgetSettings(id)
+		return settings
+	}
+	return store.LoadBudget(ctx, id)
+}
+
+// budgetsForRequestKind drops the budgets that are not charged by traffic of the given scope, which a
+// request's type gives through configstoreTables.RequestScope.
+//
+// Applied to what the store gathered rather than inside the store, so every holder a store composes
+// (keys, teams, customers, model configs, and whatever a deployment layers on top) is filtered by
+// the same rule without each needing to know about request kinds. Budgets are read by ID from the
+// store, the way enforcement reads them; one the store cannot load is kept, since enforcement skips
+// it anyway. The common case, where every budget applies, returns the input without allocating.
+func budgetsForRequestKind(ctx context.Context, store GovernanceStore, budgets []schemas.Limit, traffic configstoreTables.LimitScope) []schemas.Limit {
+	var kept []schemas.Limit
+	for i, limit := range budgets {
+		budget := budgetSettingsOf(ctx, store, limit.ID)
+		applies := budget == nil || budget.Scope.AppliesTo(traffic)
+		if kept == nil {
+			if applies {
+				continue
+			}
+			// First budget to drop: copy what was kept so far rather than filtering in place, since
+			// the gathered slice may share a backing array with the store's.
+			kept = make([]schemas.Limit, i, len(budgets)-1)
+			copy(kept, budgets[:i])
+			continue
+		}
+		if applies {
+			kept = append(kept, limit)
+		}
+	}
+	if kept == nil {
+		return budgets
+	}
+	return kept
 }
 
 // PreRequestHook is the per-request governance phase: it resolves the request's access, completes
@@ -1789,6 +1840,10 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 		if modelUsage.Cost > 0 {
 			for _, budgetID := range budgetIDs {
 				if alreadyCharged["budget:"+budgetID] {
+					continue
+				}
+				// A batch is model traffic: an MCP-only budget on the tiers collected here is never its to spend.
+				if budget := p.store.LoadBudget(ctx, budgetID); budget != nil && !budget.Scope.AppliesTo(configstoreTables.LimitScopeModel) {
 					continue
 				}
 				// Keyed per model: one budget reached by two models must take both shares.
