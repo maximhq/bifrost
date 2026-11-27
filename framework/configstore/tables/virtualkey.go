@@ -43,6 +43,8 @@ type TableVirtualKeyProviderConfig struct {
 	// only. They live in VK-scoped model configs (the source of truth), not this table; the
 	// handler hydrates this field when returning a VK so the sheet can render/edit them.
 	ModelBudgets []VKProviderModelBudget `gorm:"-" json:"model_budgets,omitempty"`
+	// RequestLimits are the provider tier's request limits, hydrated from its VK-scoped model config (serialization only).
+	RequestLimits []TableRateLimit `gorm:"-" json:"request_limits,omitempty"`
 }
 
 // KeyIDs returns the list of key IDs for this provider config, or ["*"] if AllowAllKeys is true.
@@ -60,9 +62,10 @@ func (pc *TableVirtualKeyProviderConfig) KeyIDs() []string {
 // VKProviderModelBudget is one per-model budget/rate-limit group under a VK provider config,
 // used purely for serialization (reverse-mapped from a VK-scoped model config).
 type VKProviderModelBudget struct {
-	ModelName string          `json:"model_name"`
-	Budgets   []TableBudget   `json:"budgets,omitempty"`
-	RateLimit *TableRateLimit `json:"rate_limit,omitempty"`
+	ModelName     string           `json:"model_name"`
+	Budgets       []TableBudget    `json:"budgets,omitempty"`
+	RateLimit     *TableRateLimit  `json:"rate_limit,omitempty"`
+	RequestLimits []TableRateLimit `json:"request_limits,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -298,6 +301,8 @@ type TableVirtualKey struct {
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
 	Budgets   []TableBudget   `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
+	// RequestLimits are the key's own request limits, hydrated from its holder-level VK-scoped model config (serialization only).
+	RequestLimits []TableRateLimit `gorm:"-" json:"request_limits,omitempty"`
 
 	// IsAccessProfileManaged is a read-only, computed flag (never persisted): true when
 	// the VK is governed by an access profile, so the UI can lock edits and show the
