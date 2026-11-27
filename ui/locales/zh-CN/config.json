@@ -1187,6 +1187,7 @@
 		"conversationSearchHelp": "Warp 把已完成的对话嵌入向量库，并用来按含义查找日志。那里只存向量和运行元数据；对话正文仍留在日志存储中。",
 		"vectorConnected": "向量存储已连接",
 		"vectorDisconnected": "向量存储未连接",
+		"vectorConnectedTo": "已连接到 {{name}}（{{type}}）",
 		"embeddingProvider": "嵌入供应商",
 		"selectEmbeddingProvider": "选择嵌入供应商",
 		"noEmbeddingProviders": "已配置的供应商均不支持嵌入。请先添加支持嵌入的供应商——OpenAI、Azure OpenAI、Bedrock、Vertex 或 Cohere——再启用 Warp。",

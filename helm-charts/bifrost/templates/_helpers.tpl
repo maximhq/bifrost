@@ -353,6 +353,8 @@ false
 {{- if hasKey . "embeddingDimension" }}{{- $_ := set $warp "embedding_dimension" (.embeddingDimension | int) }}{{- end }}
 {{- /* hasKey: "" must reset to the default namespace, since an omitted one keeps the stored value */ -}}
 {{- if hasKey . "logVectorStoreNamespace" }}{{- $_ := set $warp "log_vector_store_namespace" .logVectorStoreNamespace }}{{- end }}
+{{- /* hasKey: "" must choose the primary store, since an omitted one keeps the stored choice */ -}}
+{{- if hasKey . "vectorStore" }}{{- $_ := set $warp "vector_store" .vectorStore }}{{- end }}
 {{- if hasKey . "semanticSearchThreshold" }}{{- $_ := set $warp "semantic_search_threshold" (.semanticSearchThreshold | float64) }}{{- end }}
 {{- if hasKey . "semanticSearchLimit" }}{{- $_ := set $warp "semantic_search_limit" (.semanticSearchLimit | int) }}{{- end }}
 {{- if hasKey . "topicDiscoveryMinRequests" }}{{- $_ := set $warp "topic_discovery_min_requests" (.topicDiscoveryMinRequests | int) }}{{- end }}

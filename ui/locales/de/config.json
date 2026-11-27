@@ -1217,6 +1217,7 @@
 		"conversationSearchHelp": "Warp bettet abgeschlossene Unterhaltungen in den Vektorspeicher ein und nutzt sie, um Protokolle nach Bedeutung zu finden. Dort liegen nur Vektoren und operative Metadaten; der Unterhaltungstext bleibt im Protokollspeicher.",
 		"vectorConnected": "Vektorspeicher verbunden",
 		"vectorDisconnected": "Vektorspeicher getrennt",
+		"vectorConnectedTo": "Verbunden mit {{name}} ({{type}})",
 		"embeddingProvider": "Embedding-Anbieter",
 		"selectEmbeddingProvider": "Embedding-Anbieter auswählen",
 		"noEmbeddingProviders": "Keiner der konfigurierten Anbieter unterstützt Embeddings. Einen hinzufügen, der das tut – OpenAI, Azure OpenAI, Bedrock, Vertex oder Cohere – bevor Warp aktiviert wird.",

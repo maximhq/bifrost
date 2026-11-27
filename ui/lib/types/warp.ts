@@ -67,7 +67,14 @@ export interface WarpConfig {
 	semantic_search_limit: number;
 	/** How many requests that matched no topic start a discovery of new topics. */
 	topic_discovery_min_requests: number;
+	/** Equals connected_vector_store !== null, given a choice of stores. */
 	vector_store_connected: boolean;
+	/** The store config.json names for Warp's log index (warp.vector_store), read at startup; "" is the primary vector_store. */
+	vector_store: string;
+	/** The store Warp's index is in while Warp can use it; null when it has none. */
+	connected_vector_store: WarpConnectedVectorStore | null;
+	/** Why Warp has no store, set only when connected_vector_store is null and there is a specific reason. */
+	vector_store_error?: string;
 	/** Whether the gateway's Bifrost MCP is loaded. While bifrost_mcp_enabled, Warp does not answer without it. */
 	bifrost_mcp_available: boolean;
 	/** Whether Warp uses the Bifrost MCP at all. Off for now: no setup step, no management tools section. */
@@ -78,6 +85,13 @@ export interface WarpConfig {
 	management_writes_available: boolean;
 	/** Per kind, what Warp could be offered and roughly what it adds to every request. Absent while the Bifrost MCP is not loaded. */
 	management_tool_sizes?: WarpManagementToolSize[];
+}
+
+/** The vector store Warp's log index is in. Mirrors warp.ConnectedVectorStore. */
+export interface WarpConnectedVectorStore {
+	name: string;
+	type: string;
+	primary: boolean;
 }
 
 /** A kind of configuration change Warp may offer. Mirrors schemas.WarpManagementWrites. */

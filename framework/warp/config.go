@@ -40,7 +40,13 @@ type ConfigView struct {
 	// TopicDiscoveryMinRequests is how many requests that matched no topic
 	// start a discovery.
 	TopicDiscoveryMinRequests int  `json:"topic_discovery_min_requests"`
-	VectorStoreConnected      bool `json:"vector_store_connected"`
+	VectorStoreConnected      bool `json:"vector_store_connected"` // ConnectedVectorStore is not nil, given a choice of stores
+	// VectorStore is the store config.json names for the log index (warp.vector_store); "" is
+	// the primary vector_store. ConnectedVectorStore is that store while Warp can use it, nil
+	// when it has none, and VectorStoreError then says why when there is more to say.
+	VectorStore          string                `json:"vector_store"`
+	ConnectedVectorStore *ConnectedVectorStore `json:"connected_vector_store"`
+	VectorStoreError     string                `json:"vector_store_error,omitempty"`
 	// ManagementWrites are the kinds of change Warp may offer; empty is reads only.
 	ManagementWrites []string `json:"management_writes"`
 	// ManagementWritesAvailable is whether the Bifrost MCP serves writes at all
@@ -91,6 +97,9 @@ type ConfigInput struct {
 	// ManagementWrites are the kinds of change Warp may offer, from
 	// schemas.WarpManagementWrites. Omitted keeps the stored value; [] is reads only.
 	ManagementWrites []string `json:"management_writes,omitempty"`
+	// VectorStore can only repeat the store config.json names (ConfigView.VectorStore), so a
+	// client that saves back what it read is accepted; it is chosen in config.json, at startup.
+	VectorStore *string `json:"vector_store,omitempty"`
 
 	// present records the keys the decoded request carried. See UnmarshalJSON.
 	present map[string]bool
@@ -224,7 +233,7 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 	}
 	if row == nil {
 		_, catalog := s.managementTools()
-		return ConfigView{
+		view := ConfigView{
 			MaxIterations:             schemas.WarpDefaultMaxIterations,
 			RequestTimeoutSeconds:     schemas.WarpDefaultRequestTimeoutSeconds,
 			HistoryRetentionDays:      schemas.WarpDefaultHistoryRetentionDays,
@@ -232,13 +241,14 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 			SemanticSearchThreshold:   schemas.WarpDefaultSemanticSearchThreshold,
 			SemanticSearchLimit:       schemas.WarpDefaultSemanticSearchLimit,
 			TopicDiscoveryMinRequests: schemas.WarpDefaultTopicDiscoveryMinRequests,
-			VectorStoreConnected:      s.vectorStore != nil,
 			ManagementWrites:          []string{},
 			ManagementWritesAvailable: catalog.hasWrites(),
 			ManagementToolSizes:       catalog.sizes(),
 			BifrostMCPAvailable:       s.bifrostMCPAvailable(),
 			BifrostMCPEnabled:         s.bifrostMCP,
-		}, nil
+		}
+		view.VectorStore, view.VectorStoreConnected, view.ConnectedVectorStore, view.VectorStoreError = s.vectorStoreStatus()
+		return view, nil
 	}
 	return s.configViewFromRow(row), nil
 }
@@ -257,6 +267,11 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	if err != nil {
 		return ConfigView{}, err
 	}
+	// The store is chosen in config.json and read at startup: a save can repeat it, as a client
+	// sending back the configuration it read does, but not change it.
+	if input != nil && input.VectorStore != nil && strings.TrimSpace(*input.VectorStore) != s.vectorChoiceName {
+		return ConfigView{}, fmt.Errorf("%w: vector_store is set in config.json (warp.vector_store) and takes effect at restart; a save can only repeat %q", ErrInvalidConfig, s.vectorChoiceName)
+	}
 	applyStoredEmbeddingSettings(input, previous)
 	if err := ValidateConfigInput(input); err != nil {
 		return ConfigView{}, err
@@ -268,8 +283,12 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 			return ConfigView{}, err
 		}
 	}
-	if input.Enabled && s.vectorStore == nil {
-		return ConfigView{}, ErrNoVectorStore
+	// Turning Warp on needs a store to index into. A Warp already on whose store is unavailable
+	// (config.json names one that failed at startup, or none) still saves its other settings:
+	// the store is fixed in config.json and a restart that reaches it is what brings the index
+	// back. Its namespace is then provisioned by the indexer, on the first log it writes.
+	if input.Enabled && s.vectorStore == nil && (previous == nil || !previous.Enabled) {
+		return ConfigView{}, s.noVectorStore()
 	}
 	// Everything that can reject the save happens before anything is created in
 	// the vector store. Provisioning first left a namespace behind whenever the
@@ -304,7 +323,7 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	if embeddingSpaceChanged(previous, input) {
 		retired = appendUnique(retired, normalizedNamespace(previous.LogVectorStoreNamespace))
 	}
-	if input.Enabled {
+	if input.Enabled && s.vectorStore != nil {
 		// Still ahead of the write: a namespace that cannot be created is a save
 		// that cannot work, and the config must not claim otherwise.
 		//
@@ -667,11 +686,11 @@ func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 		SemanticSearchThreshold:   config.EffectiveSemanticSearchThreshold(),
 		SemanticSearchLimit:       config.EffectiveSemanticSearchLimit(),
 		TopicDiscoveryMinRequests: config.EffectiveTopicDiscoveryMinRequests(),
-		VectorStoreConnected:      s.vectorStore != nil,
 		ManagementWrites:          nonNilStrings(config.ManagementWrites),
 		BifrostMCPAvailable:       s.bifrostMCPAvailable(),
 		BifrostMCPEnabled:         s.bifrostMCP,
 	}
+	view.VectorStore, view.VectorStoreConnected, view.ConnectedVectorStore, view.VectorStoreError = s.vectorStoreStatus()
 	_, catalog := s.managementTools()
 	view.ManagementWritesAvailable = catalog.hasWrites()
 	view.ManagementToolSizes = catalog.sizes()

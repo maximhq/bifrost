@@ -62,6 +62,9 @@ import {
 	validateWarpMaxIterations,
 	validateWarpRetentionDays,
 	warpSavedSpaceKey,
+	warpUnavailableMessage,
+	warpVectorStoreBadge,
+	warpVectorStoreRequirementMet,
 	type RetainedWarpBackfill,
 } from "./warpView.utils";
 
@@ -434,6 +437,8 @@ export default function WarpView() {
 			form.discoveryMinRequests !== (config.topic_discovery_min_requests || DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS) ||
 			warpManagementWritesChanged(form.managementWrites, config.management_writes));
 
+	const vectorStoreBadge = warpVectorStoreBadge(config);
+
 	// The server enforces the same rules; checking here only saves a round trip.
 	const defaultModel = form.models[0];
 	const missingRequired = form.enabled && (!defaultModel?.provider || !defaultModel?.model);
@@ -456,7 +461,7 @@ export default function WarpView() {
 		form.discoveryMinRequests < MIN_TOPIC_DISCOVERY_MIN_REQUESTS ||
 		form.discoveryMinRequests > MAX_TOPIC_DISCOVERY_MIN_REQUESTS;
 	const embeddingFields: WarpEmbeddingFields = form;
-	const embeddingValidation = validateWarpEmbedding(embeddingFields, form.enabled, config?.vector_store_connected ?? false);
+	const embeddingValidation = validateWarpEmbedding(embeddingFields, form.enabled, warpVectorStoreRequirementMet(config));
 	const savedEmbeddingFields: WarpEmbeddingFields = {
 		embeddingProvider: config?.embedding_provider ?? "",
 		embeddingModel: config?.embedding_model ?? "",
@@ -521,7 +526,8 @@ export default function WarpView() {
 			await updateWarpConfig(payload).unwrap();
 			toast.success(t("warp.saved"));
 		} catch (error) {
-			toast.error(getErrorMessage(error));
+			// A 503 refusal (the store config.json names is unavailable) carries {reason, message}, not {error: {message}}.
+			toast.error(warpUnavailableMessage(error) ?? getErrorMessage(error));
 		}
 	};
 
@@ -556,7 +562,7 @@ export default function WarpView() {
 			setActiveBackfillID(status.id ?? null);
 			toast.success(restart ? t("warp.backfillRestarted") : t("warp.backfillStarted"));
 		} catch (error) {
-			toast.error(getErrorMessage(error));
+			toast.error(warpUnavailableMessage(error) ?? getErrorMessage(error));
 		}
 	};
 
@@ -864,13 +870,20 @@ export default function WarpView() {
 							title={t("warp.conversationSearch")}
 							description={t("warp.conversationSearchHelp")}
 							action={
-								<Badge variant={config?.vector_store_connected ? "secondary" : "destructive"} data-testid="warp-vector-store-status">
-									{config?.vector_store_connected ? (
-										<CheckCircle2 className="mr-1 h-3.5 w-3.5" />
-									) : (
-										<Database className="mr-1 h-3.5 w-3.5" />
+								<Badge
+									variant={vectorStoreBadge.connected ? "secondary" : "destructive"}
+									// The server's reason can be a sentence, so it wraps instead of stretching the header.
+									className={cn(
+										!vectorStoreBadge.connected && vectorStoreBadge.error && "max-w-xs justify-start text-left whitespace-normal",
 									)}
-									{config?.vector_store_connected ? t("warp.vectorConnected") : t("warp.vectorDisconnected")}
+									data-testid="warp-vector-store-status"
+								>
+									{vectorStoreBadge.connected ? <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> : <Database className="mr-1 h-3.5 w-3.5" />}
+									{vectorStoreBadge.connected
+										? vectorStoreBadge.name !== null
+											? t("warp.vectorConnectedTo", { name: vectorStoreBadge.name, type: vectorStoreBadge.type })
+											: t("warp.vectorConnected")
+										: (vectorStoreBadge.error ?? t("warp.vectorDisconnected"))}
 								</Badge>
 							}
 						>

@@ -1217,6 +1217,7 @@
 		"conversationSearchHelp": "Warp intègre les conversations terminées dans le magasin vectoriel et s'en sert pour trouver des journaux par le sens. Seuls les vecteurs et les métadonnées opérationnelles y sont stockés ; le texte de la conversation reste dans le magasin de journaux.",
 		"vectorConnected": "Magasin vectoriel connecté",
 		"vectorDisconnected": "Magasin vectoriel déconnecté",
+		"vectorConnectedTo": "Connecté à {{name}} ({{type}})",
 		"embeddingProvider": "Fournisseur d'embeddings",
 		"selectEmbeddingProvider": "Sélectionner un fournisseur d'embeddings",
 		"noEmbeddingProviders": "Aucun des fournisseurs configurés ne prend en charge les embeddings. Ajoutez-en un qui le fait — OpenAI, Azure OpenAI, Bedrock, Vertex ou Cohere — avant d'activer Warp.",

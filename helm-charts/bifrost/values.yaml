@@ -407,6 +407,7 @@ bifrost:
   #   embeddingApiKeyId: ""
   #   embeddingDimension: 1536            # Vector size the embedding model returns
   #   logVectorStoreNamespace: "BifrostWarpLogs"  # Change whenever the embedding provider, model or dimension changes
+  #   vectorStore: ""                     # Store the log index is kept in, by name (vectorStore.name or a vectorStores entry); "" = primary
   #   semanticSearchThreshold: 0.5        # Minimum similarity for a log search match; 0 resets to the default
   #   semanticSearchLimit: 10             # Most matches per search (max 25); 0 resets to the default
   #   topicDiscoveryMinRequests: 100      # Unmatched requests that start a new-topic discovery (10-20000); 0 resets to the default

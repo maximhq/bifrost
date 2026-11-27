@@ -1193,6 +1193,7 @@
 		"conversationSearchHelp": "Warp incrusta las conversaciones terminadas en el almacén de vectores y las usa para encontrar registros por significado. Allí solo se guardan vectores y metadatos operativos; el texto de la conversación permanece en el almacén de registros.",
 		"vectorConnected": "Almacén vectorial conectado",
 		"vectorDisconnected": "Almacén vectorial desconectado",
+		"vectorConnectedTo": "Conectado a {{name}} ({{type}})",
 		"embeddingProvider": "Proveedor de embeddings",
 		"selectEmbeddingProvider": "Seleccionar proveedor de embeddings",
 		"noEmbeddingProviders": "Ninguno de los proveedores configurados admite embeddings. Añade uno que sí lo haga (OpenAI, Azure OpenAI, Bedrock, Vertex o Cohere) antes de habilitar Warp.",

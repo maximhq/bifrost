@@ -1254,6 +1254,11 @@ func topicStoreOf(logs LogReader) logstore.WarpTopicStore {
 // or model is ErrUnavailable from Config, not ErrInvalidConfig: IsConfigured
 // requires both, so only the time range is a caller error here.
 func (s *Service) BuildTopicsJobMeta(ctx context.Context, start, end time.Time) (string, error) {
+	// No store is its own error, before the rest: when the store config.json names is
+	// unavailable, that is what the admin has to fix, not "not configured".
+	if s.vectorStore == nil && s.vectorChoice != nil && s.logs != nil && s.store != nil {
+		return "", s.noVectorStore()
+	}
 	if s.vectorStore == nil || s.logs == nil || s.store == nil {
 		return "", ErrUnavailable
 	}
@@ -1319,7 +1324,7 @@ func (s *Service) HasIndexedRequests(ctx context.Context) (bool, error) {
 	vectors := s.vectorStore
 	s.mu.RUnlock()
 	if vectors == nil {
-		return false, ErrNoVectorStore
+		return false, s.noVectorStore() // which store config.json names, and why it is unavailable
 	}
 	config, err := s.Config(ctx)
 	if err != nil {

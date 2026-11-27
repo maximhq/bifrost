@@ -279,6 +279,28 @@ Vectors from different embedding models cannot be compared. When you change the 
 
 You cannot change the embedding configuration while a backfill is running. Cancel it first.
 
+### Choose the vector store
+
+Warp keeps its log index in the primary `vector_store` unless `config.json` names another store with `warp.vector_store`. That store must be one of the [`vector_stores`](/deployment-guides/config-json/storage#more-than-one-store-vector_stores) entries, or `""` for the primary. In Helm, set `bifrost.warp.vectorStore`.
+
+```json
+{
+  "warp": {
+    "vector_store": "warp-qdrant"
+  }
+}
+```
+
+The choice is read at startup. The settings page shows which store Warp uses under **Conversation search**, but you can't change it there. `PUT /api/warp/config` accepts `vector_store` only when it repeats the store `config.json` names, as a client sending back the configuration it read does, and refuses any other value with `400`. To change it:
+
+1. Set `warp.vector_store` in `config.json` and restart Bifrost. During a rolling restart, nodes still on the old setting keep indexing into the old store until they restart.
+2. Run a backfill. The new store starts empty, and a backfill into the old store is no longer shown, so the page offers a new one. The page also offers a new one when the data behind a store's name changes: after an in-memory store restarts, or after its name is pointed at another endpoint. A stopped backfill doesn't resume into data it never wrote.
+3. Delete Warp's namespace (`log_vector_store_namespace`) from the old store, unless both names reach the same data: a store renamed in `config.json`, or an entry that shares another's connection (the **Vector Stores** page says so). Then the old and new names are the same store, its namespace is the index Warp uses now, and there is nothing to delete or backfill. Otherwise Bifrost leaves the old namespace there, and it no longer receives log deletes or retention sweeps, so vectors of logs deleted from now on stay in it until you delete it. If you switch back to that store later, delete the namespace before you do, or it still holds those vectors.
+
+A section that names only `vector_store` changes no other Warp settings, and changing only `vector_store` doesn't count as a change to the settings the section declares.
+
+If the chosen store isn't configured, is disabled, or can't be reached at startup, Warp doesn't fall back to another store. Chat keeps working without semantic log search, new logs aren't indexed, and starting a backfill or a topics run answers `503` with reason `no_vector_store`, naming the store and why. While a store `config.json` still configures can't be reached (it failed at startup, or is disabled), deleted logs' vector deletes are queued and retried after a restart that reaches it. A store removed from `config.json` gets nothing queued: if you configure it again later, vectors of logs deleted in between are still in it, so delete Warp's namespace there yourself. Turning Warp on is refused until the store works. A Warp that was already on still saves its other settings, and turning Warp off is always allowed.
+
 ---
 
 ## Use Warp
@@ -458,8 +480,8 @@ The response body has a `reason` field:
 
 ### The Enable Warp switch is disabled
 
-**Cause:** No vector store is connected.
-**Fix:** Configure a [vector store](/architecture/framework/vector-store). The settings page shows the connection status under **Conversation search**.
+**Cause:** No vector store is connected, or the store `config.json` names for Warp is unavailable.
+**Fix:** Configure a [vector store](/architecture/framework/vector-store), or [name a working one](#choose-the-vector-store) and restart. The settings page shows the connection status, and why the chosen store is unavailable, under **Conversation search**.
 
 ### Saving fails with "namespace must change"
 

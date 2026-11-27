@@ -171,8 +171,12 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 	turn, err := h.service.NewTurn(ctx, &request, len(ctx.PostBody()))
 	switch {
 	case errors.Is(err, warp.ErrNoVectorStore):
-		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore,
-			"Warp requires a connected vector store for semantic log search.")
+		message := "Warp requires a connected vector store for semantic log search."
+		var unavailable *warp.VectorStoreUnavailableError
+		if errors.As(err, &unavailable) {
+			message = unavailable.Error() + "."
+		}
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore, message)
 		return
 	case errors.Is(err, warp.ErrUnavailable):
 		h.sendUnavailable(ctx, schemas.WarpUnavailableNotConfigured,

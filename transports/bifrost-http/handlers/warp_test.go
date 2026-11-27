@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -97,16 +98,29 @@ func newBackfillTestHandler(t *testing.T) (*WarpHandler, *fakeSidekiqStore, func
 // topics live in, for a test that writes them.
 func newTopicsTestHandler(t *testing.T) (*WarpHandler, *fakeSidekiqStore, logstore.LogStore, func()) {
 	t.Helper()
-	topics := handlerTopicStore(t)
-	config := &recordingWarpStore{row: &tables.TableWarpConfig{
+	return newWarpJobsTestHandler(t, warpJobsTestRow())
+}
+
+// warpJobsTestRow is the configuration row the job handler tests run under.
+func warpJobsTestRow() *tables.TableWarpConfig {
+	return &tables.TableWarpConfig{
 		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
 		EmbeddingProvider: "openai", EmbeddingModel: "embed", EmbeddingDimension: 2, LogVectorStoreNamespace: "WarpLogs",
-	}}
+	}
+}
+
+// newWarpJobsTestHandler is newTopicsTestHandler over the given configuration row, with the
+// given options after the defaults.
+func newWarpJobsTestHandler(t *testing.T, row *tables.TableWarpConfig, extra ...warp.Option) (*WarpHandler, *fakeSidekiqStore, logstore.LogStore, func()) {
+	t.Helper()
+	topics := handlerTopicStore(t)
+	config := &recordingWarpStore{row: row}
 	jobs := newFakeSidekiqStore()
 	runner := sidekiq.New(jobs, &mockLogger{}, 1, "")
-	service := warpServiceForTest(t, nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{topics: topics}), warp.WithVectorStore(handlerVectorStore{}), warp.WithEmbeddingExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	opts := []warp.Option{warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{topics: topics}), warp.WithVectorStore(handlerVectorStore{}), warp.WithEmbeddingExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0, 1}}}}}, nil
-	}))
+	})}
+	service := warpServiceForTest(t, nil, append(opts, extra...)...)
 	service.RegisterBackfill(runner)
 	handler := &WarpHandler{service: service, sidekiqRunner: runner, backfillStore: jobs}
 	return handler, jobs, topics, func() { runner.Shutdown(); service.Shutdown() }
@@ -1598,4 +1612,105 @@ func warpServiceForTest(t testing.TB, store configstore.ConfigStore, opts ...war
 		t.Fatal(err)
 	}
 	return service
+}
+
+// warpHandlerStores is a registry of a primary store "shared", a connected
+// "warp-qdrant", and "down", which failed at startup.
+func warpHandlerStores(t *testing.T) *vectorstore.Registry {
+	t.Helper()
+	qdrant := func(name, host string) vectorstore.Config {
+		return vectorstore.Config{Name: name, Enabled: true, Type: vectorstore.VectorStoreTypeQdrant, Config: vectorstore.QdrantConfig{Host: *schemas.NewSecretVar(host)}}
+	}
+	primary := qdrant("shared", "shared")
+	registry, err := vectorstore.OpenRegistry(context.Background(), &primary, []vectorstore.Config{qdrant("warp-qdrant", "warp"), qdrant("down", "down")}, nil,
+		vectorstore.RegistryOptions{Connect: func(_ context.Context, config *vectorstore.Config, _ schemas.Logger) (vectorstore.VectorStore, error) {
+			if config.Name == "down" {
+				return nil, errors.New("connection refused")
+			}
+			return handlerVectorStore{}, nil
+		}})
+	require.NoError(t, err)
+	return registry
+}
+
+// The settings page names the store config.json keeps Warp's index in, and a save that names a
+// store is a 400 saying where it is set: the choice is read at startup.
+func TestWarpConfigNamesItsVectorStoreAndASaveCannotChangeIt(t *testing.T) {
+	handler, _, _, cleanup := newWarpJobsTestHandler(t, warpJobsTestRow(), warp.WithVectorStores(warpHandlerStores(t), "warp-qdrant"))
+	defer cleanup()
+
+	getCtx := adminCtx("")
+	handler.getConfig(getCtx)
+	require.Equal(t, fasthttp.StatusOK, getCtx.Response.StatusCode(), string(getCtx.Response.Body()))
+	got := string(getCtx.Response.Body())
+	assert.Contains(t, got, `"vector_store":"warp-qdrant"`)
+	assert.Contains(t, got, `"connected_vector_store":{"name":"warp-qdrant","type":"qdrant","primary":false}`)
+
+	ctx := adminCtx(`{"enabled":true,"provider":"openai","model":"gpt-4o","vector_store":"shared"}`)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "vector_store is set in config.json (warp.vector_store) and takes effect at restart")
+
+	// A client that saves back the configuration it read, as the harness restores Warp after a
+	// case, sends the store config.json names, which is accepted.
+	roundTrip := adminCtx(string(getCtx.Response.Body()))
+	handler.putConfig(roundTrip)
+	require.Equal(t, fasthttp.StatusOK, roundTrip.Response.StatusCode(), string(roundTrip.Response.Body()))
+	assert.Contains(t, string(roundTrip.Response.Body()), `"vector_store":"warp-qdrant"`)
+}
+
+// Starting a backfill while the store config.json names is unavailable is a 503 with the
+// no_vector_store reason the dashboard branches on, naming the store and why.
+func TestWarpJobStartWithAnUnavailableStoreSaysWhich(t *testing.T) {
+	handler, _, _, cleanup := newWarpJobsTestHandler(t, warpJobsTestRow(), warp.WithVectorStores(warpHandlerStores(t), "down"))
+	defer cleanup()
+	ctx := adminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	handler.startBackfill(ctx)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	body := string(ctx.Response.Body())
+	assert.Contains(t, body, string(schemas.WarpUnavailableNoVectorStore))
+	assert.Contains(t, body, `Warp's vector store \"down\" could not be reached at startup`)
+}
+
+// After a restart where config.json names another store, a finished backfill into the old one
+// says nothing about the new index: the settings page and the tray show no run, so a new
+// backfill is offered. A run into the store in use is shown, and so is one still in flight
+// from the old store, which holds the slot.
+func TestWarpBackfillStatusHidesARunIntoAnotherStore(t *testing.T) {
+	registry := warpHandlerStores(t)
+	handler, jobs, _, cleanup := newWarpJobsTestHandler(t, warpJobsTestRow(), warp.WithVectorStores(registry, "warp-qdrant"))
+	defer cleanup()
+	shared, _ := registry.Get("shared")
+	qdrant, _ := registry.Get("warp-qdrant")
+	current, err := handler.service.BuildBackfillJobMeta(context.Background(), time.Unix(1, 0), time.Unix(2, 0), false)
+	require.NoError(t, err)
+	require.Contains(t, current, qdrant.ID)
+	var meta warp.BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(current), &meta))
+	meta.VectorStoreID = shared.ID
+	elsewhere, err := sonic.Marshal(meta)
+	require.NoError(t, err)
+	jobs.latest = &tables.TableSidekiqJob{ID: "job-done", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusCompleted, Metadata: string(elsewhere)}
+
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	assert.NotContains(t, string(statusCtx.Response.Body()), "job-done")
+	trayCtx := adminCtx("")
+	handler.logIndexStatus(trayCtx)
+	assert.NotContains(t, string(trayCtx.Response.Body()), "job-done")
+
+	jobs.latest.Metadata = current
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	assert.Contains(t, string(statusCtx.Response.Body()), `"id":"job-done"`)
+
+	jobs.inFlight = &tables.TableSidekiqJob{ID: "job-old-store", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: string(elsewhere)}
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	assert.Contains(t, string(statusCtx.Response.Body()), "job-old-store", "the run that blocks a new one is shown")
+	trayCtx = adminCtx("")
+	handler.logIndexStatus(trayCtx)
+	assert.Contains(t, string(trayCtx.Response.Body()), "job-old-store", "the tray shows it too")
+	assert.Contains(t, string(trayCtx.Response.Body()), `"state":"indexing"`)
 }

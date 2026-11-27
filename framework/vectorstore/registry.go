@@ -2,6 +2,8 @@ package vectorstore
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -44,9 +46,13 @@ type NamedStore struct {
 	Name     string
 	Type     VectorStoreType
 	Location string // see Config.Location; "" when unknown
-	Primary  bool   // the top-level vector_store
-	Status   StoreStatus
-	Err      error // why it failed; nil otherwise
+	// ID identifies the data the store holds, for a record of what was written where (a backfill
+	// checkpoint): its Location, which names shared entries alike, or one made at boot for a
+	// memory-only store or one without a location, since each start of those is a new, empty store.
+	ID      string
+	Primary bool // the top-level vector_store
+	Status  StoreStatus
+	Err     error // why it failed; nil otherwise
 	// Store is the open connection; nil unless Status is StoreConnected.
 	Store VectorStore
 	// SharedWith names the earlier entry whose connection this one uses; ""
@@ -135,7 +141,7 @@ func OpenRegistry(ctx context.Context, primary *Config, named []Config, logger s
 	}
 	registry := &Registry{}
 	if primary != nil {
-		entry := &NamedStore{Name: PrimaryStoreName(primary), Type: primary.Type, Location: primary.Location(), Primary: true, Status: StoreDisabled, settings: connectionSettings(primary)}
+		entry := &NamedStore{Name: PrimaryStoreName(primary), Type: primary.Type, Location: primary.Location(), ID: storeID(primary), Primary: true, Status: StoreDisabled, settings: connectionSettings(primary)}
 		if primary.Enabled {
 			store, err := connect(ctx, primary, logger)
 			if err != nil {
@@ -147,13 +153,13 @@ func OpenRegistry(ctx context.Context, primary *Config, named []Config, logger s
 	}
 	for i := range named {
 		config := &named[i]
-		entry := &NamedStore{Name: config.Name, Type: config.Type, Location: config.Location(), Status: StoreDisabled, settings: connectionSettings(config)}
+		entry := &NamedStore{Name: config.Name, Type: config.Type, Location: config.Location(), ID: storeID(config), Status: StoreDisabled, settings: connectionSettings(config)}
 		registry.stores = append(registry.stores, entry)
 		if !config.Enabled {
 			continue
 		}
 		if shared := registry.sharedConnection(config); shared != nil {
-			entry.Status, entry.Store, entry.SharedWith = StoreConnected, shared.Store, shared.Name
+			entry.Status, entry.Store, entry.SharedWith, entry.ID = StoreConnected, shared.Store, shared.Name, shared.ID
 			continue
 		}
 		connectCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -169,6 +175,17 @@ func OpenRegistry(ctx context.Context, primary *Config, named []Config, logger s
 		entry.Status, entry.Store = StoreConnected, store
 	}
 	return registry, nil
+}
+
+// storeID is a store's ID at boot; see NamedStore.ID.
+func storeID(config *Config) string {
+	location := config.Location()
+	if location != "" && !config.InMemory() {
+		return location
+	}
+	var random [8]byte
+	_, _ = rand.Read(random[:])
+	return string(config.Type) + "#" + hex.EncodeToString(random[:])
 }
 
 // connectionSettings is what shapes a connection besides where it goes and its credentials: its

@@ -6,6 +6,7 @@ import { createBaseQueryWithRefresh } from "@enterprise/lib/store/utils/baseQuer
 import { clearOAuthStorage } from "@enterprise/lib/store/utils/tokenManager";
 import { getViewAsUserId } from "@enterprise/lib/store/utils/viewAs";
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
+import { isReasonedErrorBody } from "./responseHandlers";
 import { getActiveTempToken, getSuppressGlobal401 } from "./tempToken";
 import { getCurrentAppPath, stripBasePath } from "@/lib/utils/basePath";
 import { buildLoginHref } from "@/lib/utils/loginGoto";
@@ -123,6 +124,11 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (args: any
 		if (error?.data) {
 			const errorData = error.data as BifrostErrorResponse;
 			if (errorData.error?.message) {
+				return result;
+			}
+			// A typed unavailable answer ({reason, message}, as Warp's 503s) is kept as sent, so
+			// the page shows the server's message rather than a generic one.
+			if (isReasonedErrorBody(error.data)) {
 				return result;
 			}
 		}
@@ -279,6 +285,10 @@ export const getErrorMessage = (error: unknown): string => {
 		typeof error.data.error.message === "string"
 	) {
 		return error.data.error.message.charAt(0).toUpperCase() + error.data.error.message.slice(1);
+	}
+	// A typed unavailable answer ({reason, message}), which the base query keeps as sent.
+	if (typeof error === "object" && error && "data" in error && isReasonedErrorBody(error.data)) {
+		return error.data.message;
 	}
 	if (typeof error === "object" && error && "message" in error && typeof error.message === "string") {
 		return error.message;

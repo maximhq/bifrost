@@ -120,3 +120,46 @@ export function retainFinishedWarpBackfill(
 export function retainedWarpBackfillForSpace(retained: RetainedWarpBackfill | null, savedSpaceKey: string): WarpBackfillJob | null {
 	return retained && retained.spaceKey === savedSpaceKey ? retained.job : null;
 }
+
+export type WarpVectorStoreBadge =
+	| { connected: true; name: string; type: string }
+	| { connected: true; name: null; type: null }
+	| { connected: false; error: string | null };
+
+/**
+ * What the status badge says. A config without connected_vector_store (a
+ * server older than the store choice) still reports vector_store_connected,
+ * so that is the fallback, shown without a name.
+ */
+export function warpVectorStoreBadge(
+	config: Partial<Pick<WarpConfig, "vector_store_connected" | "connected_vector_store" | "vector_store_error">> | undefined,
+): WarpVectorStoreBadge {
+	const store = config?.connected_vector_store;
+	if (store) return { connected: true, name: store.name, type: store.type };
+	if (config?.vector_store_connected && store === undefined) return { connected: true, name: null, type: null };
+	return { connected: false, error: config?.vector_store_error || null };
+}
+
+/**
+ * The message of a 503 save refusal, whose body is `{reason, message}` rather
+ * than the `{error: {message}}` shape getErrorMessage reads (e.g. saving an
+ * enabled Warp while the chosen store is unavailable). Null for any other error.
+ */
+export function warpUnavailableMessage(error: unknown): string | null {
+	if (!error || typeof error !== "object" || !("data" in error)) return null;
+	const data = (error as { data?: unknown }).data;
+	if (!data || typeof data !== "object" || !("reason" in data) || !("message" in data)) return null;
+	const message = (data as { message?: unknown }).message;
+	return typeof message === "string" && message ? message : null;
+}
+
+/**
+ * Whether a save may keep Warp on without a connected vector store: only turning
+ * it on needs one. A Warp already on whose store config.json names is unavailable
+ * still saves its other settings, as the server allows.
+ */
+export function warpVectorStoreRequirementMet(
+	config: Partial<Pick<WarpConfig, "vector_store_connected" | "enabled">> | undefined,
+): boolean {
+	return !!config?.vector_store_connected || !!config?.enabled;
+}

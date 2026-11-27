@@ -9,6 +9,7 @@ import {
 	useStartWarpTopicsMutation,
 } from "@/lib/store/apis/warpApi";
 import type { WarpBackfillJob } from "@/lib/types/warp";
+import { warpUnavailableMessage } from "./warpView.utils";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { Info, Loader2 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -139,7 +140,8 @@ export default function WarpTopicsSection({
 			setActiveID(started.id ?? null);
 			toast.success(t("warp.topics.started"));
 		} catch (error) {
-			toast.error(getErrorMessage(error));
+			// A 503 refusal (the store config.json names is unavailable) carries {reason, message}.
+			toast.error(warpUnavailableMessage(error) ?? getErrorMessage(error));
 		}
 	};
 

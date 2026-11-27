@@ -1188,6 +1188,7 @@
 		"conversationSearchHelp": "Warp embeds completed conversations into your vector store and uses them to find logs by meaning. Only vectors and operational metadata are stored there; conversation text stays in the log store.",
 		"vectorConnected": "Vector store connected",
 		"vectorDisconnected": "Vector store disconnected",
+		"vectorConnectedTo": "Connected to {{name}} ({{type}})",
 		"embeddingProvider": "Embedding provider",
 		"selectEmbeddingProvider": "Select embedding provider",
 		"noEmbeddingProviders": "None of the configured providers support embeddings. Add one that does - OpenAI, Azure OpenAI, Bedrock, Vertex or Cohere - before enabling Warp.",
