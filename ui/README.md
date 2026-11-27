@@ -54,11 +54,11 @@ BIFROST_PORT=8080
 - **Real-time**: WebSocket integration
 - **HTTP Client**: Axios with typed service layer
 - **Theme**: Dark/light mode support
-- **i18n**: i18next + react-i18next (English default; zh-CN, zh-TW, ja, ko, es, pt, fr, de, it, ru)
+- **i18n**: i18next + react-i18next (English default; zh-CN, zh-TW, ja, ko, es, pt-BR, pt, fr, de, it, ru)
 
 ### Internationalization (i18n)
 
-UI copy uses `i18next`. Source and fallback locale stay **en**. Also supported: zh-CN, zh-TW, ja, ko, es, pt, fr, de, it, ru. The selection is persisted in `localStorage` under `bifrost.locale`.
+UI copy uses `i18next`. Source and fallback locale stay **en**. Also supported: zh-CN, zh-TW, ja, ko, es, pt-BR, pt, fr, de, it, ru. The selection is persisted in `localStorage` under `bifrost.locale`.
 
 #### Layout
 

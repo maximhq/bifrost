@@ -82,6 +82,10 @@ beforeAll(() => {
 		blank: "Something",
 		day_one: "{{count}} day",
 		day_other: "{{count}} days",
+		hour_one: "{{count}} hour",
+		hour_other: "{{count}} hours",
+		task_one: "{{count}} task in {{queue}}",
+		task_other: "{{count}} tasks in {{queue}}",
 	});
 	write("locales/de/common.json", {
 		used: "Benutzt",
@@ -93,6 +97,13 @@ beforeAll(() => {
 		blank: "",
 		day_one: "jeden Tag",
 		day_other: "{{count}} Tage",
+		hour_one: "{{count}} Stunde",
+		hour_other: "{{count}} Stunden",
+		hour_zero: "Keine Stunden",
+		task_one: "{{count}} Aufgabe in {{queue}}",
+		task_other: "{{count}} Aufgaben in {{queue}}",
+		task_zero: "Keine Aufgaben",
+		used_zero: "Nie benutzt",
 	});
 	// JSON.parse keeps the last duplicate, so the file is written by hand.
 	fs.writeFileSync(path.join(root, "locales/en/dup.json"), '{\n  "a": "One",\n  "a": "Two"\n}\n');
@@ -152,6 +163,18 @@ describe("locale scan", () => {
 	it("lets a singular plural form drop the count", () => {
 		const all = Object.values(issues()).flat() as string[];
 		expect(all.some((entry) => entry.startsWith("common:day_one"))).toBe(false);
+	});
+
+	it("accepts an optional _zero form, which may drop the count", () => {
+		const all = Object.values(issues()).flat() as string[];
+		expect(all.some((entry) => entry.startsWith("common:hour_zero") || entry.startsWith("common:day_zero"))).toBe(false);
+	});
+
+	it("checks a _zero form against its plural group", () => {
+		const result = issues();
+		expect(result.placeholders.some((entry: string) => entry.startsWith("common:task_zero"))).toBe(true);
+		expect(result.extra).toContain("common:used_zero");
+		expect(result.extra).not.toContain("common:task_zero");
 	});
 
 	it("exits non-zero when anything is reported", () => {
