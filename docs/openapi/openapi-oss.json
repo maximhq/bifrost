@@ -96839,7 +96839,7 @@
       },
       "BifrostCost": {
         "type": "object",
-        "description": "Cost breakdown in USD. total_cost is the cost; when the categories are filled in,\ninput_cost + output_cost + additional_cost add up to it, and a provider that reports only\na total (OpenRouter, Runware) gives total_cost alone. Zero fields are omitted. On usage.cost it is the provider's own figure (OpenRouter, Perplexity,\nxAI); on extra_fields.cost it is the cost Bifrost computed (send back cost).\n",
+        "description": "Cost breakdown in USD. total_cost is the cost; when the categories are filled in,\ninput_cost + output_cost + additional_cost add up to it. A provider that reports only a\ntotal (OpenRouter, Runware) gives total_cost alone, and side calls added to such a total\n(guardrails, routing, MCP tools) show only in additional_cost. Zero fields are omitted. On usage.cost it is the provider's own figure (OpenRouter, Perplexity,\nxAI); on extra_fields.cost it is the cost Bifrost computed (send back cost).\n",
         "properties": {
           "input_cost": {
             "type": "number"
@@ -110460,7 +110460,7 @@
               "send_back_cost": {
                 "type": "boolean",
                 "default": false,
-                "description": "Return Bifrost's computed cost of each request to the caller, in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header on non-streaming responses and errors on every route. Streams carry it only in extra_fields, so with extra_fields_placement set to headers they carry none. A request can turn it on or off for itself with the x-bf-send-back-cost header, which applies regardless of this setting."
+                "description": "Return Bifrost's computed cost of each request to the caller. With extra_fields_placement set to body, native /v1 responses, errors and final stream chunks carry it in extra_fields.cost; with headers, no body carries it. In both modes the x-bifrost-cost response header carries it on non-streaming responses and on errors that cost something, except an SDK-route error raised while converting the response. POST /v1/mcp/tool/execute returns it only in that header. Streams carry it only on the final chunk, in body mode. A request can turn it on or off for itself with the x-bf-send-back-cost header, which applies regardless of this setting."
               },
               "enforce_auth_on_inference": {
                 "type": "boolean",
@@ -111360,7 +111360,7 @@
               "send_back_cost": {
                 "type": "boolean",
                 "default": false,
-                "description": "Return Bifrost's computed cost of each request to the caller, in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header on non-streaming responses and errors on every route. Streams carry it only in extra_fields, so with extra_fields_placement set to headers they carry none. A request can turn it on or off for itself with the x-bf-send-back-cost header, which applies regardless of this setting."
+                "description": "Return Bifrost's computed cost of each request to the caller. With extra_fields_placement set to body, native /v1 responses, errors and final stream chunks carry it in extra_fields.cost; with headers, no body carries it. In both modes the x-bifrost-cost response header carries it on non-streaming responses and on errors that cost something, except an SDK-route error raised while converting the response. POST /v1/mcp/tool/execute returns it only in that header. Streams carry it only on the final chunk, in body mode. A request can turn it on or off for itself with the x-bf-send-back-cost header, which applies regardless of this setting."
               },
               "enforce_auth_on_inference": {
                 "type": "boolean",

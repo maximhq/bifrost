@@ -86,8 +86,9 @@ BifrostCost:
   type: object
   description: |
     Cost breakdown in USD. total_cost is the cost; when the categories are filled in,
-    input_cost + output_cost + additional_cost add up to it, and a provider that reports only
-    a total (OpenRouter, Runware) gives total_cost alone. Zero fields are omitted. On usage.cost it is the provider's own figure (OpenRouter, Perplexity,
+    input_cost + output_cost + additional_cost add up to it. A provider that reports only a
+    total (OpenRouter, Runware) gives total_cost alone, and side calls added to such a total
+    (guardrails, routing, MCP tools) show only in additional_cost. Zero fields are omitted. On usage.cost it is the provider's own figure (OpenRouter, Perplexity,
     xAI); on extra_fields.cost it is the cost Bifrost computed (send back cost).
   properties:
     input_cost:
