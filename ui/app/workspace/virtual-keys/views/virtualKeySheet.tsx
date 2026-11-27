@@ -26,7 +26,8 @@ import { DateTimePicker } from "@/components/ui/datePickerWithRange";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import MultiBudgetLines from "@/components/ui/multibudgets";
+import MultiBudgetLines, { RequestLimitLines } from "@/components/ui/multibudgets";
+import { TokenLimitLabel } from "@/components/ui/tokenLimitLabel";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { ProviderConfigsEditor } from "@/components/ui/providerConfigsEditor";
@@ -39,7 +40,7 @@ import { Textarea } from "@/components/ui/textarea";
 import Toggle from "@/components/ui/toggle";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { BUDGET_SCOPE_VALUES, DEFAULT_BUDGET_SCOPE, resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
-import { budgetPeriodKey } from "@/lib/budgetOutline";
+import { budgetPeriodKey, hasDuplicateBudgetPeriods } from "@/lib/budgetOutline";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getBusinessUnitPicker } from "@/lib/registries/businessUnitPicker";
 import { getUserPicker } from "@/lib/registries/userPicker";
@@ -78,6 +79,8 @@ import {
 	hasActiveBudgetOverride,
 	parseResetPeriod,
 	quarterStartOf,
+	requestLimitLinesOf,
+	toRequestLimitRequests,
 } from "@/lib/utils/governance";
 import ManagedVirtualKeyActions from "@enterprise/components/access-profiles/managedVirtualKeyActions";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -97,6 +100,7 @@ import { useForm } from "react-hook-form";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
+import { msg } from "@/lib/i18n/validationMessage";
 import i18n, { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 
@@ -109,6 +113,21 @@ interface VirtualKeySheetProps {
 	onSave: () => void;
 	onCancel: () => void;
 }
+
+// One request limit line; scope is only offered on the key's own lines.
+const requestLimitLineSchema = z.object({
+	id: z.string().optional(),
+	max_limit: z
+		.number()
+		.int(msg("validation.valueMustBeAPositiveWholeNumber"))
+		.positive(msg("validation.valueMustBeAPositiveWholeNumber"))
+		.optional(),
+	reset_duration: z.string(),
+	scope: z.enum(BUDGET_SCOPE_VALUES).optional(),
+});
+
+// Saving is blocked while two request lines share a reset period and scope; the lines editor shows why.
+const uniqueRequestLimitPeriods = (lines: { reset_duration?: string; scope?: string }[] | undefined) => !hasDuplicateBudgetPeriods(lines);
 
 // Provider configuration schema
 const providerConfigSchema = z.object({
@@ -137,15 +156,14 @@ const providerConfigSchema = z.object({
 			}),
 		)
 		.optional(),
-	// Provider-level rate limits
+	// Provider-level token limit
 	rate_limit: z
 		.object({
 			token_max_limit: z.number().int().nonnegative().optional(),
 			token_reset_duration: z.string().optional(),
-			request_max_limit: z.number().int().nonnegative().optional(),
-			request_reset_duration: z.string().optional(),
 		})
 		.optional(),
+	request_limits: z.array(requestLimitLineSchema).optional().refine(uniqueRequestLimitPeriods),
 	// Per-model budgets/rate-limits under this provider
 	model_budgets: z
 		.array(
@@ -169,10 +187,9 @@ const providerConfigSchema = z.object({
 					.object({
 						token_max_limit: z.number().int().nonnegative().optional(),
 						token_reset_duration: z.string().optional(),
-						request_max_limit: z.number().int().nonnegative().optional(),
-						request_reset_duration: z.string().optional(),
 					})
 					.optional(),
+				request_limits: z.array(requestLimitLineSchema).optional().refine(uniqueRequestLimitPeriods),
 			}),
 		)
 		.optional(),
@@ -229,9 +246,8 @@ const formSchema = z
 		// Token limits
 		tokenMaxLimit: z.number().int().nonnegative().optional(),
 		tokenResetDuration: z.string().optional(),
-		// Request limits
-		requestMaxLimit: z.number().int().nonnegative().optional(),
-		requestResetDuration: z.string().optional(),
+		// Request limits, one per reset period and scope
+		requestLimits: z.array(requestLimitLineSchema).optional().refine(uniqueRequestLimitPeriods),
 	})
 	.refine(
 		(data) => {
@@ -393,6 +409,7 @@ function withoutKeyGovernance<T extends CreateVirtualKeyRequest | UpdateVirtualK
 		relay_grants: _relayGrants,
 		budgets: _budgets,
 		rate_limit: _rateLimit,
+		request_limits: _requestLimits,
 		calendar_aligned: _calendarAligned,
 		allow_all_providers: _allowAllProviders,
 		// Only declared on UpdateVirtualKeyRequest, so it is dropped here rather than deleted off the
@@ -596,10 +613,10 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 						? {
 								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
 								token_reset_duration: config.rate_limit.token_reset_duration,
-								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-								request_reset_duration: config.rate_limit.request_reset_duration,
 							}
 						: undefined,
+					// Provider rows offer no scope selector; a stored scope is carried through as it is.
+					request_limits: requestLimitLinesOf(config),
 					model_budgets: config.model_budgets?.map((mb) => ({
 						model_name: mb.model_name,
 						budgets: mb.budgets?.map((b) => ({
@@ -613,10 +630,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 							? {
 									token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
 									token_reset_duration: mb.rate_limit.token_reset_duration,
-									request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
-									request_reset_duration: mb.rate_limit.request_reset_duration,
 								}
 							: undefined,
+						request_limits: requestLimitLinesOf(mb),
 					})),
 				})) || [],
 			allowAllProviders: virtualKey?.allow_all_providers ?? false,
@@ -663,8 +679,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: virtualKey?.rate_limit?.token_reset_duration || "1h",
-			requestMaxLimit: virtualKey?.rate_limit?.request_max_limit ?? undefined,
-			requestResetDuration: virtualKey?.rate_limit?.request_reset_duration || "1h",
+			requestLimits: requestLimitLinesOf(virtualKey),
 		},
 	});
 
@@ -831,9 +846,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// Watch budget/rate-limit fields for conditional rendering of reset buttons
 	const watchedBudgets = form.watch("budgets");
 	const watchedTokenMaxLimit = form.watch("tokenMaxLimit");
-	const watchedRequestMaxLimit = form.watch("requestMaxLimit");
 	const watchedTokenResetDuration = form.watch("tokenResetDuration");
-	const watchedRequestResetDuration = form.watch("requestResetDuration");
+	const watchedRequestLimits = form.watch("requestLimits");
 	const watchedBudgetCalendarAligned = form.watch("budgetCalendarAligned");
 
 	// Calendar alignment is VK-wide and applies to both budgets and rate limits: show the
@@ -851,9 +865,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		(watchedTokenMaxLimit !== undefined &&
 			watchedTokenMaxLimit !== null &&
 			(supportsCalendarAlignment(watchedTokenResetDuration || "1h") || isMultiUnitDuration(watchedTokenResetDuration || "1h"))) ||
-		(watchedRequestMaxLimit !== undefined &&
-			watchedRequestMaxLimit !== null &&
-			(supportsCalendarAlignment(watchedRequestResetDuration || "1h") || isMultiUnitDuration(watchedRequestResetDuration || "1h")));
+		calendarWindowDurations([{ request_limits: watchedRequestLimits }]).some(
+			(duration) => supportsCalendarAlignment(duration) || isMultiUnitDuration(duration),
+		);
 	const showCalendarAlignToggle =
 		hasAnyAlignableBudget ||
 		hasAnyAlignableRateLimit ||
@@ -912,30 +926,19 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		form.setValue("budgetCalendarAligned", false, { shouldDirty: true });
 	};
 
+	// Clears the whole Rate Limiting block: the key's request limits and its token limit.
 	const clearVirtualKeyRateLimits = () => {
+		form.setValue("requestLimits", [], { shouldDirty: true });
 		form.setValue("tokenMaxLimit", undefined, { shouldDirty: true });
 		form.setValue("tokenResetDuration", "1h", { shouldDirty: true });
-		form.setValue("requestMaxLimit", undefined, { shouldDirty: true });
-		form.setValue("requestResetDuration", "1h", { shouldDirty: true });
 	};
 
-	// Build a request rate-limit payload from the form's rate-limit fields. Returns the field
-	// values when a limit is set, {} to clear an existing rate limit (removal), or undefined.
-	const normalizeRateLimit = (
-		rl:
-			| { token_max_limit?: number; token_reset_duration?: string; request_max_limit?: number; request_reset_duration?: string }
-			| undefined,
-		hadExisting: boolean,
-	) => {
-		const hasToken = rl?.token_max_limit !== undefined;
-		const hasRequest = rl?.request_max_limit !== undefined;
-		if (hasToken || hasRequest) {
-			return {
-				token_max_limit: rl?.token_max_limit ?? null,
-				token_reset_duration: hasToken ? rl?.token_reset_duration || "1h" : null,
-				request_max_limit: rl?.request_max_limit ?? null,
-				request_reset_duration: hasRequest ? rl?.request_reset_duration || "1h" : null,
-			};
+	// Build a token rate-limit payload from the form's token fields (request limits travel in
+	// request_limits, which on the backend replace a legacy row's request fields). Returns the token
+	// limit when set, {} to clear an existing rate limit (removal), or undefined.
+	const normalizeRateLimit = (rl: { token_max_limit?: number; token_reset_duration?: string } | undefined, hadExisting: boolean) => {
+		if (rl?.token_max_limit !== undefined) {
+			return { token_max_limit: rl.token_max_limit, token_reset_duration: rl.token_reset_duration || "1h" };
 		}
 		return hadExisting ? {} : undefined;
 	};
@@ -948,6 +951,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				budgets: config.budgets?.filter((b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined),
 				weight: config.weight ?? null,
 				rate_limit: normalizeRateLimit(config.rate_limit, !!existingConfig?.rate_limit),
+				request_limits: toRequestLimitRequests(config.request_limits),
 				// Full desired per-model set: drop unfilled models, keep an empty array so the
 				// backend prunes any per-model budgets removed here.
 				model_budgets: (config.model_budgets || [])
@@ -960,9 +964,10 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 								(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
 							),
 							rate_limit: normalizeRateLimit(mb.rate_limit, !!existingMB?.rate_limit),
+							request_limits: toRequestLimitRequests(mb.request_limits),
 						};
 					})
-					.filter((mb) => mb.budgets.length > 0 || mb.rate_limit !== undefined),
+					.filter((mb) => mb.budgets.length > 0 || mb.rate_limit !== undefined || mb.request_limits.length > 0),
 			};
 		});
 	};
@@ -1306,19 +1311,13 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 
 				// Add rate limit if enabled
 				const hadRateLimit = !!virtualKey.rate_limit;
-				const hasTokenMaxLimit = data.tokenMaxLimit !== undefined;
-				const hasRequestMaxLimit = data.requestMaxLimit !== undefined;
-				const hasRateLimit = hasTokenMaxLimit || hasRequestMaxLimit;
-				if (hasRateLimit) {
-					updateData.rate_limit = {
-						token_max_limit: data.tokenMaxLimit ?? null,
-						token_reset_duration: hasTokenMaxLimit ? data.tokenResetDuration || "1h" : null,
-						request_max_limit: data.requestMaxLimit ?? null,
-						request_reset_duration: hasRequestMaxLimit ? data.requestResetDuration || "1h" : null,
-					};
+				if (data.tokenMaxLimit !== undefined) {
+					updateData.rate_limit = { token_max_limit: data.tokenMaxLimit, token_reset_duration: data.tokenResetDuration || "1h" };
 				} else if (hadRateLimit) {
 					updateData.rate_limit = {};
 				}
+				// The full desired set: [] removes every request limit.
+				updateData.request_limits = toRequestLimitRequests(data.requestLimits);
 
 				await updateVirtualKey({
 					vkId: virtualKey.id,
@@ -1411,15 +1410,12 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				}
 
 				// Add rate limit if enabled
-				const hasTokenMaxLimit = data.tokenMaxLimit !== undefined;
-				const hasRequestMaxLimit = data.requestMaxLimit !== undefined;
-				if (hasTokenMaxLimit || hasRequestMaxLimit) {
-					createData.rate_limit = {
-						token_max_limit: data.tokenMaxLimit,
-						token_reset_duration: hasTokenMaxLimit ? data.tokenResetDuration || "1h" : undefined,
-						request_max_limit: data.requestMaxLimit,
-						request_reset_duration: hasRequestMaxLimit ? data.requestResetDuration || "1h" : undefined,
-					};
+				if (data.tokenMaxLimit !== undefined) {
+					createData.rate_limit = { token_max_limit: data.tokenMaxLimit, token_reset_duration: data.tokenResetDuration || "1h" };
+				}
+				const requestLimits = toRequestLimitRequests(data.requestLimits);
+				if (requestLimits.length > 0) {
+					createData.request_limits = requestLimits;
 				}
 
 				const created = await createVirtualKey(isGovernedByOwnerProfile ? withoutKeyGovernance(createData) : createData).unwrap();
@@ -1683,10 +1679,12 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 													keyIds: config.key_ids || [],
 													budgets: config.budgets || [],
 													rateLimit: config.rate_limit ?? null,
+													requestLimits: config.request_limits || [],
 													modelBudgets: (config.model_budgets || []).map((mb) => ({
 														model_name: mb.model_name,
 														budgets: mb.budgets || [],
 														rate_limit: mb.rate_limit,
+														request_limits: mb.request_limits || [],
 													})),
 												}))}
 												onChange={(entries) =>
@@ -1706,12 +1704,27 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 																scope: l.scope,
 															})),
 															rate_limit: entry.rateLimit ?? undefined,
-															model_budgets: entry.modelBudgets,
+															request_limits: (entry.requestLimits || []).map((l) => ({
+																id: l.id,
+																max_limit: l.max_limit,
+																reset_duration: l.reset_duration || "1h",
+																scope: l.scope,
+															})),
+															model_budgets: entry.modelBudgets?.map((mb) => ({
+																...mb,
+																request_limits: (mb.request_limits || []).map((l) => ({
+																	id: l.id,
+																	max_limit: l.max_limit,
+																	reset_duration: l.reset_duration || "1h",
+																	scope: l.scope,
+																})),
+															})),
 														})),
 														{ shouldDirty: true },
 													)
 												}
 												allowAllProviders={allowAllProviders}
+												showRequestLimits
 												onAllowAllProvidersChange={(checked) => form.setValue("allowAllProviders", checked, { shouldDirty: true })}
 												onManageProviders={() => navigate({ to: "/workspace/providers" })}
 												error={form.formState.errors.providerConfigs?.message}
@@ -1790,24 +1803,33 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 													</div>
 												) : null}
 											</div>
-											{/* Rate Limiting Configuration */}
-											<div className="space-y-4">
+											{/* Rate Limiting Configuration: request limits, then the token limit */}
+											<div className="space-y-5">
 												<div className="flex items-center justify-between gap-2">
 													<Label className="text-sm font-medium">{t("virtualKeys.rateLimitingConfiguration")}</Label>
-													{isEditing && (virtualKey?.rate_limit || watchedTokenMaxLimit || watchedRequestMaxLimit) && (
-														<Button
-															type="button"
-															variant="ghost"
-															size="sm"
-															onClick={clearVirtualKeyRateLimits}
-															data-testid="vk-rate-limit-reset-button"
-														>
-															<RotateCcw className="h-4 w-4" />
-															{t("providers.reset")}
-														</Button>
-													)}
+													{isEditing &&
+														(virtualKey?.rate_limit ||
+															(virtualKey?.request_limits?.length ?? 0) > 0 ||
+															watchedTokenMaxLimit ||
+															(watchedRequestLimits?.length ?? 0) > 0) && (
+															<Button
+																type="button"
+																variant="ghost"
+																size="sm"
+																onClick={clearVirtualKeyRateLimits}
+																data-testid="vk-rate-limit-reset-button"
+															>
+																<RotateCcw className="h-4 w-4" />
+																{t("providers.reset")}
+															</Button>
+														)}
 												</div>
-
+												<RequestLimitLines
+													data-testid="vk-request-limit-lines"
+													lines={watchedRequestLimits ?? []}
+													onChange={(lines) => form.setValue("requestLimits", lines, { shouldDirty: true })}
+													showScope
+												/>
 												<FormField
 													control={form.control}
 													name="tokenMaxLimit"
@@ -1816,40 +1838,16 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 															<NumberAndSelect
 																id="tokenMaxLimit"
 																labelClassName="font-normal"
-																label={t("modelLimits.maximumTokens")}
-																value={field.value}
+																label={<TokenLimitLabel label={t("modelLimits.maximumTokens")} data-testid="vk-token-limit-info" />}
+																// Not field.value: a field cleared to undefined (Reset) reads back as its default
+																// value there, so the input would keep showing the old limit.
+																value={watchedTokenMaxLimit}
 																selectValue={form.watch("tokenResetDuration") || "1h"}
 																onChangeNumber={(value) => {
 																	field.onChange(value);
 																}}
 																onChangeSelect={(value) =>
 																	form.setValue("tokenResetDuration", value, {
-																		shouldDirty: true,
-																	})
-																}
-																options={resetDurationOptions}
-															/>
-															<FormMessage />
-														</FormItem>
-													)}
-												/>
-
-												<FormField
-													control={form.control}
-													name="requestMaxLimit"
-													render={({ field }) => (
-														<FormItem>
-															<NumberAndSelect
-																id="requestMaxLimit"
-																labelClassName="font-normal"
-																label={t("modelLimits.maximumRequests")}
-																value={field.value}
-																selectValue={form.watch("requestResetDuration") || "1h"}
-																onChangeNumber={(value) => {
-																	field.onChange(value);
-																}}
-																onChangeSelect={(value) =>
-																	form.setValue("requestResetDuration", value, {
 																		shouldDirty: true,
 																	})
 																}
@@ -1870,9 +1868,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 															rate_limit: {
 																token_max_limit: watchedTokenMaxLimit,
 																token_reset_duration: watchedTokenResetDuration,
-																request_max_limit: watchedRequestMaxLimit,
-																request_reset_duration: watchedRequestResetDuration,
 															},
+															request_limits: watchedRequestLimits,
 														},
 														...providerConfigs,
 													]),

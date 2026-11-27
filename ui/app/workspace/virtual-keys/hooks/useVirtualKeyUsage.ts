@@ -1,5 +1,5 @@
-import { Budget, RateLimit, VirtualKey } from "@/lib/types/governance";
-import { getEffectiveBudgetLimit } from "@/lib/utils/governance";
+import { Budget, RateLimit, RequestLimit, VirtualKey } from "@/lib/types/governance";
+import { getEffectiveBudgetLimit, isRequestLimitExhausted } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetUserAccessProfilesQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import { useGetVirtualKeyUsersQuery } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
@@ -51,6 +51,8 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	hasApRateLimit: boolean;
 	displayBudgets: (Budget & { label?: string })[] | undefined;
 	displayRateLimit: RateLimit | undefined;
+	/** The key's own request limits; none for a key whose limits are managed elsewhere. */
+	displayRequestLimits: RequestLimit[];
 	isExhausted: boolean;
 } {
 	// `assigned_user` present (user or null) means the response resolved assignees, so
@@ -96,12 +98,15 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	// locked edit/delete UX). If the profile has no rate limit - or the caller cannot see the
 	// profile at all - displayRateLimit is undefined. Keyed off the server flag, not
 	// managingProfile, for the same reason isManagedByProfile is: see resolveDisplayRateLimit.
+	const isEntityGoverned = assignedUsers.length === 0 && !!(vk?.team_id || vk?.customer_id || vk?.business_unit_id);
 	const displayRateLimit: RateLimit | undefined = resolveDisplayRateLimit({
 		isManagedByProfile,
-		isEntityGoverned: assignedUsers.length === 0 && !!(vk?.team_id || vk?.customer_id || vk?.business_unit_id),
+		isEntityGoverned,
 		profileRateLimit: apRL,
 		vkRateLimit: vk?.rate_limit,
 	});
+	// Same rule as the rate limit: a user's managed key is governed by its profile, never its own rules.
+	const displayRequestLimits: RequestLimit[] = !isManagedByProfile || isEntityGoverned ? (vk?.request_limits ?? []) : [];
 
 	const ownLimitSpent =
 		(displayBudgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ?? false) ||
@@ -110,7 +115,8 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 			displayRateLimit.token_current_usage >= displayRateLimit.token_max_limit) ||
 		(displayRateLimit?.request_current_usage != null &&
 			displayRateLimit?.request_max_limit != null &&
-			displayRateLimit.request_current_usage >= displayRateLimit.request_max_limit);
+			displayRateLimit.request_current_usage >= displayRateLimit.request_max_limit) ||
+		displayRequestLimits.some(isRequestLimitExhausted);
 	const isExhausted = managingProfiles.length > 1 ? allProfilesSpent(managingProfiles) : ownLimitSpent;
 
 	return {
@@ -123,6 +129,7 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 		hasApRateLimit,
 		displayBudgets,
 		displayRateLimit,
+		displayRequestLimits,
 		isExhausted,
 	};
 }
