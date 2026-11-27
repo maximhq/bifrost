@@ -942,6 +942,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 - **Pool names**: Descriptive string passed to `pool.New()` (e.g., `"channel-message"`, `"response-stream"`).
 - **Context keys**: Use `BifrostContextKey` type. Custom plugins should define their own key types to avoid collisions.
 - **Struct comments**: Keep struct field comments to a short trailing one-liner (or none). Long multi-line explanations do not belong inside struct definitions; put the rationale in the doc comment of the function that uses the field, or in the package doc.
+- **Comments describe the code, not the issue that prompted it**: a comment or godoc says what the code does and why, in terms that hold for every input it handles. Never quote the bug report, PR or review thread, the customer, client, test prompt or values that exposed the problem, and never write "fixes the X issue" or "previously this did Y". That history belongs in the commit message and PR. Test names and test comments name the behaviour they check, not the incident that reproduced it.
 - **Go filenames**: No underscores. The only permitted underscore is the `_test.go` suffix. Examples: `pluginpipeline.go`, `pluginpipeline_test.go` — never `plugin_pipeline.go` or `plugin_pipeline_race_test.go`. Concatenate words (lowercase, no separators) for multi-word filenames.
 
 # Frontend Code Guidelines & Patterns
