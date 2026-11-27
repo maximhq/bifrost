@@ -477,6 +477,26 @@ func (s *Service) Ingest(ctx context.Context, principal *Principal, project *tab
 	}
 }
 
+// Barrier waits until every request queued before it is written. It queues an empty request:
+// the committer writes batches one at a time in arrival order, so once the empty request is
+// answered every earlier one has been written.
+func (s *Service) Barrier(ctx context.Context) error {
+	request := &commitRequest{result: make(chan error, 1)}
+	select {
+	case s.requests <- request:
+	case <-s.done:
+		return ErrClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-request.result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // spanExpiry is when a span of the project stops being kept, nil for never.
 func (s *Service) spanExpiry(project *tables.TableTraceProject, from time.Time) *time.Time {
 	days := 0
@@ -540,6 +560,11 @@ func (s *Service) commit(batch []*commitRequest) {
 		s.logger.Error("traceingest: failed to commit %d requests: %v", len(batch), err)
 	}
 	for _, request := range batch {
+		// A request with nothing to store, such as a barrier, wrote nothing that could fail.
+		if len(request.parts) == 0 {
+			request.result <- nil
+			continue
+		}
 		request.result <- err
 	}
 }
@@ -567,6 +592,10 @@ func (s *Service) write(ctx context.Context, batch []*commitRequest) error {
 				source[ref] = request.parts[i].Source
 			}
 		}
+	}
+	// A batch of barriers only has to be answered.
+	if len(parts) == 0 {
+		return nil
 	}
 	if _, err := s.store.BatchCreateTraceSpanParts(ctx, parts); err != nil {
 		return fmt.Errorf("failed to store span parts: %w", err)
