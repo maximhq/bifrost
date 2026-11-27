@@ -27,6 +27,9 @@ const (
 	// RedisMaxSearchResults is the maximum number of results Redis Search returns in a single query.
 	// This is the default MAXSEARCHRESULTS configuration in Redis Search.
 	RedisMaxSearchResults = 10000
+	// redisCleanupTimeout bounds the DEL that removes an entry written outside
+	// a transaction, independently of the caller's context.
+	redisCleanupTimeout = 5 * time.Second
 )
 
 type RedisConfig struct {
@@ -1540,8 +1543,12 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 			err = redisTransactionError(err, cmds)
 			if redisMultiRefused(cmds) {
 				// The entry may have been written without its deadline. Removing
-				// it only costs a cache miss.
-				if delErr := s.client.Del(ctx, key).Err(); delErr != nil {
+				// it only costs a cache miss. The caller's context may already be
+				// done, so the cleanup gets its own bounded one.
+				cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), redisCleanupTimeout)
+				delErr := s.client.Del(cleanupCtx, key).Err()
+				cancelCleanup()
+				if delErr != nil {
 					err = errors.Join(err, fmt.Errorf("failed to delete entry written outside a transaction: %w", delErr))
 				}
 			}
@@ -1575,11 +1582,13 @@ func redisTransactionError(err error, cmds []redis.Cmder) error {
 // it ran the queued commands outside a transaction. go-redis then reports
 // MULTI's error on every command. Other transaction failures leave different
 // errors (a refused command next to EXECABORT, or WRONGTYPE next to a
-// successful EXPIREAT) or EXECABORT on all of them (a refused EXEC). A
-// connection failure also sets one error on every command; treating it as a
-// refused MULTI costs at most a cache miss.
+// successful EXPIREAT) or EXECABORT on all of them (a refused EXEC). The
+// shared error must be a Redis reply: a cancelled context or a broken
+// connection also sets one error on every command, but then Redis discards
+// the unfinished transaction and nothing needs removing.
 func redisMultiRefused(cmds []redis.Cmder) bool {
-	if len(cmds) == 0 || cmds[0].Err() == nil {
+	var reply redis.Error
+	if len(cmds) == 0 || !errors.As(cmds[0].Err(), &reply) {
 		return false
 	}
 	first := cmds[0].Err().Error()

@@ -3,7 +3,6 @@ package vectorstore
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -406,6 +405,8 @@ type fakeRedisSearchServer struct {
 	ftSearchCalls int
 	sawScan       bool
 	commands      [][]string
+	denyMulti     bool   // reply to MULTI with NOPERM, as an ACL without MULTI does
+	onExec        func() // runs when EXEC arrives, before its reply
 }
 
 func newFakeRedisSearchServer(t *testing.T, searchErrors int) *fakeRedisSearchServer {
@@ -501,12 +502,29 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 		case "HGETALL":
 			_, _ = writer.WriteString("*0\r\n")
 		case "MULTI":
+			s.mu.Lock()
+			denyMulti := s.denyMulti
+			s.mu.Unlock()
+			if denyMulti {
+				_, _ = writer.WriteString("-NOPERM User has no permissions to run the 'multi' command\r\n")
+				break
+			}
 			inTransaction, queuedCommands = true, 0
 			_, _ = writer.WriteString("+OK\r\n")
 		case "EXEC":
+			s.mu.Lock()
+			onExec := s.onExec
+			s.mu.Unlock()
+			if onExec != nil {
+				onExec()
+			}
+			if !inTransaction {
+				_, _ = writer.WriteString("-ERR EXEC without MULTI\r\n")
+				break
+			}
 			inTransaction = false
 			_, _ = fmt.Fprintf(writer, "*%d\r\n%s", queuedCommands, strings.Repeat(":1\r\n", queuedCommands))
-		case "HSET":
+		case "HSET", "DEL":
 			_, _ = writer.WriteString(":1\r\n")
 		default:
 			_, _ = writer.WriteString("+OK\r\n")
@@ -518,12 +536,18 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 	}
 }
 
+// redisReplyError is an error reply from the Redis server, as go-redis reports it.
+type redisReplyError string
+
+func (e redisReplyError) Error() string { return string(e) }
+func (redisReplyError) RedisError()     {}
+
 func TestRedisTransactionError(t *testing.T) {
-	refused := errors.New("NOPERM User has no permissions to run the 'hset' command")
-	aborted := errors.New("EXECABORT Transaction discarded because of previous errors.")
-	execDenied := errors.New("EXECABORT Transaction discarded because of: NOPERM User has no permissions to run the 'exec' command")
-	wrongType := errors.New("WRONGTYPE Operation against a key holding the wrong kind of value")
-	multiDenied := errors.New("NOPERM User has no permissions to run the 'multi' command")
+	refused := redisReplyError("NOPERM User has no permissions to run the 'hset' command")
+	aborted := redisReplyError("EXECABORT Transaction discarded because of previous errors.")
+	execDenied := redisReplyError("EXECABORT Transaction discarded because of: NOPERM User has no permissions to run the 'exec' command")
+	wrongType := redisReplyError("WRONGTYPE Operation against a key holding the wrong kind of value")
+	multiDenied := redisReplyError("NOPERM User has no permissions to run the 'multi' command")
 	for _, tc := range []struct {
 		name             string
 		err              error
@@ -539,6 +563,8 @@ func TestRedisTransactionError(t *testing.T) {
 		{"wrong type", wrongType, wrongType, nil, wrongType, false},
 		// A refused MULTI puts its own error on every command.
 		{"multi refused", multiDenied, multiDenied, multiDenied, multiDenied, true},
+		// A client-side failure is not a Redis reply; Redis discards the unfinished transaction.
+		{"cancelled context", context.Canceled, context.Canceled, context.Canceled, context.Canceled, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hset := redis.NewIntCmd(context.Background())
@@ -550,6 +576,30 @@ func TestRedisTransactionError(t *testing.T) {
 			require.Equal(t, tc.wantMultiRefused, redisMultiRefused(cmds))
 		})
 	}
+}
+
+// The cleanup DEL after a refused MULTI must not depend on the caller's
+// context: cancelling the request once the transaction has been sent must
+// not leave behind a hash written without its deadline.
+func TestRedisStore_AddCleanupIgnoresRequestCancellation(t *testing.T) {
+	server := newFakeRedisSearchServer(t, 0)
+	defer server.close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.mu.Lock()
+	server.denyMulti = true
+	server.onExec = cancel
+	server.mu.Unlock()
+	client := redis.NewClient(&redis.Options{Addr: server.addr(), Protocol: 2, DisableIdentity: true})
+	defer client.Close()
+	store := &RedisStore{client: client}
+
+	err := store.Add(ctx, "custom:ns", "id", nil, map[string]interface{}{"expires_at": int64(123)})
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "failed to delete", "cleanup must run despite the cancelled request")
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	require.Contains(t, server.commands, []string{"del", "custom:ns:id"})
 }
 
 func TestRedisStore_AddExpiryCommands(t *testing.T) {
