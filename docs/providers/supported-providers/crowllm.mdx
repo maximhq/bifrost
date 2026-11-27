@@ -1,0 +1,45 @@
+---
+title: "CrowLLM"
+description: "CrowLLM API conversion guide - OpenAI-compatible gateway with one key for every model and a zero-rated free shelf"
+icon: "c"
+---
+
+## Overview
+
+CrowLLM is an **OpenAI-compatible gateway** at `https://crowllm.com/v1`: one endpoint and one key for every model, with a `:free` model shelf next to the paid ids. Bifrost delegates to the OpenAI implementation with standard parameter filtering.
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ (bridged to Chat Completions) | ✅ (bridged to Chat Completions) | `/v1/chat/completions` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| Image Generation | ✅ | - | `/v1/images/generations` |
+| List Models | ✅ | - | `/v1/models` |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+## Quickstart
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-api-key: crowllm-key" \
+  -d '{
+    "model": "crowllm/deepseek-v4-flash",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+
+`x-bf-api-key` selects a key **by name** from your Bifrost provider configuration — it does not take the CrowLLM secret. Add the key under the `crowllm` provider (for example `{"name": "crowllm-key", "value": "&lt;your CrowLLM API key&gt;", "models": ["*"]}`) and use that name in the header, or omit the header when you only run one key.
+
+Set `network_config.base_url` on the provider to route through a different host; it defaults to `https://crowllm.com`.
+
+## Free Models
+
+Model ids ending in `:free` bill at zero and need no credit. They are rate-limited, so use them for exploration rather than long agent loops. `GET /v1/models` returns the live catalog without authentication.
