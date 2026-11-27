@@ -152,7 +152,10 @@ CreateBudgetRequest:
       type: string
       description: >
         Updates only. ID of an existing budget on this entity to update in place; an ID that belongs to
-        another entity is rejected with 400. When omitted, an existing budget is matched by reset_duration.
+        another entity is rejected with 400. When omitted, an existing budget is matched by
+        reset_duration and scope (an empty scope is shared) unless another entry in the request claims
+        that budget's ID; with no match a new budget is created. A matched budget keeps its usage unless
+        reset_budget_usage is true.
     max_limit:
       type: number
     reset_duration:
@@ -2278,7 +2281,11 @@ UpdateModelConfigRequest:
       description: Provider name
     budgets:
       type: array
-      description: Full desired set of budgets (reconciled server-side). Send an empty array to remove all budgets.
+      description: >-
+        Full desired set of budgets (reconciled server-side). Send an empty array to remove all
+        budgets. On a holder-level config (`model_name` `*`, no provider) the set holds every
+        `shared`, `model` and `mcp` line, so send back the lines you keep with their `id`: a line
+        left out is removed.
       items:
         $ref: '#/CreateBudgetRequest'
     rate_limit:
