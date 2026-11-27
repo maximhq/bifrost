@@ -79,6 +79,8 @@ func (m *MCPManager) RunWithPluginPipeline(
 	if req != nil {
 		mcpReqType = req.RequestType
 	}
+	// Read before the PreHooks, which may rewrite req in place (see startCodeModeCostSum).
+	codeModeCall := isExecuteToolCode(req)
 
 	// Set by startOpSpan only when the wire op runs (nil for short-circuits → deferred end
 	// is a no-op). startOpSpan threads the new span id onto ctx (no restore) so the op and
@@ -181,7 +183,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 	pipeline := m.GetPluginPipeline()
 	if pipeline == nil {
 		// Send back cost: executeToolCode collects its nested calls' costs while its code runs.
-		costSum, endCostSum := m.startCodeModeCostSum(ctx, req, req)
+		costSum, endCostSum := m.startCodeModeCostSum(ctx, codeModeCall, req)
 		defer endCostSum()
 		startOpSpan(req)
 		resp, opErr := op(req)
@@ -247,7 +249,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 	}
 
 	// Decided on the request the PreHooks let through, which may have been retargeted.
-	costSum, endCostSum := m.startCodeModeCostSum(ctx, req, preReq)
+	costSum, endCostSum := m.startCodeModeCostSum(ctx, codeModeCall, preReq)
 	defer endCostSum()
 
 	// Op span created after the PreHooks so it nests under the last PreHook; PostHooks nest

@@ -56,14 +56,15 @@ func (m *MCPManager) codeModeCallContext(ctx *schemas.BifrostContext, req *schem
 
 // startCodeModeCostSum installs a sum for an executeToolCode call when send-back
 // cost is on, and returns a function that removes it. It returns a nil sum and a
-// no-op for every other request. requested is the call as it reached the gate,
-// which decided its context (see codeModeCallContext), and executed is the call
-// the pre-hooks let through: the sum is started only when both are
-// executeToolCode, so a call retargeted to another tool is priced as that tool,
-// and one retargeted to executeToolCode, whose context may be shared, carries no
-// sum (each of its nested calls still carries its own cost).
-func (m *MCPManager) startCodeModeCostSum(ctx *schemas.BifrostContext, requested, executed *schemas.BifrostMCPRequest) (*codeModeCostSum, func()) {
-	if !isExecuteToolCode(requested) || !isExecuteToolCode(executed) || !m.toolCostEnabled(ctx) {
+// no-op for every other request. ownContext is whether the call reached the gate
+// as executeToolCode, read before the pre-hooks, which may rewrite the request in
+// place; that is the call codeModeCallContext gave a context of its own. executed
+// is the call the pre-hooks let through. The sum is started only when both hold,
+// so a call retargeted to another tool is priced as that tool, and one retargeted
+// to executeToolCode, whose context may be shared, carries no sum (each of its
+// nested calls still carries its own cost).
+func (m *MCPManager) startCodeModeCostSum(ctx *schemas.BifrostContext, ownContext bool, executed *schemas.BifrostMCPRequest) (*codeModeCostSum, func()) {
+	if !ownContext || !isExecuteToolCode(executed) || !m.toolCostEnabled(ctx) {
 		return nil, func() {}
 	}
 	sum := &codeModeCostSum{}

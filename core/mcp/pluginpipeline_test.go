@@ -245,7 +245,7 @@ func BenchmarkWithToolCostOff(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		callCtx, endCall := m.codeModeCallContext(ctx, req)
-		sum, end := m.startCodeModeCostSum(callCtx, req, req)
+		sum, end := m.startCodeModeCostSum(callCtx, true, req)
 		_ = m.withToolCost(callCtx, req.RequestType, resp, sum)
 		end()
 		endCall()
@@ -262,7 +262,7 @@ func TestCodeModeCostSumStaysOffTheCallersContext(t *testing.T) {
 
 	callCtx, endCall := m.codeModeCallContext(shared, req)
 	require.NotSame(t, shared, callCtx, "executeToolCode runs on its own child context")
-	sum, end := m.startCodeModeCostSum(callCtx, req, req)
+	sum, end := m.startCodeModeCostSum(callCtx, true, req)
 	require.NotNil(t, sum)
 	assert.Nil(t, shared.Value(codeModeCostSumKey{}), "the shared context never sees the sum")
 	assert.Same(t, sum, schemas.NewBifrostContext(callCtx, schemas.NoDeadline).Value(codeModeCostSumKey{}), "the call's nested contexts do")
@@ -323,4 +323,28 @@ func TestRunWithPluginPipeline_PricesTheRetargetedTool(t *testing.T) {
 	require.Nil(t, bErr)
 	assert.Nil(t, resp.ExtraFields.Cost)
 	assert.Nil(t, shared.Value(codeModeCostSumKey{}), "no sum is installed on a context the call does not own")
+
+	// The same when the pre-hook rewrites the request in place rather than returning a new one.
+	inPlace := &inPlaceRetargetPipeline{}
+	m = pricedToolManager(inPlace, true)
+	resp, bErr = m.RunWithPluginPipeline(shared, toolCallOn("notes", "search"), func(*schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		inPlace.sumDuringOp = shared.Value(codeModeCostSumKey{})
+		return toolResult("", ToolTypeExecuteToolCode)(nil)
+	})
+	require.Nil(t, bErr)
+	assert.Nil(t, resp.ExtraFields.Cost)
+	assert.Nil(t, inPlace.sumDuringOp, "no sum is installed on a context the call does not own")
+}
+
+// inPlaceRetargetPipeline's pre-hook rewrites the request it is given into an executeToolCode call.
+type inPlaceRetargetPipeline struct {
+	responseRecordingPipeline
+	sumDuringOp any
+}
+
+func (p *inPlaceRetargetPipeline) RunMCPPreHooks(_ *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	name := ToolTypeExecuteToolCode
+	req.ClientName = ""
+	req.Function.Name = &name
+	return req, nil, 1
 }
