@@ -33,14 +33,15 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Decisions        | ✅            | -         | `/openai/v1/decisions` (`gpt-6-luna`), `/providers/microsoft/v1/systemone` (`Microsoft-Decision-1`) |
 | GPT Live         | -             | ✅        | `/openai/v1/live/sessions`      |
 | Image Variation  | ❌            | ❌        | -                               |
-| Batch            | ❌            | ❌        | -                               |
+| Batch            | ✅            | -         | `/openai/v1/batches`            |
 | Text Completions | ❌            | ❌        | -                               |
 | Speech (TTS)     | ✅            | ✅        | `/openai/v1/audio/speech`, or `/tts/cognitiveservices/v1` for [Azure AI Speech](#11-azure-ai-speech) |
 | Transcription    | ✅            | -         | `/openai/deployments/{model}/audio/transcriptions`, or `/speechtotext/transcriptions:transcribe` for [Azure AI Speech](#11-azure-ai-speech) |
 
 <Note>
-  **Azure-specific**: Batch operations and Text Completions are not supported by
-  Azure OpenAI Service. Responses API is available for both OpenAI and Anthropic models.
+  **Azure-specific**: Text Completions are not supported by Azure OpenAI Service.
+  Batch and Files work with OpenAI models only. Responses API is available for both
+  OpenAI and Anthropic models.
 </Note>
 
 ---
@@ -847,6 +848,69 @@ Files operations are supported for OpenAI models only.
 | Get Content | ✅      |
 
 Files are stored in Azure and can be used with batch operations.
+
+## Batch API
+
+Batch jobs run on Azure OpenAI's Batch API (`/openai/v1/batches`) and work with OpenAI models only. Each model you batch needs a deployment of the **Global Batch** or **Data Zone Batch** type in your Azure resource. A standard deployment rejects batch rows.
+
+A batch request has no model to route on, so name the provider on every call:
+
+- On Bifrost's own `/v1/batches` routes, add `?provider=azure` to every call. Create also accepts the `x-model-provider: azure` header instead, but list, retrieve, cancel and results read only the query parameter and return `400` without it.
+- With the OpenAI SDK pointed at `/openai`, pass `extra_body={"provider": "azure"}` on create and `extra_query={"provider": "azure"}` on list, retrieve and cancel. A query parameter on create is ignored there. Requests from the `AzureOpenAI` client, or sent under `/azure/openai/`, route to Azure without either.
+
+| Operation | Support | Endpoint |
+| --------- | ------- | -------- |
+| Create    | ✅      | POST `/v1/batches` |
+| List      | ✅      | GET `/v1/batches` |
+| Retrieve  | ✅      | GET `/v1/batches/{batch_id}` |
+| Cancel    | ✅      | POST `/v1/batches/{batch_id}/cancel` |
+| Results   | ✅      | GET `/v1/batches/{batch_id}/results` |
+| Delete    | ❌      | - |
+
+Azure has no operation that deletes a batch, and neither does the OpenAI Batch API it follows. Bifrost has no delete route for Azure batches, and a Go SDK `BatchDeleteRequest` to Azure returns an unsupported-operation error. To clean up a file-based batch, delete its input, output and error files with `DELETE /v1/files/{file_id}?provider=azure`. That route only reaches Azure's Files API, so for an `input_blob` batch, remove the input blob and the output and error blobs in your storage account through Azure Blob Storage.
+
+### Create batch
+
+Name the batch's work in exactly one of three ways. Mixing a file or blob with inline `requests` returns `400`.
+
+| Parameter | Type | Notes |
+| --------- | ---- | ----- |
+| `input_file_id` | string | A JSONL file uploaded through the Files API with `purpose: "batch"` |
+| `requests` | array | Inline [`BatchRequestItem`](https://github.com/maximhq/bifrost/blob/main/core/schemas/batch.go#L32) objects. Bifrost writes them to a JSONL file, uploads it with `purpose: "batch"`, and creates the batch from that file |
+| `input_blob` | string | URL of a JSONL file in Azure Blob Storage. Use it with `output_folder` |
+| `output_folder` | object | `{"url": "<blob container URL>"}`, where Azure writes the output for an `input_blob` batch |
+| `endpoint` | string | Target endpoint, such as `/v1/chat/completions` |
+| `completion_window` | string | Defaults to `24h` |
+| `metadata` | object | Custom metadata. Azure does not accept it on `input_blob` batches |
+
+The `model` in each row (in a JSONL file or in inline `requests`) is sent to Azure unchanged, so it must be the name of your batch deployment. Bifrost's `deployments` mapping is not applied to batch rows.
+
+```bash
+curl -X POST "http://localhost:8080/v1/batches?provider=azure" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "endpoint": "/v1/chat/completions",
+    "requests": [
+      {
+        "custom_id": "req-1",
+        "method": "POST",
+        "url": "/v1/chat/completions",
+        "body": {
+          "model": "gpt-4o-global-batch",
+          "messages": [{"role": "user", "content": "Hello"}]
+        }
+      }
+    ]
+  }'
+```
+
+### List, retrieve and cancel
+
+List pages through every Azure key on the provider, one key at a time, and accepts `limit` and `after`. Retrieve and cancel try each key until one finds the batch.
+
+### Results
+
+`GET /v1/batches/{batch_id}/results` reads the batch and downloads its output, from `output_file_id` through the Files API or from `output_blob` for blob batches. It then returns the parsed JSONL rows. The batch must be finished. Until Azure sets an output file or blob, the call returns an error.
 
 ---
 
