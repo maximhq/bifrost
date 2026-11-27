@@ -197,6 +197,98 @@ test.describe('Virtual Keys', () => {
       await expect(virtualKeysPage.page.getByTestId('vk-budget-lines-amount-1')).toHaveValue(String(SAMPLE_BUDGETS.everyMinute.maxLimit))
       await virtualKeysPage.closeSheet()
     })
+
+    test('should create virtual key with a shared and an MCP budget on the same reset period', async ({ virtualKeysPage }) => {
+      const vkData = createVirtualKeyWithBudget(
+        [SAMPLE_BUDGETS.daily, { ...SAMPLE_BUDGETS.daily, maxLimit: 5, scope: 'mcp' }],
+        { name: `Scoped Budget VK ${Date.now()}` }
+      )
+
+      createdVKs.push(vkData.name)
+      await virtualKeysPage.createVirtualKey(vkData)
+
+      const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
+      expect(vkExists).toBe(true)
+
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      const page = virtualKeysPage.page
+      // Lines may come back in either order; one is the shared $daily, the other the $5 MCP budget.
+      const amounts = [
+        await page.getByTestId('vk-budget-lines-amount-0').inputValue(),
+        await page.getByTestId('vk-budget-lines-amount-1').inputValue(),
+      ]
+      const mcpIndex = amounts.indexOf('5')
+      expect(mcpIndex).toBeGreaterThanOrEqual(0)
+      await expect(page.getByTestId(`vk-budget-lines-scope-${mcpIndex}-trigger`)).toHaveText('MCP')
+      await expect(page.getByTestId(`vk-budget-lines-scope-${1 - mcpIndex}-trigger`)).toHaveText('Both')
+      // Both lines share a period, so each budget override entry names its scope.
+      const overrides = page.getByTestId('vk-budget-overrides-section')
+      await expect(overrides.getByTestId('budget-scope-badge-mcp')).toBeVisible()
+      await expect(overrides.getByTestId('budget-scope-badge-shared')).toBeVisible()
+      await virtualKeysPage.closeSheet()
+    })
+
+    test('should flag two budgets with the same reset period and scope', async ({ virtualKeysPage }) => {
+      const page = virtualKeysPage.page
+      await virtualKeysPage.createBtn.click()
+      await expect(virtualKeysPage.sheet).toBeVisible()
+      await virtualKeysPage.waitForSheetAnimation()
+      for (const index of [0, 1]) {
+        await page.getByTestId('vk-budget-lines-add-btn').click()
+        await page.getByTestId(`vk-budget-lines-amount-${index}`).fill('5')
+        await page.getByTestId(`vk-budget-lines-line-${index}`).getByRole('combobox').first().click()
+        await page.getByRole('option', { name: 'Daily', exact: true }).click()
+        await page.getByTestId(`vk-budget-lines-scope-${index}-trigger`).click()
+        await page.getByTestId(`vk-budget-lines-scope-${index}-option-mcp`).click()
+      }
+      await expect(page.getByTestId('vk-budget-lines-line-0')).toContainText('Duplicate reset period for this scope')
+
+      // Moving one of them to another scope clears the conflict.
+      await page.getByTestId('vk-budget-lines-scope-1-trigger').click()
+      await page.getByTestId('vk-budget-lines-scope-1-option-shared').click()
+      await expect(page.getByTestId('vk-budget-lines-line-0')).not.toContainText('Duplicate reset period')
+      await virtualKeysPage.closeSheet()
+    })
+
+    test('should keep provider and per-model budget scopes when an unrelated field is edited', async ({ virtualKeysPage, request }) => {
+      // The sheet shows no scope on provider and per-model budgets, so a shared and a model budget on
+      // one period come from the API. Saving the key must send each back with its scope.
+      const scopedPair = [
+        { max_limit: 100, reset_duration: '1d' },
+        { max_limit: 10, reset_duration: '1d', scope: 'model' },
+      ]
+      const name = `Provider Scope VK ${Date.now()}`
+      await virtualKeysApi.create(request, {
+        name,
+        provider_configs: [{
+          provider: 'openai',
+          weight: 1,
+          allowed_models: ['*'],
+          budgets: scopedPair,
+          model_budgets: [{ model_name: 'gpt-4o-mini', budgets: scopedPair }],
+        }],
+      })
+      createdVKs.push(name)
+
+      await virtualKeysPage.editVirtualKey(name, { description: 'edited without touching budgets' })
+
+      const { id } = await findVirtualKeyByName(request, name)
+      const stored = (await virtualKeysApi.get(request, id)) as {
+        virtual_key: {
+          description?: string
+          provider_configs: Array<{
+            budgets?: Array<{ scope?: string }>
+            model_budgets?: Array<{ budgets?: Array<{ scope?: string }> }>
+          }>
+        }
+      }
+      const config = stored.virtual_key.provider_configs[0]
+      const scopesOf = (budgets?: Array<{ scope?: string }>) => (budgets ?? []).map((b) => b.scope ?? 'shared').sort()
+      expect(stored.virtual_key.description).toBe('edited without touching budgets')
+      expect(scopesOf(config.budgets)).toEqual(['model', 'shared'])
+      expect(scopesOf(config.model_budgets?.[0]?.budgets)).toEqual(['model', 'shared'])
+    })
   })
 
   test.describe('Virtual Key with Rate Limits', () => {

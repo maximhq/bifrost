@@ -7517,6 +7517,77 @@ const GOV38 = folder("GOV-38 Budget enforced on `/mcp`", `Setup: ${ALPHA_EA}, ec
   agentTeardown("GOV-38"),
 ]);
 
+// Budget scope: a tool call is charged by, and refused on, a holder's shared ("Both") and MCP budgets only,
+// never its model budget. scopedBudget reads the VK budget of one scope; keepScoped records its usage.
+const scopedBudget = (scope) => `var b = (vk.budgets || []).filter(function (x) { return (x.scope || 'shared') === ${lit(scope)}; })[0]; pm.expect(b, 'no ${scope} budget: ' + pm.response.text()).to.be.an('object');`;
+const keepScoped = (v, scope) => [VK_READ, scopedBudget(scope), `pm.collectionVariables.set(${lit(v)}, String(b.current_usage));`];
+const scopedPlus = (v, scope, d) => A.custom(`the ${scope} budget's current_usage is ${d} more than recorded`, [VK_READ, scopedBudget(scope), `pm.expect(b.current_usage, 'body: ' + pm.response.text()).to.be.closeTo(Number(pm.collectionVariables.get(${lit(v)})) + ${d}, 1e-9);`]);
+const budgetExceeded = (amount) => [A.status(402), A.custom("type budget_exceeded", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('budget_exceeded');"]), A.msgContains(`budget exceeded: ${amount} >= ${amount} dollars`)];
+const ECHO_PRICED = "echo priced 0.001";
+
+const GOV40 = folder("GOV-40 A tool call charges the shared and MCP budgets, never the model budget", `Setup: ${ALPHA_EA}, ${ECHO_PRICED}; a VK with mcp_configs alpha ["*"] and three budgets per 1h of 1 each: shared, model and mcp. One call goes through /v1/mcp/tool/execute and one through /mcp.`, [
+  ...alphaEA("GOV-40"),
+  priceAlpha("GOV-40", "setup: price echo at 0.001", "gov-40-alpha", { echo: 0.001 }),
+  govKey("GOV-40", "gov40_vk", ALPHA_ALL, { budgets: [{ max_limit: 1, reset_duration: "1h" }, { max_limit: 1, reset_duration: "1h", scope: "model" }, { max_limit: 1, reset_duration: "1h", scope: "mcp" }] }),
+  vkMemory("GOV-40", "setup: record the three budgets", "gov40_vk", [], [...keepScoped("gov40_shared", "shared"), scopedBudget("model"), `pm.collectionVariables.set('gov40_model', String(b.current_usage));`, scopedBudget("mcp"), `pm.collectionVariables.set('gov40_mcp', String(b.current_usage));`]),
+  execTool("GOV-40", "execute alpha-echo with the VK", "alpha-echo", [A.status(200)], vkUse("gov40_vk")),
+  gwCall("GOV-40", "/mcp tools/call alpha-echo with the VK", "alpha-echo", [A.custom("isError is not set", ["pm.expect(pm.response.json().result.isError || false, 'body: ' + pm.response.text()).to.equal(false);"])], [{ key: "x-bf-vk", value: "{{gov40_vk}}" }]),
+  vkMemory("GOV-40", "the shared and mcp budgets rose by 0.002 and the model budget did not move", "gov40_vk", [scopedPlus("gov40_shared", "shared", 0.002), scopedPlus("gov40_mcp", "mcp", 0.002), scopedPlus("gov40_model", "model", 0)]),
+  vkDelete("GOV-40", "teardown: delete the VK", "gov40_vk"),
+  agentTeardown("GOV-40"),
+]);
+
+const GOV41 = folder("GOV-41 An exhausted MCP budget refuses tool calls", `Setup: ${ALPHA_EA}, ${ECHO_PRICED}; a VK with mcp_configs alpha ["*"], a shared budget of 1 per 1h and an mcp budget of 0.001 per 1h, which the first call spends.`, [
+  ...alphaEA("GOV-41"),
+  priceAlpha("GOV-41", "setup: price echo at 0.001", "gov-41-alpha", { echo: 0.001 }),
+  govKey("GOV-41", "gov41_vk", ALPHA_ALL, { budgets: [{ max_limit: 1, reset_duration: "1h" }, { max_limit: 0.001, reset_duration: "1h", scope: "mcp" }] }),
+  execTool("GOV-41", "call 1 spends the mcp budget", "alpha-echo", [A.status(200)], vkUse("gov41_vk")),
+  execTool("GOV-41", "call 2 is refused on the mcp budget", "alpha-echo", budgetExceeded("0.0010"), vkUse("gov41_vk")),
+  rpc("GOV-41", "/mcp tools/call with the VK is refused", call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{gov41_vk}}" }], asserts: [A.status(402), A.msgContains("Budget exceeded:")] }),
+  mockGet("GOV-41", "alpha", "alpha ran echo once", [callsIs("echo", 1)]),
+  vkDelete("GOV-41", "teardown: delete the VK", "gov41_vk"),
+  agentTeardown("GOV-41"),
+]);
+
+const GOV42 = folder("GOV-42 An exhausted shared budget refuses tool calls", `Setup: ${ALPHA_EA}, ${ECHO_PRICED}; a VK with mcp_configs alpha ["*"], a shared budget of 0.001 per 1h, which the first call spends, and an mcp budget of 1 per 1h.`, [
+  ...alphaEA("GOV-42"),
+  priceAlpha("GOV-42", "setup: price echo at 0.001", "gov-42-alpha", { echo: 0.001 }),
+  govKey("GOV-42", "gov42_vk", ALPHA_ALL, { budgets: [{ max_limit: 0.001, reset_duration: "1h" }, { max_limit: 1, reset_duration: "1h", scope: "mcp" }] }),
+  execTool("GOV-42", "call 1 spends the shared budget", "alpha-echo", [A.status(200)], vkUse("gov42_vk")),
+  execTool("GOV-42", "call 2 is refused on the shared budget", "alpha-echo", budgetExceeded("0.0010"), vkUse("gov42_vk")),
+  rpc("GOV-42", "/mcp tools/call with the VK is refused", call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{gov42_vk}}" }], asserts: [A.status(402), A.msgContains("Budget exceeded:")] }),
+  mockGet("GOV-42", "alpha", "alpha ran echo once", [callsIs("echo", 1)]),
+  vkDelete("GOV-42", "teardown: delete the VK", "gov42_vk"),
+  agentTeardown("GOV-42"),
+]);
+
+const GOV43 = folder("GOV-43 A model budget neither charges nor refuses tool calls", `Setup: ${ALPHA_EA}, ${ECHO_PRICED}; a VK with mcp_configs alpha ["*"] and only a model budget of 0.001 per 1h. The harness sends no priced inference, so the model budget is shown with a cap the calls' cost would cross: were it charged by tool calls, the second call would be refused, as GOV-23's is.`, [
+  ...alphaEA("GOV-43"),
+  priceAlpha("GOV-43", "setup: price echo at 0.001", "gov-43-alpha", { echo: 0.001 }),
+  govKey("GOV-43", "gov43_vk", ALPHA_ALL, { budgets: [{ max_limit: 0.001, reset_duration: "1h", scope: "model" }] }),
+  execTool("GOV-43", "call 1", "alpha-echo", [A.status(200)], vkUse("gov43_vk")),
+  execTool("GOV-43", "call 2 is served past the model budget's cap", "alpha-echo", [A.status(200)], vkUse("gov43_vk")),
+  gwCall("GOV-43", "/mcp tools/call alpha-echo with the VK is served", "alpha-echo", [A.custom("isError is not set", ["pm.expect(pm.response.json().result.isError || false, 'body: ' + pm.response.text()).to.equal(false);"])], [{ key: "x-bf-vk", value: "{{gov43_vk}}" }]),
+  vkMemory("GOV-43", "the model budget was never charged", "gov43_vk", [A.custom("the model budget's current_usage is 0", [VK_READ, scopedBudget("model"), "pm.expect(b.current_usage, 'body: ' + pm.response.text()).to.equal(0);"])]),
+  mockGet("GOV-43", "alpha", "alpha ran echo three times", [callsIs("echo", 3)]),
+  vkDelete("GOV-43", "teardown: delete the VK", "gov43_vk"),
+  agentTeardown("GOV-43"),
+]);
+
+const GOV44 = folder("GOV-44 A team's MCP budget charges and refuses its key's tool calls, and its model budget does neither", `Setup: ${ALPHA_EA}, ${ECHO_PRICED}; a team with an mcp budget of 0.002 per 1h and a model budget of 0.001 per 1h; a VK of that team with mcp_configs alpha ["*"] and no budgets of its own. Were the model budget charged by tool calls, the second call would be refused on it.`, [
+  ...alphaEA("GOV-44"),
+  priceAlpha("GOV-44", "setup: price echo at 0.001", "gov-44-alpha", { echo: 0.001 }),
+  request("GOV-44", "setup: create the team with an mcp and a model budget", "POST", "/api/governance/teams", { body: { name: "gov44-team", budgets: [{ max_limit: 0.002, reset_duration: "1h", scope: "mcp" }, { max_limit: 0.001, reset_duration: "1h", scope: "model" }] }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('gov44_team_id', pm.response.json().team.id);"] }),
+  govKey("GOV-44", "gov44_vk", ALPHA_ALL, { team_id: "{{gov44_team_id}}" }),
+  execTool("GOV-44", "call 1", "alpha-echo", [A.status(200)], vkUse("gov44_vk")),
+  execTool("GOV-44", "call 2 is served past the team's model budget cap", "alpha-echo", [A.status(200)], vkUse("gov44_vk")),
+  execTool("GOV-44", "call 3 is refused on the team's mcp budget", "alpha-echo", budgetExceeded("0.0020"), vkUse("gov44_vk")),
+  mockGet("GOV-44", "alpha", "alpha ran echo twice", [callsIs("echo", 2)]),
+  vkDelete("GOV-44", "teardown: delete the VK", "gov44_vk"),
+  request("GOV-44", "teardown: delete the team", "DELETE", "/api/governance/teams/{{gov44_team_id}}", { asserts: [A.status(200)] }),
+  agentTeardown("GOV-44"),
+]);
+
 // vmcp is the virtual MCP "Tools A" (slug tools-a) over alpha's echo, kept in gov<n>_vmcp.
 const vmcpCreate = (id, v, tools = ["echo"]) => request(id, "setup: create the virtual MCP Tools A over alpha's echo", "POST", "/api/mcp/virtual-mcps", { body: { name: "Tools A", tools: [{ mcp_client_id: `${id.toLowerCase()}-alpha`, tool_names: tools }] }, asserts: [A.status(201)], extraTests: [`pm.collectionVariables.set(${lit(v)}, pm.response.json().virtual_mcp.id);`] });
 const vmcpAttach = (id, title, v, vk) => request(id, title, "POST", `/api/mcp/virtual-mcps/{{${v}}}/virtual-keys/{{${vk}_id}}`, { asserts: [A.status(200)] });
@@ -13588,7 +13659,7 @@ const collection = {
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39, GOV40, GOV41, GOV42, GOV43, GOV44]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
