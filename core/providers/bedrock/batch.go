@@ -124,6 +124,30 @@ type BedrockBatchCancelResponse struct {
 	Status string `json:"status"`
 }
 
+// BatchMetadataBedrockStatus is the batch Metadata key that carries Bedrock's
+// own job status (Submitted, Validating, Scheduled, InProgress, ...). The
+// Bifrost status set folds several of these together (for example Scheduled,
+// a job that passed validation and waits for capacity, becomes "validating"),
+// so the raw value lets a caller tell them apart.
+const BatchMetadataBedrockStatus = "bedrock_status"
+
+// batchJobMetadata stores Bedrock-specific job fields in Metadata: job_name
+// and model_id for conversion back to Bedrock format, and the raw status
+// under BatchMetadataBedrockStatus.
+func batchJobMetadata(jobName, modelID, status string) map[string]string {
+	metadata := make(map[string]string)
+	if jobName != "" {
+		metadata["job_name"] = jobName
+	}
+	if modelID != "" {
+		metadata["model_id"] = modelID
+	}
+	if status != "" {
+		metadata[BatchMetadataBedrockStatus] = status
+	}
+	return metadata
+}
+
 // ToBifrostBatchStatus converts Bedrock status to Bifrost status.
 func ToBifrostBatchStatus(status string) schemas.BatchStatus {
 	switch status {

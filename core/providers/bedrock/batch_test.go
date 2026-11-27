@@ -39,3 +39,16 @@ func TestToBedrockBatchJobRetrieveResponse_NoErrors(t *testing.T) {
 	out := ToBedrockBatchJobRetrieveResponse(resp)
 	assert.Empty(t, out.Message)
 }
+
+// TestBatchJobMetadata_CarriesBedrockStatus verifies the raw Bedrock job
+// status is kept in Metadata, since ToBifrostBatchStatus folds Submitted,
+// Validating and Scheduled into one Bifrost status.
+func TestBatchJobMetadata_CarriesBedrockStatus(t *testing.T) {
+	metadata := batchJobMetadata("job-1", "anthropic.claude-3", "Scheduled")
+	assert.Equal(t, "job-1", metadata["job_name"])
+	assert.Equal(t, "anthropic.claude-3", metadata["model_id"])
+	assert.Equal(t, "Scheduled", metadata[BatchMetadataBedrockStatus])
+	assert.Equal(t, schemas.BatchStatusValidating, ToBifrostBatchStatus("Scheduled"))
+
+	assert.Empty(t, batchJobMetadata("", "", ""))
+}
