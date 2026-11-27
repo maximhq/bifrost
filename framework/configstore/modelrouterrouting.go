@@ -215,9 +215,11 @@ func checkModelRouterPriorityError(routing ModelRouterRouting) error {
 }
 
 // defaultModelRouterRouting is the routing a router gets when it is created
-// without any: off, global, and after every other global router, so turning
-// it on never puts it ahead of a router already serving.
-func defaultModelRouterRouting(ctx context.Context, txDB *gorm.DB) (ModelRouterRouting, error) {
+// without any: global, and after every other global router, so it is never
+// put ahead of a router already serving. A conditional router is on, as a
+// routing rule that did not say otherwise was; a classifier router is off
+// until it is turned on, since it would classify every request in its scope.
+func defaultModelRouterRouting(ctx context.Context, txDB *gorm.DB, mode string) (ModelRouterRouting, error) {
 	var last sql.NullInt64
 	if err := txDB.WithContext(ctx).Model(&tables.TableModelRouter{}).
 		Where("scope = ? AND scope_id IS NULL", "global").
@@ -228,7 +230,7 @@ func defaultModelRouterRouting(ctx context.Context, txDB *gorm.DB) (ModelRouterR
 	if last.Valid {
 		priority = int(last.Int64) + 1
 	}
-	return ModelRouterRouting{Scope: "global", Priority: priority}, nil
+	return ModelRouterRouting{Enabled: tables.NormalizeModelRouterMode(mode) == tables.ModelRouterModeConditional, Scope: "global", Priority: priority}, nil
 }
 
 // ModelRouterRoutingChange is one router's new routing in a

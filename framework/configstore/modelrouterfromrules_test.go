@@ -314,9 +314,10 @@ func TestModelRoutersFromRoutingRulesCopiesARuleWithoutTheTier(t *testing.T) {
 	require.Len(t, router.Targets, 1)
 	assert.Equal(t, []string{" azure/gpt-4o@azure-key 1"}, describeModelRouterTargets(router.Targets), "a conditional router's target has no tier")
 	assert.Equal(t, 1500, *router.Targets[0].TTFTTimeoutMs)
-	fallbacks, err := json.Marshal(router.Targets[0].ParsedFallbacks)
+	assert.Empty(t, router.Targets[0].ParsedFallbacks, "a conditional router's targets carry no fallbacks")
+	fallbacks, err := json.Marshal(router.Fallbacks)
 	require.NoError(t, err)
-	assert.JSONEq(t, `["anthropic/claude-sonnet", "openai/", {"provider": "openai", "model": "gpt-4o-mini", "key_id": "openai-key"}]`, string(fallbacks), "the rule's fallbacks go on its target as they were written")
+	assert.JSONEq(t, `["anthropic/claude-sonnet", "openai/", {"provider": "openai", "model": "gpt-4o-mini", "key_id": "openai-key"}]`, string(fallbacks), "the rule's fallbacks stay one list on its router, as they were written")
 
 	note := migrationNote(t, migration, "support")
 	assert.Equal(t, []string{"support"}, note.RouterIDs)

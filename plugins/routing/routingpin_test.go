@@ -8,112 +8,117 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestApplyRoutingRules_PinnedKeyReachesContext exercises the real propagation path through
-// applyRoutingRules, under the same restricted-write block that core's RunPreRequestHooks
-// installs around every PreRequestHook (core/bifrost.go: ctx.BlockRestrictedWrites +
-// ctx.WithPluginScope). This is what production actually does: the routing pin lands on the
-// dedicated, non-reserved BifrostContextKeyRoutingPinnedAPIKeyID (a write to the reserved
-// BifrostContextKeyAPIKeyID would be silently dropped during this phase). Key selection
-// (selectKeyFromProviderForModelWithPool) reads the pinned key back from this context.
-func TestApplyRoutingRules_PinnedKeyReachesContext(t *testing.T) {
-	const pinnedKeyID = "pinned-key-abc-123"
+// pinRouterID is the conditional router the tests of this file route through.
+const pinRouterID = "pin"
 
-	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
+// pinRouterPlugin builds a routing plugin with one conditional router, named name, that sends the
+// requests condition holds for to target, with fallbacks as the router's fallback chain.
+func pinRouterPlugin(t *testing.T, governance *MockGovernance, name, condition string, target configstoreTables.TableModelRouterTarget, fallbacks ...configstoreTables.RoutingFallback) (*RoutingPlugin, *rules.TestRules) {
+	t.Helper()
+	ctx := context.Background()
+	store, err := rules.NewTestRules(ctx, t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
 	t.Cleanup(store.Close)
-	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
-		ID:            "pin-1",
-		Name:          "Pinned Key Rule",
-		CelExpression: "model == 'gpt-4o'",
-		Targets: []configstoreTables.TableRoutingTarget{
-			{
-				Provider: bifrost.Ptr("azure"),
-				Model:    bifrost.Ptr("gpt-4-turbo"),
-				KeyID:    bifrost.Ptr(pinnedKeyID),
-				Weight:   1.0,
-			},
-		},
-		Enabled:  bifrost.Ptr(true),
-		Scope:    "global",
-		Priority: 0,
-	}))
-
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
+	plugin, err := InitFromStore(ctx, nil, rules.NewMockLogger(), nil, store.Store, governance)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	require.NoError(t, store.SaveModelRouter(ctx, &configstore.ModelRouter{
+		ID: pinRouterID, Name: name, Mode: configstoreTables.ModelRouterModeConditional,
+		Targets: []configstoreTables.TableModelRouterTarget{target}, Fallbacks: fallbacks,
+		Routing: &configstore.ModelRouterRouting{Enabled: true, Scope: "global", CelExpression: condition},
+	}))
+	servePinRouter(t, plugin, store)
+	return plugin, store
+}
+
+// servePinRouter serves the router as the live store holds it, as the server does after a save.
+func servePinRouter(t *testing.T, plugin *RoutingPlugin, store *rules.TestRules) {
+	t.Helper()
+	record, ok := store.Live().Collections.ModelRouters.Get(pinRouterID)
+	require.True(t, ok)
+	require.NoError(t, plugin.ReloadModelRouter(&record.Router))
+}
+
+// storePinRouterFallbacks writes the router's fallback column as given and reads the router back,
+// the way a gateway reads it at boot. It bypasses the save path's checks, so a test can store
+// what a rule that became this router left there.
+func storePinRouterFallbacks(t *testing.T, plugin *RoutingPlugin, store *rules.TestRules, stored *string) {
+	t.Helper()
+	ctx := context.Background()
+	require.NoError(t, store.ConfigStore().DB().WithContext(ctx).Model(&configstoreTables.TableModelRouter{}).
+		Where("id = ?", pinRouterID).Update("fallbacks", stored).Error)
+	require.NoError(t, store.Live().Refresh(ctx, []livestore.Ref{{Kind: livestore.KindModelRouter, ID: pinRouterID}}))
+	servePinRouter(t, plugin, store)
+}
+
+// restrictedContext returns a request context as core hands it to a PreRequestHook: writes to
+// reserved keys are blocked and the plugin writes through its own scope (core/bifrost.go:
+// ctx.BlockRestrictedWrites + ctx.WithPluginScope). root is what the rest of the request reads.
+func restrictedContext() (root, scoped *schemas.BifrostContext) {
+	root = schemas.NewBifrostContext(context.Background(), time.Now())
+	root.BlockRestrictedWrites()
+	pluginName := PluginName
+	return root, root.WithPluginScope(&pluginName)
+}
+
+// TestRouterTarget_PinnedKeyReachesContext exercises the real propagation path of a target's key
+// pin, under the restricted-write block core installs around every PreRequestHook. The pin lands
+// on the dedicated, non-reserved BifrostContextKeyRoutingPinnedAPIKeyID (a write to the reserved
+// BifrostContextKeyAPIKeyID would be silently dropped during this phase). Key selection
+// (selectKeyFromProviderForModelWithPool) reads the pinned key back from this context.
+func TestRouterTarget_PinnedKeyReachesContext(t *testing.T) {
+	const pinnedKeyID = "pinned-key-abc-123"
+	plugin, _ := pinRouterPlugin(t, NewMockGovernance(), "Pinned Key Router", "model == 'gpt-4o'", configstoreTables.TableModelRouterTarget{
+		Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), KeyID: bifrost.Ptr(pinnedKeyID), Weight: 1,
+	})
 
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
 	}
+	root, scoped := restrictedContext()
+	require.NoError(t, plugin.PreRequestHook(scoped, req))
 
-	root := schemas.NewBifrostContext(context.Background(), time.Now())
-	root.BlockRestrictedWrites()
-	pluginName := PluginName
-	scoped := root.WithPluginScope(&pluginName)
-
-	decision, err := plugin.applyRoutingRules(scoped, req, rules.GovernanceScope{})
-	require.NoError(t, err)
-	require.NotNil(t, decision)
-	assert.Equal(t, pinnedKeyID, decision.KeyID)
-
+	provider, model, _ := req.GetRequestFields()
+	assert.Equal(t, schemas.Azure, provider)
+	assert.Equal(t, "gpt-4-turbo", model)
 	// The pinned key_id must be readable from the root context that key selection consults.
 	ctxKeyID, _ := root.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string)
 	assert.Equal(t, pinnedKeyID, ctxKeyID,
-		"routing-rule pinned key_id must reach BifrostContextKeyRoutingPinnedAPIKeyID that selectKeyFromProviderForModelWithPool reads")
+		"a router target's pinned key_id must reach BifrostContextKeyRoutingPinnedAPIKeyID that selectKeyFromProviderForModelWithPool reads")
 }
 
-// TestApplyRoutingRules_FallbackKeyPinReachesRequest covers the fallback pin, which travels on the request's fallback list because core clears the context per attempt.
-func TestApplyRoutingRules_FallbackKeyPinReachesRequest(t *testing.T) {
+// TestRouterTarget_FallbackKeyPinReachesRequest covers the fallback pin, which travels on the request's fallback list because core clears the context per attempt.
+func TestRouterTarget_FallbackKeyPinReachesRequest(t *testing.T) {
 	const fallbackKeyID = "fallback-key-xyz-789"
-
-	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
-	require.NoError(t, err)
-	t.Cleanup(store.Close)
-	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
-		ID:            "fb-pin-1",
-		Name:          "Pinned Fallback Rule",
-		CelExpression: "model == 'gpt-4o'",
-		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
-		},
-		ParsedFallbacks: []configstoreTables.RoutingFallback{
-			{Fallback: schemas.Fallback{Provider: "vertex", Model: "gemini-2.5-pro", KeyID: fallbackKeyID}},
-			{Fallback: schemas.Fallback{Provider: "anthropic"}},
-		},
-		Enabled:  bifrost.Ptr(true),
-		Scope:    "global",
-		Priority: 0,
-	}))
-
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
-	require.NoError(t, err)
+	plugin, _ := pinRouterPlugin(t, NewMockGovernance(), "Pinned Fallback Router", "model == 'gpt-4o'", configstoreTables.TableModelRouterTarget{
+		Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1,
+	},
+		configstoreTables.RoutingFallback{Fallback: schemas.Fallback{Provider: "vertex", Model: "gemini-2.5-pro", KeyID: fallbackKeyID}},
+		configstoreTables.RoutingFallback{Fallback: schemas.Fallback{Provider: "anthropic"}},
+	)
 
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
 	}
-
-	root := schemas.NewBifrostContext(context.Background(), time.Now())
-	root.BlockRestrictedWrites()
-	pluginName := PluginName
-	scoped := root.WithPluginScope(&pluginName)
-
-	decision, err := plugin.applyRoutingRules(scoped, req, rules.GovernanceScope{})
-	require.NoError(t, err)
-	require.NotNil(t, decision)
+	_, scoped := restrictedContext()
+	require.NoError(t, plugin.PreRequestHook(scoped, req))
 
 	fallbacks := req.ChatRequest.Fallbacks
 	require.Len(t, fallbacks, 2)
 	assert.Equal(t, schemas.ModelProvider("vertex"), fallbacks[0].Provider)
 	assert.Equal(t, fallbackKeyID, fallbacks[0].KeyID,
-		"a routing rule's fallback key_id must reach schemas.Fallback.KeyID, which core re-pins per attempt")
+		"a target's fallback key_id must reach schemas.Fallback.KeyID, which core re-pins per attempt")
 
 	// An unpinned fallback inherits the incoming model and stays load-balanced.
 	assert.Equal(t, schemas.ModelProvider("anthropic"), fallbacks[1].Provider)
@@ -121,78 +126,44 @@ func TestApplyRoutingRules_FallbackKeyPinReachesRequest(t *testing.T) {
 	assert.Empty(t, fallbacks[1].KeyID)
 }
 
-// TestApplyRoutingRules_CustomProviderFallbackSurvivesRestart covers #7538. At boot the routing
-// plugin loads rules from the config store before bifrost.Init registers custom providers, so a
-// stored "backup/m" fallback is decoded while "backup" is still unknown. The fallback must still
-// route to the custom provider once it is registered, as it did before fallbacks gained key pins.
-func TestApplyRoutingRules_CustomProviderFallbackSurvivesRestart(t *testing.T) {
+// TestRouterTarget_CustomProviderFallbackSurvivesRestart covers #7538. At boot the routing plugin
+// loads routers from the config store before bifrost.Init registers custom providers, so a stored
+// "backup/m" fallback is decoded while "backup" is still unknown. The fallback must still route to
+// the custom provider once it is registered.
+func TestRouterTarget_CustomProviderFallbackSurvivesRestart(t *testing.T) {
 	const customProvider = schemas.ModelProvider("custom-backup-7538")
 	schemas.UnregisterKnownProvider(customProvider)
 	t.Cleanup(func() { schemas.UnregisterKnownProvider(customProvider) })
 
-	// Decode the rule the way the config store does at boot: AfterFind on the stored JSON column,
-	// while the custom provider is not yet registered.
-	stored := &configstoreTables.TableRoutingRule{
-		ID:            "custom-fb-1",
-		Name:          "Custom Provider Fallback Rule",
-		CelExpression: "model == 'm'",
-		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
-		},
-		Fallbacks: bifrost.Ptr(`["` + string(customProvider) + `/m"]`),
-		Enabled:   bifrost.Ptr(true),
-		Scope:     "global",
-		Priority:  0,
-	}
-	require.NoError(t, stored.AfterFind(nil))
+	plugin, store := pinRouterPlugin(t, NewMockGovernance(), "Custom Provider Fallback Router", "model == 'm'", configstoreTables.TableModelRouterTarget{
+		Provider: bifrost.Ptr("openai"), Weight: 1,
+	})
+	// The router is read the way the config store reads it at boot, while the custom provider is
+	// not yet registered.
+	storePinRouterFallbacks(t, plugin, store, bifrost.Ptr(`["`+string(customProvider)+`/m"]`))
 
-	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
-	require.NoError(t, err)
-	t.Cleanup(store.Close)
-	require.NoError(t, store.Put(context.Background(), stored))
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
-	require.NoError(t, err)
-
-	// bifrost.Init now registers the custom provider, after the rules were loaded.
+	// bifrost.Init now registers the custom provider, after the routers were loaded.
 	schemas.RegisterKnownProvider(customProvider)
 
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m"},
 	}
-	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
-
-	decision, err := plugin.applyRoutingRules(ctx, req, rules.GovernanceScope{})
-	require.NoError(t, err)
-	require.NotNil(t, decision)
+	require.NoError(t, plugin.PreRequestHook(schemas.NewBifrostContext(context.Background(), time.Now()), req))
 
 	require.Len(t, req.ChatRequest.Fallbacks, 1,
-		"a stored fallback naming a custom provider must not be dropped when rules load before the provider is registered")
+		"a stored fallback naming a custom provider must not be dropped when routers load before the provider is registered")
 	assert.Equal(t, customProvider, req.ChatRequest.Fallbacks[0].Provider)
 	assert.Equal(t, "m", req.ChatRequest.Fallbacks[0].Model)
 }
 
-// TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly: a matched
-// target's ttft_timeout_ms lands on BifrostContextKeyStreamFirstTokenTimeout,
-// under the same restricted-write block core installs around PreRequestHook,
-// and only for streaming request types.
-func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T) {
-	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
-	require.NoError(t, err)
-	t.Cleanup(store.Close)
-	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
-		ID:            "ttft-1",
-		Name:          "TTFT Rule",
-		CelExpression: "model == 'gpt-4o'",
-		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0, TTFTTimeoutMs: new(1500)},
-		},
-		ParsedFallbacks: []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "anthropic", Model: "claude-sonnet-4-5"}}},
-		Enabled:         bifrost.Ptr(true),
-		Scope:           "global",
-	}))
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
-	require.NoError(t, err)
+// TestRouterTarget_TTFTTimeoutReachesContextForStreamsOnly: a chosen target's ttft_timeout_ms
+// lands on BifrostContextKeyStreamFirstTokenTimeout, under the same restricted-write block core
+// installs around PreRequestHook, and only for streaming request types.
+func TestRouterTarget_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T) {
+	plugin, _ := pinRouterPlugin(t, NewMockGovernance(), "TTFT Router", "model == 'gpt-4o'", configstoreTables.TableModelRouterTarget{
+		Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1, TTFTTimeoutMs: new(1500),
+	}, configstoreTables.RoutingFallback{Fallback: schemas.Fallback{Provider: "anthropic", Model: "claude-sonnet-4-5"}})
 
 	for _, tc := range []struct {
 		requestType schemas.RequestType
@@ -209,48 +180,25 @@ func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T)
 			} else {
 				req.ChatRequest = &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
 			}
-			root := schemas.NewBifrostContext(context.Background(), time.Now())
-			root.BlockRestrictedWrites()
-			pluginName := PluginName
-			scoped := root.WithPluginScope(&pluginName)
-
-			decision, err := plugin.applyRoutingRules(scoped, req, rules.GovernanceScope{})
-			require.NoError(t, err)
-			require.NotNil(t, decision)
+			root, scoped := restrictedContext()
+			require.NoError(t, plugin.PreRequestHook(scoped, req))
 			got, _ := root.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout).(time.Duration)
 			assert.Equal(t, tc.want, got)
 		})
 	}
-
 }
 
-// TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules pins the ordering this plugin
-// exists to guarantee: a matched rule rewrites the model, and both the provider allowlist and
-// the load balancer must then run against the rewritten model, not the one the caller sent.
-// Publishing the allowlist for the incoming model would prune providers the routed model is
-// actually allowed on.
-func TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules(t *testing.T) {
-	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
-	require.NoError(t, err)
-	t.Cleanup(store.Close)
-	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
-		ID:            "rewrite-1",
-		Name:          "Rewrite Model",
-		CelExpression: "model == 'gpt-4o'",
-		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: bifrost.Ptr("anthropic"), Model: bifrost.Ptr("claude-sonnet-4"), Weight: 1.0},
-		},
-		Enabled:  bifrost.Ptr(true),
-		Scope:    "global",
-		Priority: 0,
-	}))
-
+// TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRouters pins the ordering this plugin
+// exists to guarantee: a router rewrites the model, and both the provider allowlist and the load
+// balancer must then run against the rewritten model, not the one the caller sent. Publishing the
+// allowlist for the incoming model would prune providers the routed model is actually allowed on.
+func TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRouters(t *testing.T) {
 	vk := &configstoreTables.TableVirtualKey{ID: "vk-1", Name: "vk", Value: *schemas.NewSecretVar("sk-bf-test"), IsActive: bifrost.Ptr(true)}
 	governance := NewMockGovernance()
 	governance.VirtualKeys["sk-bf-test"] = vk
-
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
-	require.NoError(t, err)
+	plugin, _ := pinRouterPlugin(t, governance, "Rewrite Model", "model == 'gpt-4o'", configstoreTables.TableModelRouterTarget{
+		Provider: bifrost.Ptr("anthropic"), Model: bifrost.Ptr("claude-sonnet-4"), Weight: 1,
+	})
 
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
@@ -262,36 +210,21 @@ func TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules(t *testing.T) {
 	require.NoError(t, plugin.PreRequestHook(ctx, req))
 
 	_, model, _ := req.GetRequestFields()
-	assert.Equal(t, "claude-sonnet-4", model, "rule should have rewritten the model")
+	assert.Equal(t, "claude-sonnet-4", model, "the router should have rewritten the model")
 	assert.Equal(t, []string{"claude-sonnet-4"}, governance.AllowlistModels,
 		"allowlist must be published for the routed model, not the incoming one")
 	assert.Equal(t, []string{"claude-sonnet-4"}, governance.LoadBalancedModels,
-		"load balancing must run after rules, on the routed model")
+		"load balancing must run after the routers, on the routed model")
 }
 
 // TestPreRequestHook_LargePayloadPublishesAllowlistBeforeRefinement covers the large-payload
 // path, where the model is carried on LargePayloadMetadata instead of the request body. The
-// allowlist must be computed from the model the caller asked for (post-rule, pre-load-balance),
+// allowlist must be computed from the model the caller asked for (routed, before load balancing),
 // because a virtual key's allowed/blacklisted model patterns are written against caller-facing
 // names. Load balancing may rewrite the model to a provider-specific one, and an allowlist
 // derived from that name can come back empty, which downstream layers treat as "no provider
 // permitted".
 func TestPreRequestHook_LargePayloadPublishesAllowlistBeforeRefinement(t *testing.T) {
-	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
-	require.NoError(t, err)
-	t.Cleanup(store.Close)
-	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
-		ID:            "rewrite-lp",
-		Name:          "Rewrite Model",
-		CelExpression: "model == 'gpt-4o'",
-		Targets: []configstoreTables.TableRoutingTarget{
-			{Model: bifrost.Ptr("gpt-4o-mini"), Weight: 1.0},
-		},
-		Enabled:  bifrost.Ptr(true),
-		Scope:    "global",
-		Priority: 0,
-	}))
-
 	vk := &configstoreTables.TableVirtualKey{ID: "vk-1", Name: "vk", Value: *schemas.NewSecretVar("sk-bf-test"), IsActive: bifrost.Ptr(true)}
 	governance := NewMockGovernance()
 	governance.VirtualKeys["sk-bf-test"] = vk
@@ -301,9 +234,9 @@ func TestPreRequestHook_LargePayloadPublishesAllowlistBeforeRefinement(t *testin
 		req.SetProvider(schemas.Azure)
 		req.SetModel("azure-gpt-4o-mini-deployment")
 	}
-
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
-	require.NoError(t, err)
+	plugin, _ := pinRouterPlugin(t, governance, "Rewrite Model", "model == 'gpt-4o'", configstoreTables.TableModelRouterTarget{
+		Model: bifrost.Ptr("gpt-4o-mini"), Weight: 1,
+	})
 
 	metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o"}
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
@@ -324,37 +257,23 @@ func TestPreRequestHook_LargePayloadPublishesAllowlistBeforeRefinement(t *testin
 		"the refined provider/model must be written back to the streamed metadata")
 }
 
-// fallbackMatrixPlugin loads one global rule matching model "m" whose fallbacks are decoded from
-// storedFallbacks the way the config store does at boot (AfterFind on the JSON column).
-func fallbackMatrixPlugin(t *testing.T, storedFallbacks *string) *RoutingPlugin {
+// fallbackMatrixPlugin serves one global router matching model "m" whose fallbacks are
+// decoded from storedFallbacks the way the config store does at boot.
+func fallbackMatrixPlugin(t *testing.T, governance *MockGovernance, name string, storedFallbacks *string) *RoutingPlugin {
 	t.Helper()
-	stored := &configstoreTables.TableRoutingRule{
-		ID:            "fb-matrix",
-		Name:          "Fallback Matrix Rule",
-		CelExpression: "model == 'm'",
-		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Weight: 1.0}},
-		Fallbacks:     storedFallbacks,
-		Enabled:       bifrost.Ptr(true),
-		Scope:         "global",
-	}
-	require.NoError(t, stored.AfterFind(nil))
-	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
-	require.NoError(t, err)
-	t.Cleanup(store.Close)
-	require.NoError(t, store.Put(context.Background(), stored))
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
-	require.NoError(t, err)
+	plugin, store := pinRouterPlugin(t, governance, name, "model == 'm'", configstoreTables.TableModelRouterTarget{Provider: bifrost.Ptr("openai"), Weight: 1})
+	storePinRouterFallbacks(t, plugin, store, storedFallbacks)
 	return plugin
 }
 
-// TestApplyRoutingRules_FallbackMatrix pins how every stored fallback form reaches the request,
-// for a standard provider, a custom provider registered before the rules load, and a custom
-// provider registered only after they load (the boot order behind #7538).
-func TestApplyRoutingRules_FallbackMatrix(t *testing.T) {
+// TestRouterTarget_FallbackMatrix pins how every stored fallback form reaches the request, for a
+// standard provider, a custom provider registered before the routers load, and a custom provider
+// registered only after they load (the boot order behind #7538).
+func TestRouterTarget_FallbackMatrix(t *testing.T) {
 	providers := []struct {
 		name          string
 		provider      schemas.ModelProvider
-		registerAfter bool // register after the rule is decoded, as bifrost.Init does at boot
+		registerAfter bool // register after the router is decoded, as bifrost.Init does at boot
 	}{
 		{name: "standard", provider: schemas.Anthropic},
 		{name: "custom registered before load", provider: "custom-fb-before"},
@@ -418,7 +337,7 @@ func TestApplyRoutingRules_FallbackMatrix(t *testing.T) {
 						schemas.RegisterKnownProvider(prov.provider)
 					}
 				}
-				plugin := fallbackMatrixPlugin(t, bifrost.Ptr(tc.stored(string(prov.provider))))
+				plugin := fallbackMatrixPlugin(t, NewMockGovernance(), "Fallback Matrix Router", bifrost.Ptr(tc.stored(string(prov.provider))))
 				if prov.registerAfter {
 					schemas.RegisterKnownProvider(prov.provider)
 				}
@@ -427,66 +346,71 @@ func TestApplyRoutingRules_FallbackMatrix(t *testing.T) {
 					RequestType: schemas.ChatCompletionRequest,
 					ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m"},
 				}
-				decision, err := plugin.applyRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), req, rules.GovernanceScope{})
-				require.NoError(t, err)
-				require.NotNil(t, decision)
+				require.NoError(t, plugin.PreRequestHook(schemas.NewBifrostContext(context.Background(), time.Now()), req))
 				assert.Equal(t, tc.want(prov.provider), req.ChatRequest.Fallbacks)
 			})
 		}
 	}
 }
 
-// TestApplyRoutingRules_FallbacksReachResponsesRequests covers a non-chat request type, since the
+// TestRouterTarget_FallbacksReachResponsesRequests covers a non-chat request type, since the
 // plugin writes fallbacks through BifrostRequest.SetFallbacks for every type.
-func TestApplyRoutingRules_FallbacksReachResponsesRequests(t *testing.T) {
-	plugin := fallbackMatrixPlugin(t, bifrost.Ptr(`["anthropic/fb-model",{"provider":"vertex","key_id":"k-1"}]`))
+func TestRouterTarget_FallbacksReachResponsesRequests(t *testing.T) {
+	plugin := fallbackMatrixPlugin(t, NewMockGovernance(), "Fallback Matrix Router", bifrost.Ptr(`["anthropic/fb-model",{"provider":"vertex","key_id":"k-1"}]`))
 	req := &schemas.BifrostRequest{
 		RequestType:      schemas.ResponsesRequest,
 		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "m"},
 	}
-	decision, err := plugin.applyRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), req, rules.GovernanceScope{})
-	require.NoError(t, err)
-	require.NotNil(t, decision)
+	require.NoError(t, plugin.PreRequestHook(schemas.NewBifrostContext(context.Background(), time.Now()), req))
 	assert.Equal(t, []schemas.Fallback{
 		{Provider: schemas.Anthropic, Model: "fb-model"},
 		{Provider: schemas.Vertex, Model: "m", KeyID: "k-1"},
 	}, req.ResponsesRequest.Fallbacks)
 }
 
-// TestApplyRoutingRules_RuleFallbacksVersusCallerFallbacks pins how a matched rule treats the
-// fallbacks the caller sent: a rule without fallbacks leaves them alone, a rule with fallbacks
-// replaces them, and a rule whose every fallback is dropped still replaces them with an empty list.
-func TestApplyRoutingRules_RuleFallbacksVersusCallerFallbacks(t *testing.T) {
+// TestRouterTarget_FallbacksVersusCallerFallbacks pins how a chosen target treats the fallbacks
+// the caller sent: a target without fallbacks leaves them alone, a target with fallbacks replaces
+// them, and a target whose every fallback is dropped still replaces them with an empty list.
+func TestRouterTarget_FallbacksVersusCallerFallbacks(t *testing.T) {
 	callerFallbacks := []schemas.Fallback{{Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}}
 	cases := []struct {
 		name   string
 		stored *string
 		want   []schemas.Fallback
 	}{
-		{name: "rule without fallbacks keeps the caller's", stored: nil, want: callerFallbacks},
-		{name: "rule with an empty list keeps the caller's", stored: bifrost.Ptr(`[]`), want: callerFallbacks},
-		{name: "rule fallbacks replace the caller's", stored: bifrost.Ptr(`["anthropic/fb-model"]`), want: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "fb-model"}}},
-		{name: "rule whose fallbacks all drop clears the caller's", stored: bifrost.Ptr(`["unknown-prefix/fb-model"]`), want: []schemas.Fallback{}},
+		{name: "a target without fallbacks keeps the caller's", stored: nil, want: callerFallbacks},
+		{name: "a target with an empty list keeps the caller's", stored: bifrost.Ptr(`[]`), want: callerFallbacks},
+		{name: "router fallbacks replace the caller's", stored: bifrost.Ptr(`["anthropic/fb-model"]`), want: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "fb-model"}}},
+		{name: "a router whose fallbacks all drop clears the caller's", stored: bifrost.Ptr(`["unknown-prefix/fb-model"]`), want: []schemas.Fallback{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plugin := fallbackMatrixPlugin(t, tc.stored)
+			plugin := fallbackMatrixPlugin(t, NewMockGovernance(), "Fallback Matrix Router", tc.stored)
 			req := &schemas.BifrostRequest{
 				RequestType: schemas.ChatCompletionRequest,
 				ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Fallbacks: append([]schemas.Fallback(nil), callerFallbacks...)},
 			}
-			decision, err := plugin.applyRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), req, rules.GovernanceScope{})
-			require.NoError(t, err)
-			require.NotNil(t, decision)
+			require.NoError(t, plugin.PreRequestHook(schemas.NewBifrostContext(context.Background(), time.Now()), req))
 			assert.Equal(t, tc.want, req.ChatRequest.Fallbacks)
 		})
 	}
 }
 
-// TestApplyRoutingRules_SkippedFallbackIsLogged pins that a rule fallback dropped for naming no
-// known provider is reported on the request's routing log, naming the rule and the entry as
+// fallbackWarnings returns the routing log's warnings about fallbacks, in order.
+func fallbackWarnings(ctx *schemas.BifrostContext) []string {
+	var warnings []string
+	for _, entry := range ctx.GetRoutingEngineLogs() {
+		if entry.Level == schemas.LogLevelWarn && strings.Contains(entry.Message, "fallback") {
+			warnings = append(warnings, entry.Message)
+		}
+	}
+	return warnings
+}
+
+// TestRouterTarget_SkippedFallbackIsLogged pins that a target fallback dropped for naming no known
+// provider is reported on the request's routing log, naming the router and the entry as
 // configured; fallbacks that resolve produce no warning.
-func TestApplyRoutingRules_SkippedFallbackIsLogged(t *testing.T) {
+func TestRouterTarget_SkippedFallbackIsLogged(t *testing.T) {
 	cases := []struct {
 		name        string
 		stored      string
@@ -507,60 +431,36 @@ func TestApplyRoutingRules_SkippedFallbackIsLogged(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			stored := &configstoreTables.TableRoutingRule{
-				ID:            "fb-skip-log",
-				Name:          "Skip Log Rule",
-				CelExpression: "model == 'm'",
-				Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Weight: 1.0}},
-				Fallbacks:     bifrost.Ptr(tc.stored),
-				Enabled:       bifrost.Ptr(true),
-				Scope:         "global",
-			}
-			require.NoError(t, stored.AfterFind(nil))
-			store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
-			require.NoError(t, err)
-			t.Cleanup(store.Close)
-			require.NoError(t, store.Put(context.Background(), stored))
-			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
-			require.NoError(t, err)
-
+			plugin := fallbackMatrixPlugin(t, NewMockGovernance(), "Skip Log Router", bifrost.Ptr(tc.stored))
 			req := &schemas.BifrostRequest{
 				RequestType: schemas.ChatCompletionRequest,
 				ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m"},
 			}
 			ctx := schemas.NewBifrostContext(context.Background(), time.Now())
-			decision, err := plugin.applyRoutingRules(ctx, req, rules.GovernanceScope{})
-			require.NoError(t, err)
-			require.NotNil(t, decision)
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
 			assert.Equal(t, tc.wantKept, req.ChatRequest.Fallbacks)
 
-			var routingWarnings []string
-			for _, entry := range ctx.GetRoutingEngineLogs() {
-				if entry.Level == schemas.LogLevelWarn && strings.Contains(entry.Message, "fallback") {
-					routingWarnings = append(routingWarnings, entry.Message)
-				}
-			}
-			require.Len(t, routingWarnings, len(tc.wantSkipped), "routing log warnings: %v", routingWarnings)
+			warnings := fallbackWarnings(ctx)
+			require.Len(t, warnings, len(tc.wantSkipped), "routing log warnings: %v", warnings)
 			for i, entry := range tc.wantSkipped {
-				assert.Contains(t, routingWarnings[i], "Skip Log Rule", "warning must name the rule")
-				assert.Contains(t, routingWarnings[i], entry, "warning must name the skipped entry as configured")
+				assert.Contains(t, warnings[i], "Skip Log Router", "warning must name the router")
+				assert.Contains(t, warnings[i], entry, "warning must name the skipped entry as configured")
 			}
 		})
 	}
 }
 
-// TestPreRequestHook_FallbackOutsideAccessIsLogged pins #3261. A rule fallback the request's own
+// TestPreRequestHook_FallbackOutsideAccessIsLogged pins #3261. A target fallback the request's own
 // access does not allow is refused by governance before it reaches its provider, and once the chain
-// runs out the caller is answered with the primary's error. The routing trail says so when the rule
-// matches, naming the rule, the fallback and why, so a misconfigured rule does not read as a
-// fallback that silently never ran. The chain itself is left as the rule wrote it, and a request
-// carrying no access has nothing to report.
+// runs out the caller is answered with the primary's error. The routing trail says so when the
+// router takes the request, naming the router, the fallback and why, so a misconfigured router does
+// not read as a fallback that silently never ran. The chain itself is left as the router wrote it,
+// and a request carrying no access has nothing to report.
 func TestPreRequestHook_FallbackOutsideAccessIsLogged(t *testing.T) {
 	vkAccess := grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
 		{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}, KeyIDs: schemas.WhiteList{"*"}},
 		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"claude-sonnet-4"}, KeyIDs: schemas.WhiteList{"*"}},
 	}, nil)}, "", nil, grant.Union, nil)
-	const stored = `["anthropic/claude-sonnet-4","anthropic/claude-opus-4","groq/llama-3.1-8b-instant"]`
 	cases := []struct {
 		name         string
 		access       schemas.Access
@@ -578,24 +478,15 @@ func TestPreRequestHook_FallbackOutsideAccessIsLogged(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rule := &configstoreTables.TableRoutingRule{
-				ID:            "fb-access-log",
-				Name:          "Access Log Rule",
-				CelExpression: "model == 'm'",
-				Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-5.4-mini"), Weight: 1.0}},
-				Fallbacks:     bifrost.Ptr(stored),
-				Enabled:       bifrost.Ptr(true),
-				Scope:         "global",
-			}
-			require.NoError(t, rule.AfterFind(nil))
-			store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
-			require.NoError(t, err)
-			t.Cleanup(store.Close)
-			require.NoError(t, store.Put(context.Background(), rule))
 			governance := NewMockGovernance()
 			governance.Access = tc.access
-			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
-			require.NoError(t, err)
+			plugin, _ := pinRouterPlugin(t, governance, "Access Log Router", "model == 'm'", configstoreTables.TableModelRouterTarget{
+				Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-5.4-mini"), Weight: 1,
+			},
+				configstoreTables.RoutingFallback{Fallback: schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-sonnet-4"}},
+				configstoreTables.RoutingFallback{Fallback: schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-opus-4"}},
+				configstoreTables.RoutingFallback{Fallback: schemas.Fallback{Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}},
+			)
 
 			req := &schemas.BifrostRequest{
 				RequestType: schemas.ChatCompletionRequest,
@@ -603,18 +494,13 @@ func TestPreRequestHook_FallbackOutsideAccessIsLogged(t *testing.T) {
 			}
 			ctx := schemas.NewBifrostContext(context.Background(), time.Now())
 			require.NoError(t, plugin.PreRequestHook(ctx, req))
-			assert.Len(t, req.ChatRequest.Fallbacks, 3, "the chain stays as the rule wrote it")
+			assert.Len(t, req.ChatRequest.Fallbacks, 3, "the chain stays as the router wrote it")
 
-			var routingWarnings []string
-			for _, entry := range ctx.GetRoutingEngineLogs() {
-				if entry.Level == schemas.LogLevelWarn && strings.Contains(entry.Message, "fallback") {
-					routingWarnings = append(routingWarnings, entry.Message)
-				}
-			}
-			require.Len(t, routingWarnings, len(tc.wantWarnings), "routing log warnings: %v", routingWarnings)
+			warnings := fallbackWarnings(ctx)
+			require.Len(t, warnings, len(tc.wantWarnings), "routing log warnings: %v", warnings)
 			for i, want := range tc.wantWarnings {
-				assert.Contains(t, routingWarnings[i], "Rule 'Access Log Rule'", "warning must name the rule")
-				assert.Contains(t, routingWarnings[i], want)
+				assert.Contains(t, warnings[i], "Model router 'Access Log Router'", "warning must name the router")
+				assert.Contains(t, warnings[i], want)
 			}
 		})
 	}
@@ -622,29 +508,16 @@ func TestPreRequestHook_FallbackOutsideAccessIsLogged(t *testing.T) {
 
 // TestPreRequestHook_LargePayloadDoesNotWarnAboutDroppedFallbacks pins that the large-payload
 // path, which routes a synthetic request and copies back only its provider and model, does not
-// warn about a rule fallback the request will never carry: no chain is attached, so nothing will
-// be refused.
+// warn about a target fallback the request will never carry: no chain is attached, so nothing
+// will be refused.
 func TestPreRequestHook_LargePayloadDoesNotWarnAboutDroppedFallbacks(t *testing.T) {
-	rule := &configstoreTables.TableRoutingRule{
-		ID:            "fb-lp-access",
-		Name:          "Large Payload Rule",
-		CelExpression: "model == 'gpt-4o'",
-		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0}},
-		Fallbacks:     bifrost.Ptr(`["groq/llama-3.1-8b-instant"]`),
-		Enabled:       bifrost.Ptr(true),
-		Scope:         "global",
-	}
-	require.NoError(t, rule.AfterFind(nil))
-	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
-	require.NoError(t, err)
-	t.Cleanup(store.Close)
-	require.NoError(t, store.Put(context.Background(), rule))
 	governance := NewMockGovernance()
 	governance.Access = grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
 		{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}, KeyIDs: schemas.WhiteList{"*"}},
 	}, nil)}, "", nil, grant.Union, nil)
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
-	require.NoError(t, err)
+	plugin, _ := pinRouterPlugin(t, governance, "Large Payload Router", "model == 'gpt-4o'", configstoreTables.TableModelRouterTarget{
+		Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1,
+	}, configstoreTables.RoutingFallback{Fallback: schemas.Fallback{Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}})
 
 	metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o"}
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
@@ -661,7 +534,7 @@ func TestPreRequestHook_LargePayloadDoesNotWarnAboutDroppedFallbacks(t *testing.
 	}
 }
 
-// BenchmarkWarnFallbacksOutsideAccess measures the access check a matched rule with fallbacks now
+// BenchmarkWarnFallbacksOutsideAccess measures the access check a router target with fallbacks
 // runs, on a chain the access allows in full: the common case, which logs nothing.
 func BenchmarkWarnFallbacksOutsideAccess(b *testing.B) {
 	governance := NewMockGovernance()
@@ -674,6 +547,6 @@ func BenchmarkWarnFallbacksOutsideAccess(b *testing.B) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
 	b.ReportAllocs()
 	for b.Loop() {
-		plugin.warnFallbacksOutsideAccess(ctx, schemas.RoutingEngineRoutingRule, "Rule", "rule", fallbacks)
+		plugin.warnFallbacksOutsideAccess(ctx, schemas.RoutingEngineModelRouter, "Model router", "router", fallbacks)
 	}
 }

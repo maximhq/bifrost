@@ -208,6 +208,38 @@ func TestModelRouterConfigSourceOfTruth(t *testing.T) {
 		require.NoError(t, err, "an invalid entry must not delete the router it names")
 	})
 
+	t.Run("routers made from routing rules are kept", func(t *testing.T) {
+		// The upgrade turned stored routing rules into routers after the file was written, so
+		// the file cannot declare them yet. Pruning them would drop routing the gateway had.
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		seed(t, store, "support", "Support desk")
+		seed(t, store, "retired", "Retired")
+		for _, id := range []string{"was-a-rule", "was-a-rule-2"} {
+			fromRule := keywords("piece")
+			fromRule.ID, fromRule.Name = id, "Made from "+id
+			fromRule.Meta = &tables.ModelRouterMeta{RoutingRuleIDs: []string{"was-a-rule"}}
+			require.NoError(t, store.CreateModelRouter(ctx, fromRule))
+		}
+
+		bootFromJSON(t, store, `{"source_of_truth":"config.json","model_routers":[`+
+			routerJSON("support", "Support", "", "file-simple", "file-medium", "file-complex")+`]}`)
+
+		for _, id := range []string{"support", "was-a-rule", "was-a-rule-2"} {
+			_, err := store.GetModelRouter(ctx, id)
+			require.NoError(t, err, "router %s must still be there", id)
+		}
+		requireModelRouterAbsent(t, store, "retired")
+
+		// Once the file declares it, the file configures it and its meta stays.
+		bootFromJSON(t, store, `{"source_of_truth":"config.json","model_routers":[`+
+			routerJSON("was-a-rule", "Declared", "", "file-simple", "file-medium", "file-complex")+`]}`)
+		declared, err := store.GetModelRouter(ctx, "was-a-rule")
+		require.NoError(t, err)
+		assert.Equal(t, "Declared", declared.Name)
+		require.NotNil(t, declared.Meta, "the file sync leaves a stored router's meta alone")
+		assert.Equal(t, []string{"was-a-rule"}, declared.Meta.RoutingRuleIDs)
+	})
+
 	t.Run("a declared router can take the name of a pruned one", func(t *testing.T) {
 		store := createTestSQLiteConfigStore(t, t.TempDir())
 		seed(t, store, "retired", "Support")
@@ -280,10 +312,11 @@ func TestModelRouterConfigSkipsBadEntries(t *testing.T) {
 
 // TestModelRouterConfigConditionalRouters pins a conditional router declared
 // in config.json: it needs no classifier settings, its targets name no tier,
-// its routing can chain, and its id may carry characters a routing rule's id
-// may, so a rule keeps its id when it becomes a router. A classifier router's
-// routing can pass on a request it has no model for, and its targets can
-// carry a first-token deadline.
+// its fallbacks are one list on the router as a routing rule's were, its
+// routing can chain, and its id may carry characters a routing rule's id may,
+// so a rule keeps its id when it becomes a router. A classifier router's
+// routing can pass on a request it has no model for, its targets can carry a
+// first-token deadline, and its fallbacks stay on its targets.
 func TestModelRouterConfigConditionalRouters(t *testing.T) {
 	initTestLogger()
 	store := createTestSQLiteConfigStore(t, t.TempDir())
@@ -291,11 +324,14 @@ func TestModelRouterConfigConditionalRouters(t *testing.T) {
 
 	bootFromJSON(t, store, `{"model_routers":[`+
 		`{"id":"fast lane/eu","name":"Fast lane","mode":"conditional",`+
-		`"targets":[{"provider":"openai","model":"gpt-4o-mini","weight":0.75,"ttft_timeout_ms":1500},{"weight":0.25,"fallbacks":["anthropic/claude-sonnet"]}],`+
+		`"targets":[{"provider":"openai","model":"gpt-4o-mini","weight":0.75,"ttft_timeout_ms":1500},{"weight":0.25}],`+
+		`"fallbacks":["anthropic/claude-sonnet","openai/"],`+
 		`"routing":{"enabled":true,"scope":"global","cel_expression":"model == \"gpt-4o\"","priority":0,"chain":true}},`+
 		routerJSON("support", "Support", `"targets":[{"tier":"SIMPLE","model":"gpt-4o-mini","weight":1,"ttft_timeout_ms":900}],`+
 			`"routing":{"enabled":true,"scope":"global","priority":1,"empty_target":"next_router"}`, "s", "m", "c")+","+
-		`{"id":"tiered","name":"Tiered","mode":"conditional","targets":[{"tier":"SIMPLE","model":"m","weight":1}]}`+
+		`{"id":"tiered","name":"Tiered","mode":"conditional","targets":[{"tier":"SIMPLE","model":"m","weight":1}]},`+
+		`{"id":"target-chain","name":"Target chain","mode":"conditional","targets":[{"model":"m","weight":1,"fallbacks":["anthropic/claude-sonnet"]}]},`+
+		routerJSON("router-chain", "Router chain", `"fallbacks":["anthropic/claude-sonnet"]`, "s", "m", "c")+
 		`]}`)
 
 	fast, err := store.GetModelRouter(ctx, "fast lane/eu")
@@ -308,7 +344,9 @@ func TestModelRouterConfigConditionalRouters(t *testing.T) {
 	assert.Equal(t, 1500, *fast.Targets[0].TTFTTimeoutMs)
 	assert.Nil(t, fast.Targets[1].Provider, "the second target keeps the request's provider and model")
 	assert.Nil(t, fast.Targets[1].Model)
-	require.Len(t, fast.Targets[1].ParsedFallbacks, 1)
+	assert.Equal(t, []string{"anthropic/claude-sonnet", "openai/"}, tables.RoutingFallbackStrings(fast.Fallbacks), "one chain, for whichever target is chosen")
+	assert.Empty(t, fast.Targets[0].ParsedFallbacks)
+	assert.Empty(t, fast.Targets[1].ParsedFallbacks)
 	require.NotNil(t, fast.Routing)
 	assert.True(t, fast.Routing.Chain)
 	assert.Empty(t, fast.Routing.EmptyTarget)
@@ -323,6 +361,89 @@ func TestModelRouterConfigConditionalRouters(t *testing.T) {
 	assert.Equal(t, 900, *support.Targets[0].TTFTTimeoutMs)
 
 	requireModelRouterAbsent(t, store, "tiered")
+	requireModelRouterAbsent(t, store, "target-chain")
+	requireModelRouterAbsent(t, store, "router-chain")
+}
+
+// TestModelRouterConfigConditionalRouterIsOnUnlessToldOtherwise pins the routing a config.json
+// router gets when its entry does not say whether it is on: a conditional router is on, as a
+// routing rule that did not say otherwise was, with a routing block or without one; a classifier
+// router is off until its routing turns it on.
+func TestModelRouterConfigConditionalRouterIsOnUnlessToldOtherwise(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	conditional := func(id, routing string) string {
+		entry := `{"id":"` + id + `","name":"` + id + `","mode":"conditional","targets":[{"provider":"openai","model":"gpt-4o-mini","weight":1}]`
+		if routing != "" {
+			entry += `,"routing":` + routing
+		}
+		return entry + `}`
+	}
+	bootFromJSON(t, store, `{"model_routers":[`+
+		conditional("no-routing", "")+","+
+		conditional("silent", `{"scope":"global","priority":10,"cel_expression":"model == \"gpt-4o\""}`)+","+
+		conditional("says-on", `{"enabled":true,"scope":"global","priority":11}`)+","+
+		conditional("says-off", `{"enabled":false,"scope":"global","priority":12}`)+","+
+		routerJSON("tiered", "Tiered", "", "s", "m", "c")+","+
+		routerJSON("tiered-silent", "Tiered silent", `"routing":{"scope":"global","priority":13}`, "s", "m", "c")+","+
+		routerJSON("tiered-on", "Tiered on", `"routing":{"enabled":true,"scope":"global","priority":14}`, "s", "m", "c")+
+		`]}`)
+
+	want := map[string]bool{"no-routing": true, "silent": true, "says-on": true, "says-off": false, "tiered": false, "tiered-silent": false, "tiered-on": true}
+	for id, on := range want {
+		router, err := store.GetModelRouter(ctx, id)
+		require.NoError(t, err, id)
+		require.NotNil(t, router.Routing, id)
+		assert.Equal(t, on, router.Routing.Enabled, id)
+	}
+}
+
+// TestModelRouterConfigRouterFallbacks pins how a conditional router's own
+// fallback chain follows config.json, which is how its targets do: an entry
+// that declares it writes it, with a provider_key_name resolved to the key's
+// id; an entry that leaves it out keeps the stored chain; a changed list is
+// applied; and an empty list clears it.
+func TestModelRouterConfigRouterFallbacks(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	require.NoError(t, addProviderWithKeys(ctx, store, schemas.Anthropic, configstore.ProviderConfig{}, []schemas.Key{
+		{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}))
+	boot := func(name, fallbacks string) {
+		entry := `{"id":"fast-lane","name":"` + name + `","mode":"conditional","targets":[{"provider":"openai","model":"gpt-4o-mini","weight":1}]`
+		if fallbacks != "" {
+			entry += `,"fallbacks":` + fallbacks
+		}
+		bootFromJSON(t, store, `{"model_routers":[`+entry+`}]}`)
+	}
+	chain := func() []tables.RoutingFallback {
+		router, err := store.GetModelRouter(ctx, "fast-lane")
+		require.NoError(t, err)
+		return router.Fallbacks
+	}
+
+	boot("Fast lane", `["openai/gpt-4o",{"provider":"anthropic","model":"claude-sonnet-4","provider_key_name":"Anthropic Prod"}]`)
+	got := chain()
+	require.Len(t, got, 2)
+	assert.Equal(t, schemas.Fallback{Provider: schemas.OpenAI, Model: "gpt-4o"}, got[0].Resolved())
+	assert.Equal(t, schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-sonnet-4", KeyID: "k-anthropic-prod"}, got[1].Resolved())
+	assert.Nil(t, got[1].ProviderKeyName, "the config-only alias is not stored")
+
+	boot("Fast lane, renamed", "")
+	assert.Len(t, chain(), 2, "an entry that declares no fallbacks keeps the stored chain")
+
+	boot("Fast lane, renamed", `["anthropic/claude-sonnet-4"]`)
+	assert.Equal(t, []string{"anthropic/claude-sonnet-4"}, tables.RoutingFallbackStrings(chain()), "a changed list is applied")
+
+	boot("Fast lane, renamed", `[]`)
+	assert.Empty(t, chain(), "an empty list clears the chain")
+
+	boot("Fast lane, again", `[{"provider":"anthropic","provider_key_name":"Missing"}]`)
+	router, err := store.GetModelRouter(ctx, "fast-lane")
+	require.NoError(t, err)
+	assert.Equal(t, "Fast lane, renamed", router.Name, "a key name that does not resolve skips the entry")
 }
 
 // TestModelRouterConfigReplacesUnreadableRouter pins that a router whose stored
@@ -376,9 +497,11 @@ func TestModelRouterConfigSchema(t *testing.T) {
 		// An id may carry any character, as a routing rule's may.
 		routerJSON("support desk/eu", "Support EU", `"mode":"classifier","targets":[{"tier":"SIMPLE","weight":1,"ttft_timeout_ms":1500}],`+
 			`"routing":{"scope":"global","priority":3,"chain":true,"empty_target":"next_router"}`, "s", "m", "c") + "," +
-		// A conditional router needs no classifier settings, and its targets name no tier.
+		// A conditional router needs no classifier settings, its targets name no tier, and its
+		// fallbacks are one list on the router.
 		`{"id":"fast-lane","name":"Fast lane","mode":"conditional",` +
-		`"targets":[{"provider":"openai","model":"gpt-4o-mini","weight":0.5},{"weight":0.5,"fallbacks":["anthropic/claude-sonnet"]}],` +
+		`"targets":[{"provider":"openai","model":"gpt-4o-mini","weight":0.5},{"weight":0.5}],` +
+		`"fallbacks":["anthropic/claude-sonnet",{"provider":"openai","model":"gpt-4o","provider_key_name":"OpenAI"}],` +
 		`"routing":{"enabled":true,"scope":"global","priority":4,"chain":true}}` +
 		`]}`
 	require.NoError(t, ValidateConfigSchema([]byte(valid), schema))
@@ -392,6 +515,8 @@ func TestModelRouterConfigSchema(t *testing.T) {
 		"classifier router without phrases":       `{"model_routers":[{"id":"support","name":"Support"}]}`,
 		"classifier target without a tier":        `{"model_routers":[` + routerJSON("support", "Support", `"targets":[{"model":"m","weight":1}]`, "s", "m", "c") + `]}`,
 		"conditional target with a tier":          `{"model_routers":[{"id":"fast-lane","name":"Fast lane","mode":"conditional","targets":[{"tier":"SIMPLE","model":"m","weight":1}]}]}`,
+		"conditional target with fallbacks":       `{"model_routers":[{"id":"fast-lane","name":"Fast lane","mode":"conditional","targets":[{"model":"m","weight":1,"fallbacks":["openai/gpt-4o"]}]}]}`,
+		"classifier router with own fallbacks":    `{"model_routers":[` + routerJSON("support", "Support", `"fallbacks":["openai/gpt-4o"]`, "s", "m", "c") + `]}`,
 		"first-token deadline of zero":            `{"model_routers":[` + routerJSON("support", "Support", `"targets":[{"tier":"SIMPLE","model":"m","weight":1,"ttft_timeout_ms":0}]`, "s", "m", "c") + `]}`,
 		"first-token deadline too long":           `{"model_routers":[` + routerJSON("support", "Support", `"targets":[{"tier":"SIMPLE","model":"m","weight":1,"ttft_timeout_ms":300001}]`, "s", "m", "c") + `]}`,
 		"missing name":                            `{"model_routers":[{"id":"support","keywords":{"simple_keywords":["s"],"medium_keywords":["m"],"complex_keywords":["c"]}}]}`,
@@ -1133,15 +1258,71 @@ func tierByTextDecision(tiers map[string]string) routing.DecisionRequestExecutor
 	}
 }
 
-// TestModelRouterConfigFileToLiveRouting follows one config.json from the file
-// to a routed request: the file declares a routing rule and two model routers,
-// LoadConfig syncs both into the store, and a routing plugin started from that
-// store serves them. It pins the order an operator relies on: the routing rule
-// rewrites the model first, the router whose condition names the rewritten
-// model takes the request, and its target for the classified tier is the
-// final model. A router tried ahead of it whose condition names the model the
-// client asked for does not take a request the rule rewrote, although it is
-// live for the requests the rule leaves alone.
+// TestModelRouterConfigFallbackToACustomProvider pins that a config.json router can fall back to a
+// custom provider the same file declares, in each form a fallback takes, on a conditional router's
+// own chain and on a classifier router's target. The file's routers are
+// checked before the live store loads the providers, which is when a custom provider becomes
+// known, so the check has to know this boot's providers already. Without that the router is
+// refused on a cold start and the gateway comes up without it.
+func TestModelRouterConfigFallbackToACustomProvider(t *testing.T) {
+	initTestLogger()
+	const custom = "router-fallback-custom"
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(custom) })
+	require.False(t, schemas.IsKnownProvider(custom), "the provider must be unknown until the gateway loads the file")
+
+	dir := createTempDir(t)
+	file := `{
+  "config_store": {"enabled": true, "type": "sqlite", "config": {"path": "` + filepath.Join(dir, "config.db") + `"}},
+  "providers": {
+    "openai": {"keys": [{"name": "OpenAI", "value": "sk-test", "models": ["*"], "weight": 1}]},
+    "` + custom + `": {"keys": [{"name": "Custom key", "value": "sk-custom", "models": ["*"], "weight": 1}],
+      "custom_provider_config": {"base_provider_type": "openai", "is_key_less": false}}
+  },
+  "model_routers": [{
+    "id": "falls-back", "name": "Falls back", "mode": "conditional",
+    "targets": [{"provider": "openai", "model": "gpt-4o", "weight": 1}],
+    "fallbacks": [
+      "` + custom + `/gpt-4o-mini",
+      "` + custom + `/",
+      {"provider": "` + custom + `", "model": "gpt-4o"},
+      {"provider": "` + custom + `", "provider_key_name": "Custom key"}
+    ],
+    "routing": {"enabled": true, "scope": "global", "priority": 0, "cel_expression": "model == \"gpt-4o\""}
+  }, {
+    "id": "tiered", "name": "Tiered", "classifier": "decision",
+    "keywords": {"simple_keywords": ["s"], "medium_keywords": ["m"], "complex_keywords": ["c"]},
+    "targets": [{"tier": "SIMPLE", "provider": "openai", "model": "gpt-4o-mini", "weight": 1, "fallbacks": ["` + custom + `/gpt-4o-mini"]}]
+  }]
+}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(file), 0o600))
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+
+	router, err := config.ConfigStore.GetModelRouter(ctx, "falls-back")
+	require.NoError(t, err, "the router is stored on a cold start")
+	fallbacks := router.Fallbacks
+	require.Equal(t, []string{custom + "/gpt-4o-mini", custom + "/", custom + "/gpt-4o", custom + "/"}, tables.RoutingFallbackStrings(fallbacks))
+	for i, fallback := range fallbacks {
+		require.Equal(t, schemas.ModelProvider(custom), fallback.Resolved().Provider, "fallback %d names the custom provider", i)
+	}
+	require.NotEmpty(t, fallbacks[3].KeyID, "the key the fallback names is stored as its id")
+
+	tiered, err := config.ConfigStore.GetModelRouter(ctx, "tiered")
+	require.NoError(t, err, "the classifier router is stored on a cold start")
+	require.Len(t, tiered.Targets, 1)
+	require.Equal(t, []string{custom + "/gpt-4o-mini"}, tables.RoutingFallbackStrings(tiered.Targets[0].ParsedFallbacks))
+}
+
+// TestModelRouterConfigFileToLiveRouting takes routers from a config.json to
+// the routing plugin that serves them. It pins the order an operator relies
+// on: a chained conditional router rewrites the model first, the router whose
+// condition names the rewritten model takes the request, and its target for
+// the classified tier is the final model. A router whose condition names the
+// model the client asked for does not take a request the first router
+// rewrote, although it is live for the requests that router leaves alone.
 func TestModelRouterConfigFileToLiveRouting(t *testing.T) {
 	initTestLogger()
 	const (
@@ -1149,20 +1330,19 @@ func TestModelRouterConfigFileToLiveRouting(t *testing.T) {
 		mediumText  = "refactor this module to remove the global state"
 		simpleText  = "what does this regex match"
 	)
-	governance := `{"routing_rules":[{
-		"id":"support-alias","name":"Support alias","enabled":true,"scope":"global","priority":0,
-		"cel_expression":"model == \"assistant\"",
-		"targets":[{"provider":"openai","model":"support-assistant","weight":1}]}]}`
 	routers := `[` +
+		`{"id":"support-alias","name":"Support alias","mode":"conditional",` +
+		`"targets":[{"provider":"openai","model":"support-assistant","weight":1}],` +
+		`"routing":{"enabled":true,"scope":"global","cel_expression":"model == \"assistant\"","priority":0,"chain":true}},` +
 		routerJSON("client-model", "Client model", `"classifier":"decision",`+
 			targetsJSON(tierTargetJSON("COMPLEX", "openai", "legacy-large", 1))+","+
-			globalRoutingJSON(true, `model == "assistant" || model == "legacy-assistant"`, 0), "s", "m", "c") + "," +
+			globalRoutingJSON(true, `model == "assistant" || model == "legacy-assistant"`, 1), "s", "m", "c") + "," +
 		routerJSON("support", "Support", `"classifier":"decision",`+
 			targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4o-mini", 1), tierTargetJSON("COMPLEX", "anthropic", "claude-opus", 1))+","+
-			globalRoutingJSON(true, `model == "support-assistant"`, 1), "s", "m", "c") +
+			globalRoutingJSON(true, `model == "support-assistant"`, 2), "s", "m", "c") +
 		`]`
-	require.NoError(t, ValidateConfigSchema([]byte(`{"governance":`+governance+`,"model_routers":`+routers+`}`), loadLocalSchema(t)),
-		"the two sections are ones the schema accepts")
+	require.NoError(t, ValidateConfigSchema([]byte(`{"model_routers":`+routers+`}`), loadLocalSchema(t)),
+		"the section is one the schema accepts")
 
 	tempDir := createTempDir(t)
 	// createConfigFile writes the provider's keys nested in its entry, which marshalling a
@@ -1171,8 +1351,6 @@ func TestModelRouterConfigFileToLiveRouting(t *testing.T) {
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}, tempDir))
 	file, err := os.ReadFile(filepath.Join(tempDir, "config.json"))
-	require.NoError(t, err)
-	file, err = sjson.SetRawBytes(file, "governance", []byte(governance))
 	require.NoError(t, err)
 	file, err = sjson.SetRawBytes(file, "model_routers", []byte(routers))
 	require.NoError(t, err)
@@ -1188,13 +1366,13 @@ func TestModelRouterConfigFileToLiveRouting(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	plugin.SetDecisionRequestExecutor(tierByTextDecision(map[string]string{complexText: "COMPLEX", mediumText: "MEDIUM", simpleText: "SIMPLE"}))
 
-	type routed struct {
+	type routedTo struct {
 		provider schemas.ModelProvider
 		model    string
 		routerID any
 		engines  []string
 	}
-	route := func(model, text string) routed {
+	route := func(model, text string) routedTo {
 		t.Helper()
 		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		req := &schemas.BifrostRequest{
@@ -1206,31 +1384,32 @@ func TestModelRouterConfigFileToLiveRouting(t *testing.T) {
 			},
 		}
 		require.NoError(t, plugin.PreRequestHook(reqCtx, req))
-		got := routed{routerID: reqCtx.Value(schemas.BifrostContextKeyModelRouterID)}
+		got := routedTo{routerID: reqCtx.Value(schemas.BifrostContextKeyModelRouterID)}
 		got.provider, got.model, _ = req.GetRequestFields()
 		got.engines, _ = reqCtx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
 		return got
 	}
-	ruleThenRouter := []string{schemas.RoutingEngineRoutingRule, schemas.RoutingEngineModelRouter}
+	routed := func(provider schemas.ModelProvider, model string, routerID any) routedTo {
+		return routedTo{provider: provider, model: model, routerID: routerID, engines: []string{schemas.RoutingEngineModelRouter}}
+	}
 
 	got := route("assistant", complexText)
-	assert.Equal(t, routed{provider: "anthropic", model: "claude-opus", routerID: "support", engines: ruleThenRouter}, got,
-		"the rule rewrites the model, the router that names the rewritten model takes it, and its COMPLEX target is final")
+	assert.Equal(t, routed("anthropic", "claude-opus", "support"), got,
+		"the chained router rewrites the model, the router that names the rewritten model takes it, and its COMPLEX target is final")
 
 	got = route("assistant", simpleText)
-	assert.Equal(t, routed{provider: "openai", model: "gpt-4o-mini", routerID: "support", engines: ruleThenRouter}, got,
-		"the same router sends a SIMPLE request to its SIMPLE target")
+	assert.Equal(t, routed("openai", "gpt-4o-mini", "support"), got, "the same router sends a SIMPLE request to its SIMPLE target")
 
 	got = route("assistant", mediumText)
-	assert.Equal(t, routed{provider: "openai", model: "support-assistant", routerID: "support", engines: ruleThenRouter}, got,
-		"a tier the router has no target for keeps the model the routing rule chose")
+	assert.Equal(t, routed("openai", "support-assistant", "support"), got,
+		"a tier the router has no target for keeps the model the chained router chose")
 
 	got = route("legacy-assistant", complexText)
-	assert.Equal(t, routed{provider: "openai", model: "legacy-large", routerID: "client-model", engines: []string{schemas.RoutingEngineModelRouter}}, got,
-		"the router that names the client's model is live for a request the rule leaves alone")
+	assert.Equal(t, routed("openai", "legacy-large", "client-model"), got,
+		"the router that names the client's model is live for a request the chained router leaves alone")
 
 	got = route("gpt-4o", complexText)
-	assert.Equal(t, routed{provider: "openai", model: "gpt-4o"}, got, "a request no rule and no router names is left as it was")
+	assert.Equal(t, routedTo{provider: "openai", model: "gpt-4o"}, got, "a request no router names is left as it was")
 }
 
 // TestModelRouterConfigIdempotentBoot pins that booting twice from the same

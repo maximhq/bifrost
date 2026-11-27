@@ -11,10 +11,8 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
-	"github.com/maximhq/bifrost/plugins/routing/rules"
 )
 
 // llmFallbackAnalyzerTestConfig wires the llm classifier the only way it can
@@ -42,31 +40,12 @@ func llmFallbackAnalyzerTestConfig() *complexity.AnalyzerConfig {
 	}
 }
 
+// llmFallbackTestPlugin builds a routing plugin whose one router sends COMPLEX to gpt-4o-mini,
+// with the given classifier settings.
 func llmFallbackTestPlugin(t *testing.T, analyzerConfig *complexity.AnalyzerConfig) *routing.RoutingPlugin {
 	t.Helper()
-	provider := "openai"
-	routeModel := "gpt-4o-mini"
-	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
-	require.NoError(t, err)
-	t.Cleanup(ruleStore.Close)
-	require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
-		ID:            "llm-complex-rule",
-		Name:          "LLM complex route",
-		CelExpression: `complexity_tier == "COMPLEX"`,
-		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: &provider, Model: &routeModel, Weight: 1.0},
-		},
-		Enabled:  schemas.Ptr(true),
-		Scope:    "global",
-		Priority: 0,
-	}))
-	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore.Store, routing.NewMockGovernance())
-	require.NoError(t, err)
-	plugin.ReloadComplexityAnalyzerConfig(analyzerConfig)
-	t.Cleanup(func() {
-		require.NoError(t, plugin.Cleanup())
-	})
+	plugin := newTierRouterPlugin(t, nil, tierTarget(complexity.TierComplex, "openai", "gpt-4o-mini"))
+	require.NoError(t, reloadTierRouter(plugin, analyzerConfig))
 	return plugin
 }
 
@@ -113,7 +92,7 @@ func installSemanticEmbeddingFake(t *testing.T, plugin *routing.RoutingPlugin) {
 		}, nil
 	})
 	require.Eventually(t, func() bool {
-		return plugin.ComplexitySemanticStatus().State == complexity.SemanticStatusReady
+		return tierRouterSemanticStatus(plugin).State == complexity.SemanticStatusReady
 	}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
 }
 
@@ -177,7 +156,7 @@ func TestPreRequestHook_LLMFallbackClassifiesSemanticRejections(t *testing.T) {
 	executorMu.Unlock()
 
 	// Unknown text lands below the floor: semantic abstains and the fallback
-	// answers COMPLEX, which the routing rule then acts on.
+	// answers COMPLEX, which the router then routes on.
 	fallbackReq := llmComplexityChatRequest("prove the scheduler is deadlock-free")
 	fallbackCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	require.NoError(t, plugin.PreRequestHook(fallbackCtx, fallbackReq))
@@ -358,7 +337,7 @@ func TestPreRequestHook_LLMClassifierIsPrimary(t *testing.T) {
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
 	_, modelOut, _ := req.GetRequestFields()
-	require.Equal(t, "gpt-4o-mini", modelOut, "the complex tier's routing rule applied")
+	require.Equal(t, "gpt-4o-mini", modelOut, "the complex tier's target applied")
 	require.Equal(t, 1, calls)
 	require.Equal(t, complexity.MechanismLLM, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 	require.Equal(t, complexity.TierComplex, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
@@ -368,6 +347,6 @@ func TestPreRequestHook_LLMClassifierIsPrimary(t *testing.T) {
 	req = llmComplexityChatRequest("prove the scheduler is deadlock-free")
 	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
 	_, modelOut, _ = req.GetRequestFields()
-	require.Equal(t, "gpt-4o", modelOut, "no tier, so the complexity rule does not match")
+	require.Equal(t, "gpt-4o", modelOut, "no tier, so the router passes the request on")
 	require.Nil(t, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
 }

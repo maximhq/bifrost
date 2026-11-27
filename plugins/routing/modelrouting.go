@@ -16,10 +16,10 @@ import (
 
 // modelRouterTiersKey keys the per-request record of each classifier's answer,
 // keyed by runtime id ("" for the Complexity Router page's config). A request
-// can be classified twice, once for a routing rule's complexity_tier and once
-// by the model router that takes it; the record keeps both, so each has its
-// own continuation tier persisted (persistComplexityTurnTier), and a
-// classifier asked again within the request answers the same.
+// can be classified by several routers on its way through the walk; the record
+// keeps each answer, so each router has its own continuation tier persisted
+// (persistComplexityTurnTier), and a classifier asked again within the request
+// answers the same.
 type modelRouterTiersKey struct{}
 
 // routerTier is one classifier's answer for a request, as it was published.
@@ -72,9 +72,12 @@ type routerChoice struct {
 	provider   schemas.ModelProvider
 	model      string
 	target     configstoreTables.TableModelRouterTarget
+	// fallbacks is the chain the choice brings: a conditional router's own, for whichever target
+	// was picked, or the picked target's on a classifier router.
+	fallbacks []configstoreTables.RoutingFallback
 }
 
-// applyModelRouters is the model router step, after the routing rules. The
+// applyModelRouters is the routing step. The
 // enabled routers whose routing matches are walked in order (see
 // rules.ModelRouterMatcher.Walk), and each decides on the request:
 //
@@ -87,11 +90,10 @@ type routerChoice struct {
 //
 // A router that picks a target ends the walk, unless it is chained. A chained
 // router's choice becomes the provider and model the routers are walked on
-// again, from the top, as a routing rule with chain_rule re-enters the rules.
-// It fires once per request (routers made from one routing rule count as
-// one), the walk is repeated at most the configured chain depth, and only the
-// last router's key, fallbacks and first-token deadline are applied, as only
-// the last rule's are.
+// again, from the top. It fires once per request (routers made from one
+// routing rule count as one), the walk is repeated at most the configured chain
+// depth, and only the last router's key, fallbacks and first-token deadline are
+// applied.
 //
 // largePayload is the path that routes a request whose body is not parsed.
 // There is nothing to classify on it, so a classifier router decides only
@@ -101,8 +103,8 @@ type routerChoice struct {
 //
 // A gateway with no enabled router pays one counter read. chainFrom is the
 // name of the router whose target replaced the request's fallback chain, and
-// "" when the chain is still the routing rules' or the caller's, so a
-// fallback governance will refuse is reported against whoever wrote it.
+// "" when the chain is still the caller's, so a fallback governance will
+// refuse is reported against whoever wrote it.
 func (p *RoutingPlugin) applyModelRouters(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, scope rules.GovernanceScope, largePayload bool) (chainFrom string) {
 	if !p.routerMatcher.HasRoutes() {
 		return ""
@@ -264,6 +266,10 @@ func (p *RoutingPlugin) visitModelRouter(
 		provider:   provider,
 		model:      model,
 		target:     target,
+		fallbacks:  target.ParsedFallbacks,
+	}
+	if conditional {
+		choice.fallbacks = router.Fallbacks
 	}
 	if target.Provider != nil && strings.TrimSpace(*target.Provider) != "" {
 		choice.provider = schemas.ModelProvider(strings.TrimSpace(*target.Provider))
@@ -288,16 +294,15 @@ func (p *RoutingPlugin) visitModelRouter(
 
 // applyModelRouterChoice writes the walk's last choice onto the request and
 // reports whether its fallbacks replaced the request's chain. provider and
-// model are what the request had when the walk began, as the routing rules
-// left it.
+// model are what the request had when the walk began.
 //
-// A provider change clears a key the routing rules pinned, since it names a
+// A provider change clears a key the request was pinned to, since it names a
 // key of the old provider, unless the target pins its own. A first-token
-// deadline a routing rule set was set for the rule's target, so it is dropped
-// once the request moves to another provider or model, and the target's own
-// deadline, when it has one, is set for a streaming request. The target's
-// fallbacks replace the chain only when it has some; one that omits its model
-// keeps the model the walk began with.
+// deadline set for the request as it arrived is dropped once it moves to
+// another provider or model, and the target's own deadline, when it has one,
+// is set for a streaming request. The target's fallbacks replace the chain only
+// when it has some; one that omits its model keeps the model the walk began
+// with.
 func (p *RoutingPlugin) applyModelRouterChoice(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostRequest,
@@ -306,7 +311,7 @@ func (p *RoutingPlugin) applyModelRouterChoice(
 	model string,
 ) (replacedChain bool) {
 	if choice.provider != provider {
-		// A key the routing rules pinned belongs to their provider.
+		// A key pinned before the walk belongs to the provider the request had.
 		ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)
 		ctx.ClearValue(schemas.BifrostContextKeyStreamFirstTokenTimeout)
 		req.SetProvider(choice.provider)
@@ -324,8 +329,8 @@ func (p *RoutingPlugin) applyModelRouterChoice(
 	if ms := target.TTFTTimeoutMs; ms != nil && *ms > 0 && bifrost.IsStreamRequestType(req.RequestType) {
 		ctx.SetValue(schemas.BifrostContextKeyStreamFirstTokenTimeout, time.Duration(*ms)*time.Millisecond)
 	}
-	if len(target.ParsedFallbacks) > 0 {
-		req.SetFallbacks(resolveRuleFallbacks(ctx, schemas.RoutingEngineModelRouter, "Model router '"+choice.routerName+"'", target.ParsedFallbacks, model))
+	if len(choice.fallbacks) > 0 {
+		req.SetFallbacks(resolveRuleFallbacks(ctx, schemas.RoutingEngineModelRouter, "Model router '"+choice.routerName+"'", choice.fallbacks, model))
 		return true
 	}
 	return false
@@ -375,7 +380,7 @@ func (p *RoutingPlugin) routerRecord(id string) (*registry.ModelRouter, bool) {
 }
 
 // routerChainMaxDepth is how many times a chain of routers may be walked: the
-// depth routing rules chain under, or the default when none is configured.
+// configured chain depth, or the default when none is configured.
 func (p *RoutingPlugin) routerChainMaxDepth() int {
 	if p.chainMaxDepth != nil && *p.chainMaxDepth > 0 {
 		return *p.chainMaxDepth

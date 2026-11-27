@@ -11,8 +11,10 @@ import (
 )
 
 // TestModelRouterDefaultRouting pins what a router created without routing
-// gets: off, global, and after every global router before it, so turning it
-// on never puts it ahead of one already serving.
+// gets: global, and after every global router before it, so it is never put
+// ahead of one already serving. A classifier router is off until it is turned
+// on; a conditional router is on, as a routing rule that did not say
+// otherwise was.
 func TestModelRouterDefaultRouting(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -34,6 +36,13 @@ func TestModelRouterDefaultRouting(t *testing.T) {
 	clash := testModelRouter("ops", "Ops")
 	clash.Routing = &ModelRouterRouting{Priority: 7}
 	require.ErrorIs(t, store.CreateModelRouter(ctx, clash), ErrModelRouterPriorityTaken)
+
+	fastLane := testModelRouter("fast-lane", "Fast lane")
+	fastLane.Mode = tables.ModelRouterModeConditional
+	require.NoError(t, store.CreateModelRouter(ctx, fastLane))
+	stored, err := store.GetModelRouter(ctx, "fast-lane")
+	require.NoError(t, err)
+	assert.Equal(t, &ModelRouterRouting{Enabled: true, Scope: "global", Priority: 9}, stored.Routing, "a conditional router is on, and last")
 }
 
 // TestSetModelRouterRouting pins the routing save: it is validated and

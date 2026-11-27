@@ -3,6 +3,7 @@ package complexity_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,43 +22,72 @@ func chatString(text string) *schemas.ChatMessageContent {
 	return &schemas.ChatMessageContent{ContentStr: &text}
 }
 
-// newComplexityRuleFixture builds a routing plugin whose store carries one
-// rule that fires only when a complexity tier was published.
-func newComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
-	return newComplexityRuleFixtureWithConfig(t, nil)
+// tierRouterID is the classifier router the classifier tests route through.
+const tierRouterID = "tier-router"
+
+// tierRouterTargets remembers where each fixture's router sends its tiers.
+var tierRouterTargets sync.Map // *routing.RoutingPlugin -> []configstoreTables.TableModelRouterTarget
+
+// newTierRouterFixture builds a routing plugin with one classifier router that takes every
+// request and sends any tier to openai/gpt-4o-mini.
+func newTierRouterFixture(t *testing.T) *routing.RoutingPlugin {
+	return newTierRouterFixtureWithConfig(t, nil)
 }
 
-func newComplexityRuleFixtureWithConfig(t *testing.T, config *routing.Config) *routing.RoutingPlugin {
+// newTierRouterFixtureWithConfig is newTierRouterFixture with a plugin config.
+func newTierRouterFixtureWithConfig(t *testing.T, config *routing.Config) *routing.RoutingPlugin {
+	return newTierRouterPlugin(t, config,
+		tierTarget(complexity.TierSimple, "openai", "gpt-4o-mini"),
+		tierTarget(complexity.TierMedium, "openai", "gpt-4o-mini"),
+		tierTarget(complexity.TierComplex, "openai", "gpt-4o-mini"),
+	)
+}
+
+// newTierRouterPlugin builds a routing plugin with one classifier router that takes every request
+// and sends each tier to its target. A request that gets no tier, or a tier with no target, goes
+// on unrouted. The router starts with the default settings, which classify nothing;
+// reloadTierRouter gives it a test's settings.
+func newTierRouterPlugin(t *testing.T, config *routing.Config, targets ...configstoreTables.TableModelRouterTarget) *routing.RoutingPlugin {
 	t.Helper()
 	logger := rules.NewMockLogger()
-	provider := "openai"
-	model := "gpt-4o-mini"
-
-	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
-	t.Cleanup(ruleStore.Close)
-	require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
-		ID:            "rule-1",
-		Name:          "Complexity Available",
-		CelExpression: `complexity_tier != ""`,
-		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: &provider, Model: &model, Weight: 1.0},
-		},
-		Enabled:  schemas.Ptr(true),
-		Scope:    "global",
-		Priority: 0,
-	}))
-
-	plugin, err := routing.InitFromStore(context.Background(), config, logger, nil, ruleStore.Store, routing.NewMockGovernance())
+	t.Cleanup(store.Close)
+	plugin, err := routing.InitFromStore(context.Background(), config, logger, nil, store.Store, routing.NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	testRuleStores.Store(plugin, store)
+	t.Cleanup(func() { testRuleStores.Delete(plugin) })
+	tierRouterTargets.Store(plugin, targets)
+	t.Cleanup(func() { tierRouterTargets.Delete(plugin) })
+	require.NoError(t, reloadTierRouter(plugin, nil))
 	return plugin
 }
 
-func newSessionComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
+// reloadTierRouter saves the fixture's router with the given classifier settings, the defaults
+// when nil, and serves it, as saving a router's configuration does.
+func reloadTierRouter(plugin *routing.RoutingPlugin, config *complexity.AnalyzerConfig) error {
+	settings := complexity.DefaultAnalyzerConfig()
+	if config != nil {
+		settings = *config
+	}
+	router := configstore.ModelRouter{ID: tierRouterID, Name: "Tier router", ComplexityAnalyzerConfig: settings, Routing: passingOn(globalRouting(0, ""))}
+	if targets, ok := tierRouterTargets.Load(plugin); ok {
+		router.Targets = targets.([]configstoreTables.TableModelRouterTarget)
+	}
+	return reloadRouter(plugin, &router)
+}
+
+// tierRouterSemanticStatus is the readiness of the fixture router's semantic classifier.
+func tierRouterSemanticStatus(plugin *routing.RoutingPlugin) complexity.SemanticStatusInfo {
+	status, _ := plugin.ModelRouterSemanticStatus(tierRouterID)
+	return status
+}
+
+// newSessionTierRouterFixture is newTierRouterFixture with a session store.
+func newSessionTierRouterFixture(t *testing.T) *routing.RoutingPlugin {
 	t.Helper()
-	routingConfig := newTestKVStore(t)
-	return newComplexityRuleFixtureWithConfig(t, routingConfig)
+	return newTierRouterFixtureWithConfig(t, newTestKVStore(t))
 }
 
 func chatRequest(text string) *schemas.BifrostRequest {
@@ -81,18 +111,17 @@ func chatRequest(text string) *schemas.BifrostRequest {
 // lists but no embedding model publishes no tier at all rather than quietly
 // scoring those phrases as literal keywords.
 func TestPreRequestHook_ComplexitySkippedWithoutEmbeddingModel(t *testing.T) {
-	plugin := newComplexityRuleFixture(t)
+	plugin := newTierRouterFixture(t)
 
 	req := chatRequest("What is a vector database?")
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
 
 	// No embedding model is configured, so there is no mechanism left to
-	// classify with: the rule's complexity_tier reference cannot match, the
-	// routing-rule engine never fires, and the request keeps the model it
-	// arrived with.
+	// classify with: the router gets no tier, passes the request on, and the
+	// request keeps the model it arrived with.
 	engines, _ := bfCtx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
-	require.NotContains(t, engines, schemas.RoutingEngineRoutingRule)
+	require.NotContains(t, engines, schemas.RoutingEngineModelRouter)
 
 	providerOut, modelOut, _ := req.GetRequestFields()
 	require.Equal(t, schemas.OpenAI, providerOut)
@@ -144,7 +173,7 @@ func sessionAnalyzerConfig() *complexity.AnalyzerConfig {
 func waitForSemanticClassifier(t *testing.T, plugin *routing.RoutingPlugin) {
 	t.Helper()
 	require.Eventually(t, func() bool {
-		return plugin.ComplexitySemanticStatus().State == complexity.SemanticStatusReady
+		return tierRouterSemanticStatus(plugin).State == complexity.SemanticStatusReady
 	}, 5*time.Second, 10*time.Millisecond, "semantic warmup should become ready")
 }
 
@@ -178,11 +207,11 @@ func testEmbeddingExecutor(_ *schemas.BifrostContext, req *schemas.BifrostEmbedd
 // TestPreRequestHook_SemanticComplexityPublishesTierAndRoutes runs the full
 // path: exemplar warmup through the embedded store, nearest-neighbour
 // classification of the request, tier/mechanism/score publication, and the
-// complexity_tier rule firing on the published tier.
+// router routing on the published tier.
 func TestPreRequestHook_SemanticComplexityPublishesTierAndRoutes(t *testing.T) {
-	plugin := newComplexityRuleFixture(t)
+	plugin := newTierRouterFixture(t)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
-	plugin.ReloadComplexityAnalyzerConfig(&complexity.AnalyzerConfig{
+	reloadTierRouter(plugin, &complexity.AnalyzerConfig{
 		Keywords: configstore.ComplexityEditableKeywordConfig{
 			SimpleKeywords:  []string{"a casual greeting"},
 			MediumKeywords:  []string{"an implementation detail question"},
@@ -195,7 +224,7 @@ func TestPreRequestHook_SemanticComplexityPublishesTierAndRoutes(t *testing.T) {
 	})
 
 	require.Eventually(t, func() bool {
-		return plugin.ComplexitySemanticStatus().State == complexity.SemanticStatusReady
+		return tierRouterSemanticStatus(plugin).State == complexity.SemanticStatusReady
 	}, 5*time.Second, 10*time.Millisecond, "semantic warmup should become ready")
 
 	req := chatRequest("hey, quick question")
@@ -211,17 +240,17 @@ func TestPreRequestHook_SemanticComplexityPublishesTierAndRoutes(t *testing.T) {
 	require.True(t, ok, "complexity score should be published")
 	require.Greater(t, score, 0.0)
 
-	// The rule fired on the published tier and rewrote the model.
+	// The router routed on the published tier and rewrote the model.
 	engines, _ := bfCtx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
-	require.Contains(t, engines, schemas.RoutingEngineRoutingRule)
+	require.Contains(t, engines, schemas.RoutingEngineModelRouter)
 	_, modelOut, _ := req.GetRequestFields()
 	require.Equal(t, "gpt-4o-mini", modelOut)
 }
 
 func TestPreRequestHook_SessionComplexityOnlyEscalates(t *testing.T) {
-	plugin := newSessionComplexityRuleFixture(t)
+	plugin := newSessionTierRouterFixture(t)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
+	require.NoError(t, reloadTierRouter(plugin, sessionAnalyzerConfig()))
 	waitForSemanticClassifier(t, plugin)
 
 	tests := []struct {
@@ -293,9 +322,9 @@ func TestPreRequestHook_SessionComplexityOnlyEscalates(t *testing.T) {
 }
 
 func TestPreRequestHook_SessionComplexityIsIsolatedBySessionID(t *testing.T) {
-	plugin := newSessionComplexityRuleFixture(t)
+	plugin := newSessionTierRouterFixture(t)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
+	require.NoError(t, reloadTierRouter(plugin, sessionAnalyzerConfig()))
 	waitForSemanticClassifier(t, plugin)
 
 	complexCtx := complexitySessionContext("session-a")
@@ -309,9 +338,9 @@ func TestPreRequestHook_SessionComplexityIsIsolatedBySessionID(t *testing.T) {
 }
 
 func TestPreRequestHook_SessionModeWithoutIdentityRemainsPerRequest(t *testing.T) {
-	plugin := newSessionComplexityRuleFixture(t)
+	plugin := newSessionTierRouterFixture(t)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
+	require.NoError(t, reloadTierRouter(plugin, sessionAnalyzerConfig()))
 	waitForSemanticClassifier(t, plugin)
 
 	complexCtx := complexitySessionContext("")
@@ -326,9 +355,9 @@ func TestPreRequestHook_SessionModeWithoutIdentityRemainsPerRequest(t *testing.T
 
 func TestPreRequestHook_SessionStoreFailureFallsBackToCurrentClassification(t *testing.T) {
 	routingConfig, sessions := sessionConfigForTest(t)
-	plugin := newComplexityRuleFixtureWithConfig(t, routingConfig)
+	plugin := newTierRouterFixtureWithConfig(t, routingConfig)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
+	require.NoError(t, reloadTierRouter(plugin, sessionAnalyzerConfig()))
 	waitForSemanticClassifier(t, plugin)
 	require.NoError(t, plugin.PreRequestHook(complexitySessionContext("store-failure"), chatRequest("a simple request")))
 	require.Positive(t, sessions.Len(), "the first request stored session state")
@@ -341,9 +370,9 @@ func TestPreRequestHook_SessionStoreFailureFallsBackToCurrentClassification(t *t
 }
 
 func TestPreRequestHook_SessionContinuationReusesOrClassifiesRecoveredTask(t *testing.T) {
-	plugin := newSessionComplexityRuleFixture(t)
+	plugin := newSessionTierRouterFixture(t)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
+	require.NoError(t, reloadTierRouter(plugin, sessionAnalyzerConfig()))
 	waitForSemanticClassifier(t, plugin)
 
 	continuationRequest := func() *schemas.BifrostRequest {
@@ -377,49 +406,21 @@ func TestPreRequestHook_SessionContinuationReusesOrClassifiesRecoveredTask(t *te
 	require.Nil(t, continuationCtx.Value(schemas.BifrostContextKeyGovernanceComplexityScore))
 }
 
-// newTieredComplexityRuleFixture gives each tier its own target, so a test can tell from the routed
-// model which tier's rule selected the request.
-func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
+// newTieredRouterFixture gives each tier its own target, so a test can tell from the routed model
+// which tier the request was routed on.
+func newTieredRouterFixture(t *testing.T) *routing.RoutingPlugin {
 	t.Helper()
-	routingConfig := newTestKVStore(t)
-
-	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
-	require.NoError(t, err)
-	t.Cleanup(ruleStore.Close)
-	tierTargets := []struct {
-		tier  string
-		model string
-	}{
-		{tier: complexity.TierSimple, model: "tier-simple-model"},
-		{tier: complexity.TierMedium, model: "tier-medium-model"},
-		{tier: complexity.TierComplex, model: "tier-complex-model"},
-	}
-	for priority, target := range tierTargets {
-		provider, model := "openai", target.model
-		require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
-			ID:            "rule-" + strings.ToLower(target.tier),
-			Name:          "Complexity " + target.tier,
-			CelExpression: `complexity_tier == "` + target.tier + `"`,
-			Targets: []configstoreTables.TableRoutingTarget{
-				{Provider: &provider, Model: &model, Weight: 1.0},
-			},
-			Enabled:  schemas.Ptr(true),
-			Scope:    "global",
-			Priority: priority,
-		}))
-	}
-
-	plugin, err := routing.InitFromStore(context.Background(), routingConfig, logger, nil, ruleStore.Store, routing.NewMockGovernance())
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
-	return plugin
+	return newTierRouterPlugin(t, newTestKVStore(t),
+		tierTarget(complexity.TierSimple, "openai", "tier-simple-model"),
+		tierTarget(complexity.TierMedium, "openai", "tier-medium-model"),
+		tierTarget(complexity.TierComplex, "openai", "tier-complex-model"),
+	)
 }
 
 func TestPreRequestHook_SubagentComplexityIsClassifiedIndependently(t *testing.T) {
-	plugin := newTieredComplexityRuleFixture(t)
+	plugin := newTieredRouterFixture(t)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
+	require.NoError(t, reloadTierRouter(plugin, sessionAnalyzerConfig()))
 	waitForSemanticClassifier(t, plugin)
 
 	// Every request shares one session id, as harness subagents share their parent's.
@@ -453,11 +454,11 @@ func TestPreRequestHook_SubagentComplexityIsClassifiedIndependently(t *testing.T
 }
 
 func TestPreRequestHook_ToolContinuationReusesTurnTierWithoutSessionRouting(t *testing.T) {
-	plugin := newSessionComplexityRuleFixture(t)
+	plugin := newSessionTierRouterFixture(t)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
 	config := sessionAnalyzerConfig()
 	config.Session = nil
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(config))
+	require.NoError(t, reloadTierRouter(plugin, config))
 	waitForSemanticClassifier(t, plugin)
 
 	turnCtx := complexitySessionContext("turn-session")
@@ -494,13 +495,13 @@ func TestPreRequestHook_ToolContinuationReusesTurnTierWithoutSessionRouting(t *t
 }
 
 func TestPreRequestHook_ComplexSessionSkipsLaterClassifierCalls(t *testing.T) {
-	plugin := newSessionComplexityRuleFixture(t)
+	plugin := newSessionTierRouterFixture(t)
 	var calls atomic.Int64
 	plugin.SetEmbeddingRequestExecutor(func(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		calls.Add(1)
 		return testEmbeddingExecutor(ctx, req)
 	})
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
+	require.NoError(t, reloadTierRouter(plugin, sessionAnalyzerConfig()))
 	waitForSemanticClassifier(t, plugin)
 
 	beforeRequest := calls.Load()
@@ -517,7 +518,7 @@ func TestPreRequestHook_ComplexSessionSkipsLaterClassifierCalls(t *testing.T) {
 }
 
 func TestPreRequestHook_SemanticComplexityNotReadyLogsInfo(t *testing.T) {
-	plugin := newComplexityRuleFixture(t)
+	plugin := newTierRouterFixture(t)
 	warmupStarted := make(chan struct{}, 1)
 	releaseWarmup := make(chan struct{})
 	defer close(releaseWarmup)
@@ -530,7 +531,7 @@ func TestPreRequestHook_SemanticComplexityNotReadyLogsInfo(t *testing.T) {
 		<-releaseWarmup
 		return testEmbeddingExecutor(ctx, req)
 	})
-	plugin.ReloadComplexityAnalyzerConfig(&complexity.AnalyzerConfig{
+	reloadTierRouter(plugin, &complexity.AnalyzerConfig{
 		Keywords: configstore.ComplexityEditableKeywordConfig{
 			SimpleKeywords:  []string{"a casual greeting"},
 			MediumKeywords:  []string{"an implementation detail question"},
@@ -568,7 +569,7 @@ func TestPreRequestHook_SemanticComplexityNotReadyLogsInfo(t *testing.T) {
 // that a request type the extractor cannot read records mechanism=skipped
 // instead of silently publishing nothing.
 func TestPreRequestHook_ComplexityUnsupportedInputRecordsSkippedMechanism(t *testing.T) {
-	plugin := newComplexityRuleFixture(t)
+	plugin := newTierRouterFixture(t)
 
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.EmbeddingRequest,
@@ -584,55 +585,4 @@ func TestPreRequestHook_ComplexityUnsupportedInputRecordsSkippedMechanism(t *tes
 	mechanism, ok := bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism).(string)
 	require.True(t, ok, "skipped mechanism should be recorded for unsupported input")
 	require.Equal(t, complexity.MechanismSkipped, mechanism)
-}
-
-func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
-	logger := rules.NewMockLogger()
-	provider := "openai"
-	model := "gpt-4o-mini"
-
-	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
-	require.NoError(t, err)
-	t.Cleanup(ruleStore.Close)
-	require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
-		ID:            "rule-1",
-		Name:          "Always match",
-		CelExpression: "true",
-		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: &provider, Model: &model, Weight: 1.0},
-		},
-		Enabled:  schemas.Ptr(true),
-		Scope:    "global",
-		Priority: 0,
-	}))
-
-	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore.Store, routing.NewMockGovernance())
-	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, plugin.Cleanup())
-	}()
-
-	req := &schemas.BifrostRequest{
-		RequestType: schemas.ChatCompletionRequest,
-		ChatRequest: &schemas.BifrostChatRequest{
-			Provider: schemas.OpenAI,
-			Model:    "gpt-4o",
-			Input: []schemas.ChatMessage{
-				{
-					Role:    schemas.ChatMessageRoleUser,
-					Content: chatString("Hello"),
-				},
-			},
-		},
-	}
-
-	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
-
-	logs := bfCtx.GetRoutingEngineLogs()
-	for _, entry := range logs {
-		if entry.Engine == schemas.RoutingEngineRoutingRule && strings.Contains(entry.Message, "Complexity") {
-			t.Fatalf("expected no complexity logs when no rules reference complexity_tier, got: %s", entry.Message)
-		}
-	}
 }

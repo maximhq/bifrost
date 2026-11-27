@@ -616,6 +616,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
 	{IDs: []string{"add_model_router_modes"}, run: migrationAddModelRouterModes},
 	{IDs: []string{"add_model_router_meta_column"}, run: migrationAddModelRouterMetaColumn},
+	{IDs: []string{"add_model_router_fallbacks_column"}, run: migrationAddModelRouterFallbacksColumn},
+	{IDs: []string{"routing_rules_to_model_routers"}, run: migrationRoutingRulesToModelRouters},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -14101,6 +14103,39 @@ func migrationAddModelRouterMetaColumn(ctx context.Context, db *gorm.DB, logger 
 	return nil
 }
 
+// migrationAddModelRouterFallbacksColumn adds the column a conditional router keeps its fallback
+// chain in, for whichever of its targets is chosen, as a routing rule kept one. NULL is no chain,
+// which is what every router stored before the column has, so none of them routes differently.
+func migrationAddModelRouterFallbacksColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_router_fallbacks_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelRouter{}, "Fallbacks"); err != nil {
+				return fmt.Errorf("add fallbacks column to model_routers: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelRouter{}, "Fallbacks"); err != nil {
+				return fmt.Errorf("drop fallbacks column from model_routers: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
 // migrationAddMCPClientMetadataURLColumns adds the hosted Client ID Metadata Document URL setting and
 // the marker for oauth configs whose client_id is Bifrost's own document. Existing configs stay unmarked
 // and are recognised by the document's path under their callback base.
@@ -18101,9 +18136,8 @@ func storedComplexityRouterSettings(tx *gorm.DB, logger schemas.Logger, migratio
 // are left as they are, so an installation that goes back to a release with routing rules finds
 // them. It writes nothing when there are no rules.
 //
-// It is not in configstoreMigrationSteps yet: routing rules still run on every request, and a rule
-// copied while they do would route the request twice. It joins the steps with the change that
-// takes rules off the request path.
+// Routing rules no longer route a request: from the release that runs this, only model routers
+// do, so a rule and the router made from it never both act on one.
 //
 // There is no rollback: the routers it made cannot be told from ones saved since.
 func migrationRoutingRulesToModelRouters(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {

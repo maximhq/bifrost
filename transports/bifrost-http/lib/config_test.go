@@ -13556,6 +13556,52 @@ func TestSQLite_Budget_NewFromFile(t *testing.T) {
 	t.Log("✓ New budget from file added to DB with hash")
 }
 
+// TestLoadConfig_RefusesRoutingRulesAndComplexityRouterSettings pins that a gateway does not start
+// on a config.json that still declares routing rules or the Complexity Router settings. Both
+// became model routers and nothing reads those keys, so loading the file would leave an operator
+// with routing that is declared and does nothing. The error names each key and what to do. An
+// empty routing_rules list declares no rule and loads.
+func TestLoadConfig_RefusesRoutingRulesAndComplexityRouterSettings(t *testing.T) {
+	initTestLogger()
+	rules := []tables.TableRoutingRule{{
+		ID: "rr-1", Name: "alias", Scope: "global", CelExpression: `model == "assistant"`, Enabled: schemas.Ptr(true),
+		Targets: []tables.TableRoutingTarget{{Provider: schemas.Ptr("openai"), Model: schemas.Ptr("gpt-4o"), Weight: 1}},
+	}}
+	cases := []struct {
+		name       string
+		governance *configstore.GovernanceConfig
+		refused    []string
+	}{
+		{"routing rules", &configstore.GovernanceConfig{RoutingRules: rules}, []string{"governance.routing_rules"}},
+		{"the Complexity Router settings", &configstore.GovernanceConfig{ComplexityAnalyzerConfig: testFileComplexityAnalyzerConfig()}, []string{"governance.complexity_analyzer_config"}},
+		{"both", &configstore.GovernanceConfig{RoutingRules: rules, ComplexityAnalyzerConfig: testFileComplexityAnalyzerConfig()},
+			[]string{"governance.routing_rules", "governance.complexity_analyzer_config"}},
+		{"an empty routing rules list", &configstore.GovernanceConfig{RoutingRules: []tables.TableRoutingRule{}}, nil},
+		{"neither", &configstore.GovernanceConfig{}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tempDir := createTempDir(t)
+			configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+			configData.Governance = tc.governance
+			createConfigFile(t, tempDir, configData)
+
+			ctx := context.Background()
+			config, err := LoadConfig(ctx, tempDir)
+			if len(tc.refused) == 0 {
+				require.NoError(t, err)
+				config.Close(ctx)
+				return
+			}
+			require.Error(t, err)
+			for _, key := range tc.refused {
+				require.ErrorContains(t, err, key)
+			}
+			require.ErrorContains(t, err, "model_routers", "the error says where routing is declared now")
+		})
+	}
+}
+
 func TestLoadConfig_Governance_FirstImportUsesMergeIDHandling(t *testing.T) {
 	initTestLogger()
 	tempDir := createTempDir(t)
@@ -13574,7 +13620,6 @@ func TestLoadConfig_Governance_FirstImportUsesMergeIDHandling(t *testing.T) {
 			{ID: "vk-explicit", Name: "Explicit VK", Value: *schemas.NewSecretVar("sk-bf-explicit")},
 			{Name: "Generated VK"},
 		},
-		ComplexityAnalyzerConfig: testFileComplexityAnalyzerConfig(),
 	}
 	createConfigFile(t, tempDir, configData)
 
@@ -13635,9 +13680,6 @@ func TestLoadConfig_Governance_FirstImportUsesMergeIDHandling(t *testing.T) {
 	_, err = uuid.Parse(generatedVK.ID)
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(generatedVK.Value.GetValue(), "sk-bf-"))
-	require.NotNil(t, config.GovernanceConfig.ComplexityAnalyzerConfig)
-	require.NotNil(t, govConfig.ComplexityAnalyzerConfig)
-	require.Equal(t, govConfig.ComplexityAnalyzerConfig, config.GovernanceConfig.ComplexityAnalyzerConfig)
 }
 
 // TestSQLite_Budget_HashMatch_DBPreserved tests DB budget preserved when hash matches

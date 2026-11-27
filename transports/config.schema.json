@@ -7453,6 +7453,13 @@
             "$ref": "#/$defs/model_router_target"
           }
         },
+        "fallbacks": {
+          "type": "array",
+          "description": "A conditional router's fallback chain, used whichever of its targets is chosen, as a routing rule's was. A non-empty list replaces the request's chain. Omit to keep the fallbacks set in the dashboard; an empty list clears them. A classifier router sets fallbacks on each of its targets instead.",
+          "items": {
+            "$ref": "#/$defs/routing_fallback"
+          }
+        },
         "routing": {
           "$ref": "#/$defs/model_router_routing"
         }
@@ -7463,7 +7470,7 @@
       ],
       "allOf": [
         {
-          "description": "A classifier router needs its phrases, and each of its targets names a tier. A conditional router's targets name none.",
+          "description": "A classifier router needs its phrases, each of its targets names a tier, and its fallbacks are set on its targets. A conditional router's targets name no tier and carry no fallbacks: its fallbacks are set on the router.",
           "if": {
             "required": [
               "mode"
@@ -7479,8 +7486,17 @@
               "targets": {
                 "items": {
                   "not": {
-                    "required": [
-                      "tier"
+                    "anyOf": [
+                      {
+                        "required": [
+                          "tier"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "fallbacks"
+                        ]
+                      }
                     ]
                   }
                 }
@@ -7491,6 +7507,11 @@
             "required": [
               "keywords"
             ],
+            "not": {
+              "required": [
+                "fallbacks"
+              ]
+            },
             "properties": {
               "targets": {
                 "items": {
@@ -7703,7 +7724,7 @@
         },
         "fallbacks": {
           "type": "array",
-          "description": "Fallback chain used when this target is chosen. A non-empty list replaces the request's chain; omit it or send [] to keep the chain the routing rules set.",
+          "description": "A classifier router's fallback chain for this target. A non-empty list replaces the request's chain when the target is chosen; omit it or send [] to keep the request's own. A conditional router sets its fallbacks on the router, not here.",
           "items": {
             "$ref": "#/$defs/routing_fallback"
           }

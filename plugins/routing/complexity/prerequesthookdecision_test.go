@@ -12,7 +12,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -101,32 +100,13 @@ func decisionFallbackAnalyzerTestConfig() *complexity.AnalyzerConfig {
 	return config
 }
 
-// decisionTestPlugin builds a routing plugin whose one rule sends COMPLEX to
-// gpt-4o-mini, with the given analyzer config and decision-model fake installed.
+// decisionTestPlugin builds a routing plugin whose one router sends COMPLEX to gpt-4o-mini, with
+// the given classifier settings and decision-model fake installed.
 func decisionTestPlugin(t *testing.T, config *routing.Config, analyzerConfig *complexity.AnalyzerConfig, decision *decisionRecorder) *routing.RoutingPlugin {
 	t.Helper()
-	provider := "openai"
-	routeModel := "gpt-4o-mini"
-	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
-	require.NoError(t, err)
-	t.Cleanup(ruleStore.Close)
-	require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
-		ID:            "decision-complex-rule",
-		Name:          "Decision model complex route",
-		CelExpression: `complexity_tier == "COMPLEX"`,
-		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: &provider, Model: &routeModel, Weight: 1.0},
-		},
-		Enabled:  schemas.Ptr(true),
-		Scope:    "global",
-		Priority: 0,
-	}))
-	plugin, err := routing.InitFromStore(context.Background(), config, logger, nil, ruleStore.Store, routing.NewMockGovernance())
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	plugin := newTierRouterPlugin(t, config, tierTarget(complexity.TierComplex, "openai", "gpt-4o-mini"))
 	plugin.SetDecisionRequestExecutor(decision.execute)
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(analyzerConfig))
+	require.NoError(t, reloadTierRouter(plugin, analyzerConfig))
 	return plugin
 }
 
@@ -148,7 +128,7 @@ func routingLogs(ctx *schemas.BifrostContext) string {
 }
 
 // TestPreRequestHook_DecisionPrimaryPublishesTierAndRoutes proves the decision model as the
-// primary classifier end to end: its tier drives the routing rule, the
+// primary classifier end to end: its tier drives the router, the
 // mechanism records decision, and a saved semantic block stays dormant (no
 // warmup, no embedding call) while the decision model is selected.
 func TestPreRequestHook_DecisionPrimaryPublishesTierAndRoutes(t *testing.T) {
@@ -281,7 +261,7 @@ func TestPreRequestHook_DecisionBelowMinConfidencePublishesNoTier(t *testing.T) 
 	require.Nil(t, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
 	require.Equal(t, complexity.MechanismSkipped, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 	_, modelOut, _ := req.GetRequestFields()
-	require.Equal(t, "gpt-4o", modelOut, "the rule must not fire on a rejected tier")
+	require.Equal(t, "gpt-4o", modelOut, "the router must not route on a rejected tier")
 	require.Contains(t, routingLogs(bfCtx), "below min_confidence=0.95")
 }
 
@@ -302,7 +282,7 @@ func TestPreRequestHook_DecisionBelowMinConfidenceHoldsSessionTier(t *testing.T)
 	gated := decisionAnalyzerTestConfig()
 	gated.Session = &complexity.SessionConfig{Enabled: true}
 	gated.Decision = &complexity.DecisionConfig{MinConfidence: 0.95}
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(gated))
+	require.NoError(t, reloadTierRouter(plugin, gated))
 
 	ctx = complexitySessionContext("decision-min-confidence")
 	require.NoError(t, plugin.PreRequestHook(ctx, chatRequest("a simple request")))
@@ -383,7 +363,7 @@ func TestPreRequestHook_DecisionFallbackCoversSemanticWarmup(t *testing.T) {
 		<-releaseWarmup
 		return testEmbeddingExecutor(ctx, req)
 	})
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(decisionFallbackAnalyzerTestConfig()))
+	require.NoError(t, reloadTierRouter(plugin, decisionFallbackAnalyzerTestConfig()))
 	failOnChatClassifier(t, plugin)
 
 	select {
@@ -457,7 +437,7 @@ func TestPreRequestHook_SwitchingClassifierTakesEffect(t *testing.T) {
 
 	semanticConfig := llmFallbackAnalyzerTestConfig()
 	semanticConfig.Semantic.Fallback = configstore.ComplexitySemanticFallbackNone
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(semanticConfig))
+	require.NoError(t, reloadTierRouter(plugin, semanticConfig))
 	installSemanticEmbeddingFake(t, plugin)
 
 	semanticCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -470,7 +450,7 @@ func TestPreRequestHook_SwitchingClassifierTakesEffect(t *testing.T) {
 		embedCalls.Add(1)
 		return testEmbeddingExecutor(ctx, req)
 	})
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(decisionAnalyzerTestConfig()))
+	require.NoError(t, reloadTierRouter(plugin, decisionAnalyzerTestConfig()))
 	backCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	require.NoError(t, plugin.PreRequestHook(backCtx, llmComplexityChatRequest("papaya amber")))
 	require.Equal(t, complexity.MechanismDecision, backCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
