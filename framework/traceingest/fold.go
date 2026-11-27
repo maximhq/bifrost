@@ -38,16 +38,28 @@ func Fold(stored *logstore.TraceSpan, parts []*SpanPart) *SpanPart {
 		}
 		return cmp.Compare(a.ID, b.ID)
 	})
-	hasBase := len(ordered) > 0 && !ordered[0].IsMerge
+	// A base row rebuilds the span. An upsert row is complete but is laid over the stored span, so
+	// a trace update that arrives after the first event's part expired keeps what it does not set.
+	hasBase := slices.ContainsFunc(ordered, func(part *SpanPart) bool { return !part.IsMerge && !part.Upsert })
 	acc := &SpanPart{IsMerge: true}
 	if !hasBase && stored != nil {
 		acc = partFromSpan(stored)
 	}
+	var defaultStart *time.Time
 	for _, part := range ordered {
 		overlay(acc, part)
 		if !part.IsMerge {
 			acc.IsMerge = false
 		}
+		if part.DefaultStartTime != nil && (defaultStart == nil || part.DefaultStartTime.Before(*defaultStart)) {
+			defaultStart = part.DefaultStartTime
+		}
+	}
+	if acc.StartTime == nil {
+		acc.StartTime = defaultStart
+	}
+	if acc.CompletionStartTime != nil && acc.StartTime != nil {
+		acc.TimeToFirstToken = new(float64(acc.CompletionStartTime.Sub(*acc.StartTime)) / float64(time.Millisecond))
 	}
 	return acc
 }
@@ -94,6 +106,9 @@ func overlay(dst, src *SpanPart) {
 	}
 	if src.TimeToFirstToken != nil {
 		dst.TimeToFirstToken = src.TimeToFirstToken
+	}
+	if src.CompletionStartTime != nil {
+		dst.CompletionStartTime = src.CompletionStartTime
 	}
 	dst.Input = mergeValue(dst.Input, src.Input)
 	dst.Output = mergeValue(dst.Output, src.Output)
@@ -225,6 +240,8 @@ func (p *SpanPart) Span(projectID, source string, stored *logstore.TraceSpan) *l
 			}
 		}
 	}
+	// Derive the tree parent and the duration now, so the span reads the same before it is stored.
+	_ = span.SerializeFields()
 	return span
 }
 

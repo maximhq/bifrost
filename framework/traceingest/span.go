@@ -25,6 +25,14 @@ type SpanPart struct {
 	RowID         string   `json:"row_id,omitempty"`
 	// IsMerge marks a partial update of a span whose base row is sent separately.
 	IsMerge bool `json:"is_merge,omitempty"`
+	// Upsert marks a complete row that is laid over the stored span instead of replacing it, such
+	// as a Langfuse trace-create, which the SDKs send again to update a trace.
+	Upsert bool `json:"upsert,omitempty"`
+	// DefaultStartTime is the start used only when no part sets StartTime (an event's own time).
+	DefaultStartTime *time.Time `json:"default_start_time,omitempty"`
+	// CompletionStartTime is when the first token arrived. Time to first token is computed from it
+	// after the parts fold, since it can come in a later update than the start.
+	CompletionStartTime *time.Time `json:"completion_start_time,omitempty"`
 
 	Name      string     `json:"name,omitempty"`
 	Kind      string     `json:"kind,omitempty"`
