@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"slices"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -15,6 +16,74 @@ func toGeminiModelResourceName(modelID string) string {
 		return "models/" + modelID[idx+1:]
 	}
 	return "models/" + modelID
+}
+
+// geminiModelArchitecture derives the modality lists for a Gemini models.list entry.
+// The Model resource has no modality fields, and TTS, image and chat models all list
+// generateContent, so the model family in the name is the only signal that separates
+// them; embedContent without generateContent marks an embedding model. The lists follow
+// the per-model Inputs/Output tables in Google's model docs. Returns nil for plain
+// text-generation models, so the model catalog can still fill their full input
+// modalities from its datasheet.
+func geminiModelArchitecture(modelName string, methods []string) *schemas.Architecture {
+	name := strings.ToLower(strings.TrimPrefix(modelName, "models/"))
+	// Collect the tokens on the stack: plain chat rows, the common case, return nil
+	// below and must not allocate.
+	var buf [16]string
+	tokens := buf[:0]
+	for tok := range strings.SplitSeq(name, "-") {
+		tokens = append(tokens, tok)
+	}
+	var inputs, outputs []string
+	switch {
+	case slices.Contains(tokens, "tts"):
+		inputs, outputs = []string{"text"}, []string{"audio"}
+	case slices.Contains(tokens, "transcribe"):
+		// gemini-3.5-transcribe and its Live variant take audio and return text.
+		inputs, outputs = []string{"audio"}, []string{"text"}
+	case slices.Contains(tokens, "live") && slices.Contains(tokens, "translate"):
+		inputs, outputs = []string{"audio"}, []string{"audio", "text"}
+	case strings.Contains(name, "native-audio"):
+		inputs, outputs = []string{"audio", "text", "video"}, []string{"audio", "text"}
+	case slices.Contains(tokens, "live"):
+		inputs, outputs = []string{"audio", "image", "text"}, []string{"audio", "text"}
+	case schemas.IsImagenModel(name):
+		inputs, outputs = []string{"text"}, []string{"image"}
+	case slices.Contains(tokens, "veo"):
+		inputs, outputs = []string{"image", "text"}, []string{"video"}
+	case slices.Contains(tokens, "omni"):
+		// Omni 1.1 and the shut-down gemini-omni-flash-preview return video only;
+		// 1.2 and later also return text.
+		inputs, outputs = []string{"image", "text", "video"}, []string{"text", "video"}
+		if slices.Contains(tokens, "1.1") || name == "gemini-omni-flash-preview" {
+			outputs = []string{"video"}
+		}
+	case slices.Contains(tokens, "lyria") && slices.Contains(tokens, "realtime"):
+		inputs, outputs = []string{"text"}, []string{"audio"}
+	case slices.Contains(tokens, "lyria"):
+		inputs, outputs = []string{"image", "text"}, []string{"audio", "text"}
+	case slices.Contains(tokens, "image") || strings.Contains(name, "nano-banana"):
+		// Gemini 2.x image models and Gemini 3 Pro Image (Nano Banana Pro) take images
+		// and text; the later image models also take video and PDF.
+		if strings.HasPrefix(name, "gemini-2") || strings.HasPrefix(name, "gemini-3-pro-image") || strings.HasPrefix(name, "nano-banana-pro") {
+			inputs = []string{"image", "text"}
+		} else {
+			inputs = []string{"file", "image", "text", "video"}
+		}
+		outputs = []string{"image", "text"}
+	case slices.Contains(tokens, "embedding") || (slices.Contains(methods, "embedContent") && !slices.Contains(methods, "generateContent")):
+		// gemini-embedding-2 embeds text, images, video, audio and PDF; the earlier
+		// embedding models take text only.
+		if strings.HasPrefix(name, "gemini-embedding-2") {
+			inputs = []string{"audio", "file", "image", "text", "video"}
+		} else {
+			inputs = []string{"text"}
+		}
+		outputs = []string{"embeddings"}
+	default:
+		return nil
+	}
+	return &schemas.Architecture{InputModalities: inputs, OutputModalities: outputs}
 }
 
 func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
@@ -55,6 +124,7 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 				MaxInputTokens:   schemas.Ptr(model.InputTokenLimit),
 				MaxOutputTokens:  schemas.Ptr(model.OutputTokenLimit),
 				SupportedMethods: model.SupportedGenerationMethods,
+				Architecture:     geminiModelArchitecture(model.Name, model.SupportedGenerationMethods),
 			}
 			if result.AliasValue != "" {
 				entry.Alias = schemas.Ptr(result.AliasValue)
@@ -85,6 +155,7 @@ func (model *GeminiModel) ToBifrostModelRetrieveResponse(providerKey schemas.Mod
 			MaxInputTokens:   schemas.Ptr(model.InputTokenLimit),
 			MaxOutputTokens:  schemas.Ptr(model.OutputTokenLimit),
 			SupportedMethods: model.SupportedGenerationMethods,
+			Architecture:     geminiModelArchitecture(model.Name, model.SupportedGenerationMethods),
 		},
 	}
 }
