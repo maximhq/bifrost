@@ -8,12 +8,24 @@
 CLEAN_BIFROST_PID=""
 CLEAN_BIFROST_DIR=""
 
+# A fresh server must download the datasheet before it starts, and getbifrost.ai intermittently
+# answers 503 (Cloudflare 1102) while a release run boots dozens of servers at once. That failure,
+# and only that one, is retried: BIFROST_BOOT_ATTEMPTS boots in all, BIFROST_BOOT_RETRY_DELAY
+# seconds times the attempt number apart.
+BIFROST_BOOT_ATTEMPTS="${BIFROST_BOOT_ATTEMPTS:-4}"
+BIFROST_BOOT_RETRY_DELAY="${BIFROST_BOOT_RETRY_DELAY:-10}"
+
+# datasheet_fetch_failed reports whether <log> shows the server stopped on a datasheet download.
+datasheet_fetch_failed() {
+    grep -qE 'failed to download (pricing|model parameters) data' "$1" 2>/dev/null
+}
+
 # boot_clean_bifrost starts <binary> on <port> and returns once the server says it has started.
 # The server gets the setup token the collections send by default unless the runner set one, so a
 # local run with --binary is not refused on its management calls. It goes in the environment, not
 # the config, where it would win over a token the runner exports later.
 boot_clean_bifrost() {
-    local binary="$1" port="$2" elapsed=0
+    local binary="$1" port="$2" attempt=1
     export BIFROST_SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}"
     if [ -z "$binary" ] || [ ! -x "$binary" ]; then
         echo "Error: --binary must point to an executable bifrost-http binary" >&2
@@ -23,6 +35,22 @@ boot_clean_bifrost() {
         echo "Error: port $port is already in use; pass --port to use another" >&2
         return 1
     fi
+    until boot_clean_bifrost_once "$binary" "$port"; do
+        if [ "$CLEAN_BIFROST_EXITED" != "1" ] || [ "$attempt" -ge "$BIFROST_BOOT_ATTEMPTS" ] || ! datasheet_fetch_failed "$CLEAN_BIFROST_DIR/server.log"; then
+            return 1
+        fi
+        echo "Datasheet download failed during startup (attempt $attempt of $BIFROST_BOOT_ATTEMPTS); retrying in $((BIFROST_BOOT_RETRY_DELAY * attempt))s" >&2
+        rm -rf "$CLEAN_BIFROST_DIR"
+        sleep $((BIFROST_BOOT_RETRY_DELAY * attempt))
+        attempt=$((attempt + 1))
+    done
+}
+
+# boot_clean_bifrost_once makes one boot attempt in a fresh app dir. On failure it sets
+# CLEAN_BIFROST_EXITED to 1 when the server exited on its own (a timeout leaves it 0).
+boot_clean_bifrost_once() {
+    local binary="$1" port="$2" elapsed=0
+    CLEAN_BIFROST_EXITED=0
     CLEAN_BIFROST_DIR="$(mktemp -d)"
     cat > "$CLEAN_BIFROST_DIR/config.json" <<EOF
 {
@@ -43,6 +71,7 @@ EOF
     CLEAN_BIFROST_PID=$!
     until grep -q "successfully started bifrost" "$CLEAN_BIFROST_DIR/server.log" 2>/dev/null; do
         if ! kill -0 "$CLEAN_BIFROST_PID" 2>/dev/null; then
+            CLEAN_BIFROST_EXITED=1
             echo "Error: bifrost exited before it was ready" >&2
             cat "$CLEAN_BIFROST_DIR/server.log" >&2
             return 1

@@ -180,24 +180,34 @@ export BIFROST_SECRET_REDACTION_CANARY="${BIFROST_SECRET_REDACTION_CANARY:-synth
 # Key server URLs (ollama/sgl/vllm) must resolve to http(s), so they use a URL canary.
 export BIFROST_SECRET_REDACTION_URL_CANARY="${BIFROST_SECRET_REDACTION_URL_CANARY:-http://127.0.0.1/synthetic-secretvar-harness-canary-0123456789}"
 
-echo "🚀 Starting bifrost-http on port $PORT..."
-"$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &
-BIFROST_PID=$!
-
+source "$REPO_ROOT/tests/e2e/api/runners/lib/clean-bifrost.sh"
+BOOT_ATTEMPT=1
 MAX_WAIT=180
-ELAPSED=0
-while [ $ELAPSED -lt $MAX_WAIT ]; do
-  if grep -q "successfully started bifrost" "$SERVER_LOG" 2>/dev/null; then
-    echo "✅ Bifrost started (PID $BIFROST_PID)"
-    break
-  fi
-  if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
-    echo "❌ Bifrost process exited during startup"
-    cat "$SERVER_LOG"
-    exit 1
-  fi
-  sleep 1
-  ELAPSED=$((ELAPSED + 1))
+while :; do
+  echo "🚀 Starting bifrost-http on port $PORT..."
+  "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &
+  BIFROST_PID=$!
+  ELAPSED=0
+  while [ $ELAPSED -lt $MAX_WAIT ]; do
+    if grep -q "successfully started bifrost" "$SERVER_LOG" 2>/dev/null; then
+      echo "✅ Bifrost started (PID $BIFROST_PID)"
+      break 2
+    fi
+    if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
+      if datasheet_fetch_failed "$SERVER_LOG" && [ "$BOOT_ATTEMPT" -lt "$BIFROST_BOOT_ATTEMPTS" ]; then
+        echo "⚠️ Datasheet download failed during startup (attempt $BOOT_ATTEMPT of $BIFROST_BOOT_ATTEMPTS); retrying in $((BIFROST_BOOT_RETRY_DELAY * BOOT_ATTEMPT))s"
+        sleep $((BIFROST_BOOT_RETRY_DELAY * BOOT_ATTEMPT))
+        BOOT_ATTEMPT=$((BOOT_ATTEMPT + 1))
+        continue 2
+      fi
+      echo "❌ Bifrost process exited during startup"
+      cat "$SERVER_LOG"
+      exit 1
+    fi
+    sleep 1
+    ELAPSED=$((ELAPSED + 1))
+  done
+  break
 done
 if [ $ELAPSED -ge $MAX_WAIT ]; then
   echo "❌ Bifrost did not start within ${MAX_WAIT}s"

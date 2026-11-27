@@ -20,6 +20,7 @@ set -e
 
 CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/../lib/clean-bifrost.sh"
 API_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$API_DIR"
 
@@ -200,18 +201,32 @@ start_bifrost() {
         echo -e "${RED}Error: port $port is already in use; pass --port to use another${NC}"
         exit 1
     fi
-    # Inference runs without auth on live provider keys, so the server must not inherit a wider
-    # BIFROST_HOST (such as 0.0.0.0) from the caller's environment.
-    BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$dir" --host 127.0.0.1 --port "$port" --log-level info > "$dir/server.log" 2>&1 &
-    local pid=$!
-    SERVER_PIDS+=("$pid")
-    local elapsed=0
-    while [ $elapsed -lt 90 ]; do
-        grep -q "successfully started bifrost" "$dir/server.log" 2>/dev/null && break
-        if ! kill -0 "$pid" 2>/dev/null; then
-            echo -e "${RED}[$store] server exited before becoming ready${NC}"; cat "$dir/server.log"; exit 1
-        fi
-        sleep 1; elapsed=$((elapsed + 1))
+    local attempt=1 pid elapsed
+    while :; do
+        # Inference runs without auth on live provider keys, so the server must not inherit a wider
+        # BIFROST_HOST (such as 0.0.0.0) from the caller's environment.
+        BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$dir" --host 127.0.0.1 --port "$port" --log-level info > "$dir/server.log" 2>&1 &
+        pid=$!
+        SERVER_PIDS+=("$pid")
+        elapsed=0
+        while [ $elapsed -lt 90 ]; do
+            grep -q "successfully started bifrost" "$dir/server.log" 2>/dev/null && break 2
+            if ! kill -0 "$pid" 2>/dev/null; then
+                if datasheet_fetch_failed "$dir/server.log" && [ "$attempt" -lt "$BIFROST_BOOT_ATTEMPTS" ]; then
+                    echo -e "${YELLOW}[$store] datasheet download failed during startup (attempt $attempt of $BIFROST_BOOT_ATTEMPTS); retrying in $((BIFROST_BOOT_RETRY_DELAY * attempt))s${NC}"
+                    sleep $((BIFROST_BOOT_RETRY_DELAY * attempt))
+                    local kept=() p
+                    for p in "${SERVER_PIDS[@]}"; do [ "$p" = "$pid" ] || kept+=("$p"); done
+                    SERVER_PIDS=("${kept[@]}")
+                    rm -rf "$dir"; mkdir -p "$dir"; write_config "$dir" "$store"
+                    attempt=$((attempt + 1))
+                    continue 2
+                fi
+                echo -e "${RED}[$store] server exited before becoming ready${NC}"; cat "$dir/server.log"; exit 1
+            fi
+            sleep 1; elapsed=$((elapsed + 1))
+        done
+        break
     done
     if [ $elapsed -ge 90 ]; then
         echo -e "${RED}[$store] server did not start within 90s${NC}"; cat "$dir/server.log"; exit 1

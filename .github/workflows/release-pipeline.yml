@@ -2391,7 +2391,9 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: newman-reports-api-integrations
-          path: tests/e2e/api/newman-reports/
+          path: |
+            tests/e2e/api/newman-reports/
+            tmp/log-store-matrix/
           retention-days: 30
 
   # Warp's collection is a live, serial LLM evaluation (~150 chat calls, ~25 min),

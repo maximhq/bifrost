@@ -868,17 +868,46 @@ async function suiteSettings(ctx) {
 			await echoRelayCall(echo, rid("set", "doomed", "relay"), doomed.value);
 			await llmRow(rid("set", "doomed", "llm"));
 			await relayRow(rid("set", "doomed", "relay"));
+			// LLM filter data on Postgres comes from a materialized view the gateway refreshes on its
+			// own schedule, skipping ticks while the views are inside their refresh gap to save CPU, so
+			// the check refreshes it once the rows are written instead of waiting on a tick.
+			if (/^postgres(ql)?:\/\//.test(process.env.BIFROST_LOGS_DB_URL || "")) {
+				const db = ctx.logsDb ?? (await openLogsDb());
+				try {
+					await db.refreshViews(["mv_filter_virtual_keys"]);
+				} finally {
+					if (db !== ctx.logsDb) await db.close();
+				}
+			}
 			const find = (fd) => (fd?.virtual_keys ?? []).find((k) => k.id === doomed.id) ?? null;
 			const filterData = async () => ({
 				llm: find((await api.mustRequest("GET", "/api/logs/filterdata?dimensions=virtual_keys")).json),
 				relay: find((await api.mustRequest("GET", "/api/relay-logs/filterdata?dimensions=virtual_keys")).json),
 			});
-			// LLM filter data on Postgres is a materialized view refreshed about once a minute and
-			// cached for 30s, so the key is listed only once both have caught up.
-			await poll("both filter lists to show the key", 150000, async () => {
-				const fd = await filterData();
-				return fd.llm && fd.relay;
-			}, 2000).catch(() => {});
+			// The LLM filter response is cached for 30s, so the key is listed once that expires.
+			// A key that never reaches a list is reported as that, with how long the wait ran, rather
+			// than surfacing later as "dropped the deleted key" once the key has been deleted.
+			// A failed filter request is reported as that error, not as a list that never showed the key.
+			const appearStarted = Date.now();
+			let listed = { llm: false, relay: false };
+			let lastError = null;
+			const appeared = await poll("both filter lists to show the key", 150000, async () => {
+				try {
+					const fd = await filterData();
+					listed = { llm: !!fd.llm, relay: !!fd.relay };
+					lastError = null;
+					return fd.llm && fd.relay;
+				} catch (err) {
+					lastError = err;
+					throw err;
+				}
+			}, 2000).then(() => true, () => false);
+			if (!appeared) {
+				const waited = Math.round((Date.now() - appearStarted) / 1000);
+				const missing = ["llm", "relay"].filter((k) => !listed[k]).join(" and ");
+				const failure = lastError ? `filter data request failed after ${waited}s: ${lastError.message}` : `${missing} filter data never listed the new key within ${waited}s`;
+				record("settings", "hide_deleted_virtual_keys_in_filters setup", [failure]);
+			}
 			await api.mustRequest("DELETE", `/api/governance/virtual-keys/${doomed.id}`);
 			created.keys = created.keys.filter((k) => k !== doomed.id);
 			for (const hide of [true, false]) {
