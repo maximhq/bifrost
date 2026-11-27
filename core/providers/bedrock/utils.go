@@ -111,6 +111,15 @@ func awsPartitionForRegion(region string) string {
 // returned value is a bare host, so callers keep ownership of the scheme and path — including
 // the bucket prefix S3's virtual-hosted URLs carry.
 func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
+	return resolveBedrockHostWithRuntimeDefault(endpoints, service, region, "")
+}
+
+// resolveBedrockHostWithRuntimeDefault is resolveBedrockHost with a provider-wide host for the
+// bedrock-runtime service, taken from network_config.base_url. Precedence for bedrock-runtime is
+// the per-key endpoints.runtime override, then runtimeDefault, then the public regional host.
+// The other services ignore runtimeDefault: one base URL cannot serve the control plane, mantle,
+// agent-runtime and S3 as well, so those keep their per-key overrides or public hosts.
+func resolveBedrockHostWithRuntimeDefault(endpoints *schemas.BedrockEndpoints, service bedrockService, region, runtimeDefault string) string {
 	if endpoints != nil {
 		var override *schemas.SecretVar
 		switch service {
@@ -129,11 +138,20 @@ func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockServ
 			return host
 		}
 	}
+	if service == bedrockServiceRuntime && runtimeDefault != "" {
+		return runtimeDefault
+	}
 	// Mantle is the odd one out: its public host lives under api.aws, not amazonaws.com.
 	if service == bedrockServiceMantle {
 		return fmt.Sprintf("%s.%s.api.aws", service, region)
 	}
 	return fmt.Sprintf("%s.%s.amazonaws.com", service, region)
+}
+
+// serviceHost resolves the host for an AWS endpoint service, applying network_config.base_url as
+// the provider-wide bedrock-runtime host when the key carries no endpoints.runtime override.
+func (provider *BedrockProvider) serviceHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
+	return resolveBedrockHostWithRuntimeDefault(endpoints, service, region, provider.runtimeHost)
 }
 
 // bedrockEndpoints returns the endpoint overrides on a key config, tolerating a nil config so
@@ -409,6 +427,8 @@ func materializeBedrockDocument(
 	fileURL *string,
 	filename *string,
 	fileType *string,
+	fileContent json.RawMessage,
+	citations *schemas.Citations,
 	sourceRequirement bedrockDocumentSourceRequirement,
 ) (*BedrockDocumentSource, error) {
 	document := &BedrockDocumentSource{
@@ -416,8 +436,45 @@ func materializeBedrockDocument(
 		Format: "pdf",
 		Source: &BedrockDocumentSourceData{},
 	}
+	if citations != nil && citations.Enabled != nil {
+		document.Citations = &BedrockCitationsConfig{Enabled: *citations.Enabled}
+	}
 	if filename != nil {
 		document.Name = normalizeBedrockFilename(*filename)
+	}
+
+	if len(fileContent) > 0 {
+		if (fileData != nil && *fileData != "") || (fileURL != nil && *fileURL != "") {
+			return nil, providerUtils.InvalidRequestErrorf("document file_content cannot be combined with file_data or file_url")
+		}
+		if document.Citations == nil || !document.Citations.Enabled {
+			return nil, providerUtils.InvalidRequestErrorf("Bedrock custom document file_content requires citations.enabled=true")
+		}
+		content := bytes.TrimSpace(fileContent)
+		if len(content) > 0 && content[0] == '"' {
+			var text string
+			if err := sonic.Unmarshal(content, &text); err != nil {
+				return nil, providerUtils.InvalidRequestErrorf("invalid document file_content: %v", err)
+			}
+			document.Source.Content = []BedrockDocumentContentBlock{{Text: &text}}
+		} else {
+			var blocks []struct {
+				Type string  `json:"type"`
+				Text *string `json:"text"`
+			}
+			if err := sonic.Unmarshal(content, &blocks); err != nil || len(blocks) == 0 {
+				return nil, providerUtils.InvalidRequestErrorf("document file_content must be a string or a non-empty array of text blocks")
+			}
+			document.Source.Content = make([]BedrockDocumentContentBlock, 0, len(blocks))
+			for _, block := range blocks {
+				if block.Type != "text" || block.Text == nil {
+					return nil, providerUtils.InvalidRequestErrorf("Bedrock custom document file_content supports only text blocks")
+				}
+				document.Source.Content = append(document.Source.Content, BedrockDocumentContentBlock{Text: block.Text})
+			}
+		}
+		document.Format = ""
+		return document, nil
 	}
 
 	dataURLMediaType, dataURLPayload := "", ""
@@ -499,7 +556,7 @@ func materializeBedrockDocument(
 		if sourceRequirement == bedrockDocumentSourceOptional {
 			return document, nil
 		}
-		return nil, fmt.Errorf("bedrock document requires file_data or file_url")
+		return nil, providerUtils.InvalidRequestErrorf("bedrock document requires file_data, file_url or file_content")
 	}
 
 	if isDataURL {
@@ -2526,6 +2583,8 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 			block.File.FileURL,
 			block.File.Filename,
 			block.File.FileType,
+			block.File.FileContent,
+			block.Citations,
 			bedrockDocumentSourceOptional,
 		)
 		if err != nil {

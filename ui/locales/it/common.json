@@ -191,8 +191,7 @@
 		"toggle": "Mostra/nascondi barra laterale"
 	},
 	"sheet": {
-		"collapse": "Comprimi",
-		"expand": "Espandi"
+		"resizeHandle": "Ridimensiona il pannello"
 	},
 	"tabs": {
 		"showMore_one": "Mostra {{count}} altra scheda",
@@ -263,7 +262,8 @@
 	"budgetDisplay": {
 		"usageAria": "Utilizzo del budget",
 		"override": "override",
-		"baseTooltip": "Base {{base}} + override {{override}}"
+		"baseTooltip": "Base {{base}} + override {{override}}",
+		"sharedTag": "condiviso"
 	},
 	"rateLimit": {
 		"tokens": "token",
@@ -302,6 +302,11 @@
 	},
 	"configSyncAlert": {
 		"message": "Questa configurazione è sincronizzata da <code0>config.json</code0>. Gli aggiornamenti futuri a config.json sovrascriveranno le modifiche apportate nell'interfaccia. Se usi config.json per inizializzare la configurazione, puoi ignorare questo avviso."
+	},
+	"configIssuesAlert": {
+		"title": "Parte della dichiarazione di config.json non è stata applicata",
+		"badge": "Problemi di configurazione",
+		"hint": "Il resto della dichiarazione è applicato. Ogni voce qui sopra scompare da sola quando ciò che nomina esiste, ad esempio quando il client MCP mancante viene registrato."
 	},
 	"breadcrumb": {
 		"label": "percorso di navigazione",

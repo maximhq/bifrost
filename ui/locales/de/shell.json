@@ -23,6 +23,12 @@
 		"circuitBreaker": "Schutzschalter",
 		"pricingOverrides": "Preisüberschreibungen",
 		"modelSettings": "Modelleinstellungen",
+		"finops": "FinOps",
+		"finopsOverview": "Übersicht",
+		"finopsConnections": "Verbindungen",
+		"finopsExplorer": "Kosten-Explorer",
+		"finopsForecast": "Prognose",
+		"finopsAnomalies": "Anomalien",
 		"mcpGateway": "MCP-Server",
 		"mcpCatalog": "MCP-Katalog",
 		"mcpLibrary": "MCP-Bibliothek",
@@ -107,6 +113,7 @@
 		"circuitBreaker": "Automatischer Fallback bei Ausfall primärer Endpunkte",
 		"pricingOverrides": "Gültigkeitsbereich-spezifische Preisüberschreibungen",
 		"modelSettings": "Modell- und Routing-Konfiguration",
+		"finops": "KI-Ausgaben über alle Anbieterkonten",
 		"mcpGateway": "MCP-Konfiguration",
 		"mcpCatalog": "MCP-Tool-Katalog",
 		"mcpLibrary": "Kuratierte MCP-Server installieren",
@@ -459,7 +466,15 @@
 			"label": "Frage",
 			"skip": "Überspringen",
 			"orType": "Oder eigene Antwort unten eingeben.",
-			"skipAnswer": "Entscheide nach bestem Ermessen und sage, was du angenommen hast."
+			"skipAnswer": "Entscheide nach bestem Ermessen und sage, was du angenommen hast.",
+			"confirm": {
+				"subtitle": "Warp nimmt diese Änderung vor, sobald Sie bestätigen.",
+				"destructiveSubtitle": "Warp nimmt diese Änderung vor, sobald Sie bestätigen. Prüfen Sie sie sorgfältig.",
+				"cannotUndo": "Dies kann nicht rückgängig gemacht werden.",
+				"noArguments": "Keine Argumente.",
+				"cancel": "Abbrechen",
+				"confirm": "Bestätigen"
+			}
 		},
 		"message": {
 			"whatThisCovers": "Was das abdeckt",

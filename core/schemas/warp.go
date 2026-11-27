@@ -155,6 +155,12 @@ type WarpConfig struct {
 	// Empty is valid and common: a provider on a trusted network, or one using
 	// ambient IAM credentials, needs no key at all.
 	APIKeyID string `json:"api_key_id,omitempty"`
+	// VirtualKeyID names the virtual key Warp's model calls present when the person
+	// asking has no user identity of their own: the local admin, or a deployment
+	// without an identity provider. Like APIKeyID it is a reference, not the key.
+	// Empty leaves such a caller's calls carrying no credential, which enforced
+	// inference auth refuses.
+	VirtualKeyID string `json:"virtual_key_id,omitempty"`
 	// AdditionalModels are the other models an operator has exposed. Provider
 	// and Model above stay the default; see ForModel.
 	AdditionalModels []WarpModel `json:"additional_models,omitempty"`
@@ -461,9 +467,18 @@ type WarpStoredQuestion struct {
 	Options    []WarpStoredQuestionOpt `json:"options"`
 	AllowOther bool                    `json:"allow_other"`
 	Kind       string                  `json:"kind,omitempty"`
+	// Action is what a confirmation card shows: the call without its token.
+	Action *WarpConfirmAction `json:"action,omitempty"`
 	// Pending is the management call a confirmation card is asking about. It is
 	// persisted with the card and never returned by the conversation API.
 	Pending *WarpPendingCall `json:"pending,omitempty"`
+}
+
+// WarpConfirmAction is the management write a confirmation card describes.
+type WarpConfirmAction struct {
+	Tool        string `json:"tool"`
+	Arguments   string `json:"arguments"`
+	Destructive bool   `json:"destructive,omitempty"`
 }
 
 // WarpPendingCall is a management write held until the person confirms it.

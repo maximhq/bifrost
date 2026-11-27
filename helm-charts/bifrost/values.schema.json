@@ -721,15 +721,6 @@
               },
               "default": 100,
               "description": "New topic threshold: how many requests that matched no topic must be waiting before Warp clusters them into new topics. Between 10 and 20000; 0 resets it to the default; omitting it keeps the stored value."
-            },
-            "managementWrites": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "enum": ["create", "update", "delete", "action"]
-              },
-              "uniqueItems": true,
-              "description": "Kinds of configuration change Warp may offer through the Bifrost MCP, each run only after the person confirms it: create (POST create operations), update (PUT and PATCH), delete (DELETE) and action (the other POSTs). Reads are always offered. [] is reads only; omitting it keeps the stored value. client.bifrostMcpAllowWrites is the ceiling. Maps to warp.management_writes."
             }
           },
           "if": {
@@ -1133,12 +1124,12 @@
                   "additionalProperties": false
                 }
               ],
-              "description": "The gateway's public base URL (scheme, host and any base path) as clients reach it through your proxy. Required for /v1/mcp and Warp: tool calls take their host and scheme from it, never from the client's Host header. Unset, /v1/mcp answers 503 and Warp does not answer. Must include server.basePath when set. Supports env var and vault references. Maps to client.bifrost_url."
+              "description": "The gateway's public base URL (scheme, host and any base path) as clients reach it through your proxy. Required for /v1/mcp: tool calls take their host and scheme from it, never from the client's Host header. Unset, /v1/mcp answers 503. Must include server.basePath when set. Supports env var and vault references. Maps to client.bifrost_url."
             },
             "bifrostMcpAllowWrites": {
               "type": "boolean",
               "default": true,
-              "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes are served either way, and every call is authorized by the caller's own credential. Also the ceiling for warp.managementWrites. Maps to client.bifrost_mcp_allow_writes."
+              "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes are served either way, and every call is authorized by the caller's own credential. Maps to client.bifrost_mcp_allow_writes."
             },
             "mcpOpenapiMaxSpecMb": {
               "type": "integer",
@@ -1435,7 +1426,7 @@
                 "openapiUrl": {
                   "type": "string",
                   "maxLength": 2048,
-                  "description": "OpenAPI spec /v1/mcp and Warp build their tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs. Supports env var syntax (env.MY_VAR). Empty reads the published spec. Maps to framework.pricing.openapi_url."
+                  "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs. Supports env var syntax (env.MY_VAR). Empty reads the published spec. Maps to framework.pricing.openapi_url."
                 }
               },
               "additionalProperties": false
@@ -4726,6 +4717,11 @@
                     "minimum": 0,
                     "description": "Number of preceding conversation turns to include when send_all_conversation_turns is false. 0 sends only the current input."
                   },
+                  "exclude_system_prompt": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Keep system messages away from the rule's guardrail providers, both as content to check and as conversation context. When false (default), they are sent like any other turn. Applies to LLM rules; the turn window counts only the turns that are sent."
+                  },
                   "evaluation_mode": {
                     "type": "string",
                     "enum": ["bundled", "per_turn"],
@@ -4745,12 +4741,29 @@
                     "default": "enforce",
                     "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
                   },
+                  "input_timing": {
+                    "type": "string",
+                    "enum": ["pre_call", "parallel"],
+                    "default": "pre_call",
+                    "description": "When the rule's input check runs. 'pre_call' (default) finishes the check before the request is sent, so it can block, redact, or transform the input. 'parallel' runs the check alongside the LLM call and holds the response until the verdict arrives; only a block is enforced, and redaction findings reach only the logs. Parallel requires target 'llm' and apply_to 'input' or 'both'."
+                  },
+                  "fail_closed": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Block traffic when one of the rule's guardrail providers errors, times out, or returns an invalid or partial result. When false (default), the content goes through and the failure is logged. Applies only to profiles that can block or rewrite content; the block returns the usual guardrail_intervention error with code 'guardrail_unavailable'."
+                  },
+                  "profile_execution_mode": {
+                    "type": "string",
+                    "enum": ["independent", "chained"],
+                    "default": "independent",
+                    "description": "How the rule's profiles see the payload. 'independent' (default) gives every profile the original payload. 'chained' runs profiles in provider_config_ids order and gives each one the payload as earlier profiles redacted or transformed it. A rule with one profile never chains."
+                  },
                   "provider_config_ids": {
                     "type": "array",
                     "items": {
                       "type": "integer"
                     },
-                    "description": "IDs of provider configurations to use with this rule"
+                    "description": "IDs of provider configurations to use with this rule, in execution order"
                   }
                 },
                 "required": ["id", "name", "enabled", "cel_expression", "apply_to"],

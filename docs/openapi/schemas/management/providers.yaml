@@ -11,7 +11,7 @@ NetworkConfig:
   properties:
     base_url:
       type: string
-      description: Base URL for the provider (optional)
+      description: Base URL for the provider (optional). For Bedrock, only the host is used, as the bedrock-runtime host for all inference; a key's bedrock_key_config.endpoints.runtime takes precedence.
     extra_headers:
       type: object
       additionalProperties:
@@ -551,6 +551,17 @@ Key:
     use_openai_endpoints:
       type: boolean
       description: Whether to use OpenAI-compatible endpoints for this key
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: >
+        The provider key's own content-logging decision. Omit or null to inherit. The key sits in the
+        credential tier with the virtual key and access profile, below the business unit, team and user, so
+        any of those that decides outranks it; inside the tier, any that says true wins. Stamped when the
+        key is selected; once a request has been sent on a key that says true, a retry onto another key does
+        not turn content back on. true also strips content from OpenTelemetry export for this traffic; false
+        never loosens a connector's own disable_content_logging. When
+        client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request
+        header still takes precedence for the log store.
     config_hash:
       type: string
       description: Hash of config.json version, used for change detection

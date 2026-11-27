@@ -58,8 +58,16 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error
 		anthropicTool.Description = tool.Function.Description
 	}
 
-	// Convert function parameters to input_schema
-	if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
+	// Convert function parameters to input_schema. Anthropic rejects a custom
+	// tool without input_schema, and requires `"type":"object"` at its root.
+	// Every schema is carried with every key it has, including a root without
+	// `type`: a root oneOf/anyOf/allOf is rewritten into an object schema by
+	// normalizeAnthropicToolInputSchema, and any other typeless root (a bare
+	// `properties`, `description` or `$ref` object, a raw `{}`) gets
+	// `"type":"object"` from withAnthropicObjectRootType. Neither step, nor
+	// Normalized, writes through its input, so the deep copy here is not what
+	// keeps the caller's parameters unmutated.
+	if tool.Function.Parameters != nil {
 		anthropicTool.InputSchema = schemas.DeepCopyToolFunctionParameters(tool.Function.Parameters)
 	}
 
@@ -69,7 +77,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error
 		if err != nil {
 			return AnthropicTool{}, err
 		}
-		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
+		anthropicTool.InputSchema = withAnthropicObjectRootType(anthropicTool.InputSchema).Normalized()
 	}
 
 	if tool.CacheControl != nil {
@@ -915,8 +923,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// system message and is emitted as role:"system" in the messages array
 	// (Anthropic API + Opus 4.8+ only).
 	seenConversation := false
-	midConvSystemSupported := caps.SupportsMidConversationSystem(
-		DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
+	midConvSystemSupported := midConversationSystemSupported(caps)
 	// See the same gate in ConvertBifrostMessagesToAnthropicMessages: when the native
 	// role:"system" form isn't available, inline as a user turn instead of hoisting into the
 	// top-level system block, which would invalidate the cached prefix behind it. Every family:
@@ -1476,9 +1483,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 	// Convert usage information
 	if response.Usage != nil {
 		billable := billableAnthropicUsage(response.Usage)
+		cacheCreation := anthropicCacheCreationTotal(billable)
 		promptTokensDetails := &schemas.ChatPromptTokensDetails{
 			CachedReadTokens:  billable.CacheReadInputTokens,
-			CachedWriteTokens: billable.CacheCreationInputTokens,
+			CachedWriteTokens: cacheCreation,
 		}
 		if billable.CacheCreation.Ephemeral5mInputTokens > 0 || billable.CacheCreation.Ephemeral1hInputTokens > 0 {
 			promptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
@@ -1487,7 +1495,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			}
 		}
 		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:        billable.InputTokens + billable.CacheReadInputTokens + billable.CacheCreationInputTokens,
+			PromptTokens:        billable.InputTokens + billable.CacheReadInputTokens + cacheCreation,
 			PromptTokensDetails: promptTokensDetails,
 			CompletionTokens:    billable.OutputTokens,
 		}

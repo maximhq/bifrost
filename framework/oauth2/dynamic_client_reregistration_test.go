@@ -392,7 +392,7 @@ const (
 func newDCRProvider(t *testing.T) (*OAuth2Provider, *dcrConfigStore) {
 	t.Helper()
 	store := newDCRConfigStore(t)
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	provider.retryBaseDelay = time.Millisecond
 	return provider, store
 }
@@ -1443,7 +1443,7 @@ func TestCompleteFlow_RefusesCodeAfterAuthorizationServerChange(t *testing.T) {
 				SessionID: "sess-1", FlowMode: string(mode), Status: "claiming", ExpiresAt: time.Now().Add(10 * time.Minute),
 				Issuer: "https://old.example.com",
 			}
-			provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			var err error
 			if mode == schemas.MCPAuthModeAdmin {
 				err = provider.CompleteOAuthFlow(context.Background(), "state-1", "code-1")

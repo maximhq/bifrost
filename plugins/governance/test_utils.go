@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 )
@@ -364,14 +365,20 @@ func fetchDatasheetBaseIndex() {
 }
 
 // newTestModelCatalog creates a test ModelCatalog using the fetched datasheet base model index.
-// This provides proper nil-pointer semantics (unlike an interface wrapper).
+// This provides proper nil-pointer semantics (unlike an interface wrapper). The
+// catalog is cleaned up when the test ends.
 func newTestModelCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 	t.Helper()
 	datasheetOnce.Do(fetchDatasheetBaseIndex)
 	if datasheetErr != nil {
 		t.Skipf("skipping: failed to fetch datasheet for test model catalog: %v", datasheetErr)
 	}
-	return modelcatalog.NewTestCatalog(datasheetBaseIndex)
+	catalog, err := modelcatalog.NewTestCatalog(datasheetBaseIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }
 
 // evaluateGrantedRequest runs a request through the two steps the plugin's evaluation funnel runs it
@@ -565,12 +572,12 @@ func scopedModelLimits(gs *LocalGovernanceStore, ctx context.Context, scope, sco
 	if providerName != "" {
 		providerArg = &providerName
 	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerArg) {
+	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerArg, gs.aliasTargets(ctx, providerArg, model)) {
 		if mc == nil {
 			continue
 		}
-		budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyModelConfig, mc.ID, modelConfigDisplayName(mc), providerName, model, budgetIDsOf(mc.Budgets)...)...)
-		rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyModelConfig, mc.ID, modelConfigDisplayName(mc), providerName, model, idOrEmpty(mc.RateLimitID)...)...)
+		budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyModelConfig, mc.ID, modelConfigDisplayName(mc), providerName, model, mc.BudgetIDs...)...)
+		rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyModelConfig, mc.ID, modelConfigDisplayName(mc), providerName, model, idList(mc.RateLimitID)...)...)
 	}
 	return budgets, rateLimits
 }
@@ -590,14 +597,15 @@ func chargeScopedRateLimits(gs *LocalGovernanceStore, ctx context.Context, scope
 // chargeGrantBudgets bills a cost to what a key's permit is funded by: the key's own, its provider
 // configs' for this provider, and the team and customer it belongs to. chargeGrantRateLimits is
 // its rate-limit counterpart.
-func chargeGrantBudgets(gs *LocalGovernanceStore, ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error {
+func chargeGrantBudgets(gs *LocalGovernanceStore, ctx context.Context, vk *registry.VirtualKey, provider schemas.ModelProvider, cost float64) error {
 	permit := gs.permitForVirtualKey(ctx, vk)
 	heldBudgets, _ := gs.HolderLimits(ctx, permit)
 	providerBudgets, _ := gs.PermitProviderLimits(ctx, permit, provider)
 	return gs.ChargeBudgets(ctx, append(heldBudgets, providerBudgets...), cost)
 }
 
-func chargeGrantRateLimits(gs *LocalGovernanceStore, ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error {
+// chargeGrantRateLimits counts usage against the rate limits a key's permit is funded by: its own, its provider configs' for this provider, and its team's and customer's.
+func chargeGrantRateLimits(gs *LocalGovernanceStore, ctx context.Context, vk *registry.VirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error {
 	permit := gs.permitForVirtualKey(ctx, vk)
 	_, heldRateLimits := gs.HolderLimits(ctx, permit)
 	_, providerRateLimits := gs.PermitProviderLimits(ctx, permit, provider)
@@ -607,7 +615,7 @@ func chargeGrantRateLimits(gs *LocalGovernanceStore, ctx context.Context, vk *co
 // checkGrantBudgets checks what a key's grant is funded by: the key's own, its provider configs' for
 // this provider, and the team and customer it belongs to. Both halves, since the grant carries only
 // what is per-provider and the rest comes from the store.
-func checkGrantBudgets(gs *LocalGovernanceStore, bifrostCtx *schemas.BifrostContext, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string, baselines map[string]float64) (Decision, error) {
+func checkGrantBudgets(gs *LocalGovernanceStore, bifrostCtx *schemas.BifrostContext, vk *registry.VirtualKey, provider schemas.ModelProvider, model string, baselines map[string]float64) (Decision, error) {
 	permit := gs.permitForVirtualKey(bifrostCtx, vk)
 	heldBudgets, _ := gs.HolderLimits(bifrostCtx, permit)
 	providerBudgets, _ := gs.PermitProviderLimits(bifrostCtx, permit, provider)

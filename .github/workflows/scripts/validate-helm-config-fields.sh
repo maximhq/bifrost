@@ -1203,6 +1203,7 @@ bifrost:
         apply_to: "input"
         send_all_conversation_turns: false
         max_turns_to_send: 0
+        exclude_system_prompt: true
         provider_config_ids:
           - 1
     providers:
@@ -1229,6 +1230,7 @@ assert_field_value 'guardrails rule[0].stream_replay_event_interval_ms' '.guardr
 assert_field 'guardrails rule[0].provider_config_ids' '.guardrails_config.guardrail_rules.[0].provider_config_ids'
 assert_field_value 'guardrails rule[1].send_all_conversation_turns' '.guardrails_config.guardrail_rules.[1].send_all_conversation_turns' 'false'
 assert_field_value 'guardrails rule[1].max_turns_to_send' '.guardrails_config.guardrail_rules.[1].max_turns_to_send' '0'
+assert_field_value 'guardrails rule[1].exclude_system_prompt' '.guardrails_config.guardrail_rules.[1].exclude_system_prompt' 'true'
 
 assert_field 'guardrails_config.guardrail_providers' '.guardrails_config.guardrail_providers'
 assert_field_value 'guardrails provider[0].id' '.guardrails_config.guardrail_providers.[0].id' '1'
@@ -2361,12 +2363,11 @@ for bad in 'bifrost.client.usageEstimationTokenizers=["gpt2"]' \
 done
 
 ###############################################################################
-# Bifrost MCP and Warp management writes: client.bifrost_url,
-# client.bifrost_mcp_allow_writes, client.mcp_openapi_max_spec_mb,
-# framework.pricing.openapi_url, warp.management_writes
+# Bifrost MCP: client.bifrost_url, client.bifrost_mcp_allow_writes,
+# client.mcp_openapi_max_spec_mb, framework.pricing.openapi_url
 ###############################################################################
 echo ""
-echo -e "${CYAN}📋 Bifrost MCP and Warp management writes${NC}"
+echo -e "${CYAN}📋 Bifrost MCP${NC}"
 
 cat > "$TMPDIR/values-bifrost-mcp.yaml" << 'VALS'
 image:
@@ -2379,19 +2380,16 @@ bifrost:
   framework:
     pricing:
       openapiUrl: "openapi.json"
-  warp:
-    managementWrites: ["create", "delete"]
 VALS
 render_config "$TMPDIR/values-bifrost-mcp.yaml"
 assert_field_value 'client.bifrost_url' '.client.bifrost_url' '"https://bifrost.example.com/bifrost"'
 assert_field_value 'client.bifrost_mcp_allow_writes' '.client.bifrost_mcp_allow_writes' 'true'
 assert_field_value 'client.mcp_openapi_max_spec_mb' '.client.mcp_openapi_max_spec_mb' '64'
 assert_field_value 'framework.pricing.openapi_url' '.framework.pricing.openapi_url' '"openapi.json"'
-assert_field_value 'warp.management_writes' '.warp.management_writes' '["create", "delete"]'
 
-# Explicit false, 0, [] and "" must reach config.json: the default writes switch is true,
-# 0 is the 32 MiB default, [] makes Warp reads only and "" picks the build's spec, while an
-# omitted key keeps the stored value. bifrostUrl also takes a secret reference.
+# Explicit false, 0 and "" must reach config.json: the default writes switch is true,
+# 0 is the 32 MiB default and "" picks the build's spec, while an omitted key keeps the
+# stored value. bifrostUrl also takes a secret reference.
 cat > "$TMPDIR/values-bifrost-mcp-zero.yaml" << 'VALS'
 image:
   tag: v1.0.0
@@ -2405,15 +2403,12 @@ bifrost:
   framework:
     pricing:
       openapiUrl: ""
-  warp:
-    managementWrites: []
 VALS
 render_config "$TMPDIR/values-bifrost-mcp-zero.yaml"
 assert_field_value 'client.bifrost_url secret reference kept' '.client.bifrost_url' '{"env_var": "BIFROST_PUBLIC_URL", "type": "env"}'
 assert_field_value 'client.bifrost_mcp_allow_writes false kept' '.client.bifrost_mcp_allow_writes' 'false'
 assert_field_value 'client.mcp_openapi_max_spec_mb 0 kept' '.client.mcp_openapi_max_spec_mb' '0'
 assert_field_value 'framework.pricing.openapi_url "" kept' '.framework.pricing.openapi_url' '""'
-assert_field_value 'warp.management_writes [] kept' '.warp.management_writes' '[]'
 
 # Unset, none of the keys render, so values stored from the dashboard stay in force.
 render_config "$TMPDIR/values-warp-unset.yaml"
@@ -2424,19 +2419,17 @@ client = c.get('client', {})
 pricing = c.get('framework', {}).get('pricing', {})
 present = [k for k in ('bifrost_url', 'bifrost_mcp_allow_writes', 'mcp_openapi_max_spec_mb') if k in client]
 present += ['framework.pricing.openapi_url'] if 'openapi_url' in pricing else []
-present += ['warp.management_writes'] if 'management_writes' in c.get('warp', {}) else []
 print(', '.join(present))
 sys.exit(1 if present else 0)
 " > "$TMPDIR/present.txt"; then
-  report_result 'Bifrost MCP and management writes keys omitted when unset' 0
+  report_result 'Bifrost MCP keys omitted when unset' 0
 else
-  report_result 'Bifrost MCP and management writes keys omitted when unset' 1
+  report_result 'Bifrost MCP keys omitted when unset' 1
   echo -e "${YELLOW}    rendered without being set: $(cat "$TMPDIR/present.txt")${NC}"
 fi
 
 # The values schema refuses what config.schema.json refuses.
-for bad in 'bifrost.warp.managementWrites=["drop"]' \
-           'bifrost.client.mcpOpenapiMaxSpecMb=300'; do
+for bad in 'bifrost.client.mcpOpenapiMaxSpecMb=300'; do
   if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set-json "$bad" \
        > "$TMPDIR/render-err.txt" 2>&1; then
     report_result "{$bad} is rejected" 1

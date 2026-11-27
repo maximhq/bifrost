@@ -75,6 +75,7 @@ import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
+import { sharedBudgetNote } from "../hooks/useVirtualKeyUsage.utils";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
@@ -152,8 +153,10 @@ function downloadCSV(content: string) {
 }
 
 function VKBudgetCell({ vk }: { vk: VirtualKey }) {
-	const { displayBudgets } = useVirtualKeyUsage(vk);
-	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} />;
+	const { t } = useTranslation("models");
+	const { displayBudgets, isManagedByProfile, isOwnerGoverned, assignedUsers } = useVirtualKeyUsage(vk);
+	const sharedNote = sharedBudgetNote(t, { isManagedByProfile, isOwnerGoverned, assignee: assignedUsers[0] });
+	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} sharedNote={sharedNote} />;
 }
 
 // Entity selectors only ever set a value, so a filter built on one needs its own
@@ -633,8 +636,16 @@ export default function VirtualKeysTable({
 			const graceNote = graceUntil
 				? ` ${t("virtualKeys.rotateGraceNote", { date: new Date(graceUntil).toLocaleString(getLocale()) })}`
 				: "";
+			const notLoadedCount = result.warnings ? Object.keys(result.warnings).length : 0;
+			const notLoaded =
+				notLoadedCount > 0 ? { description: t("virtualKeys.rotatedBulkNotLoaded", { notLoaded: notLoadedCount }) } : undefined;
 			if (failureCount > 0) {
-				toast.warning(t("virtualKeys.rotatedBulkPartial", { count: result.virtual_keys.length, failed: failureCount, graceNote }));
+				toast.warning(
+					t("virtualKeys.rotatedBulkPartial", { count: result.virtual_keys.length, failed: failureCount, graceNote }),
+					notLoaded,
+				);
+			} else if (notLoaded) {
+				toast.warning(t("virtualKeys.rotatedBulk", { count: result.virtual_keys.length, graceNote }), notLoaded);
 			} else {
 				toast.success(t("virtualKeys.rotatedBulk", { count: result.virtual_keys.length, graceNote }));
 			}

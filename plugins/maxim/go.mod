@@ -1,12 +1,12 @@
 module github.com/maximhq/bifrost/plugins/maxim
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.15.1
-	github.com/maximhq/bifrost/framework v1.12.1
+	github.com/maximhq/bifrost/core v1.15.2
+	github.com/maximhq/bifrost/framework v1.12.2
 	github.com/maximhq/maxim-go v0.2.1
 )
 

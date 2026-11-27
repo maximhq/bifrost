@@ -23,6 +23,12 @@
 		"circuitBreaker": "Circuit Breaker",
 		"pricingOverrides": "Pricing Overrides",
 		"modelSettings": "Model Settings",
+		"finops": "FinOps",
+		"finopsOverview": "Overview",
+		"finopsConnections": "Connections",
+		"finopsExplorer": "Cost Explorer",
+		"finopsForecast": "Forecast",
+		"finopsAnomalies": "Anomalies",
 		"mcpGateway": "MCP Servers",
 		"mcpCatalog": "MCP Catalog",
 		"mcpLibrary": "MCP Library",
@@ -107,6 +113,7 @@
 		"circuitBreaker": "Automatic fallback when primary endpoints fail",
 		"pricingOverrides": "Scoped pricing overrides",
 		"modelSettings": "Model and routing configuration",
+		"finops": "AI spend across every provider account",
 		"mcpGateway": "MCP configuration",
 		"mcpCatalog": "MCP tool catalog",
 		"mcpLibrary": "Install curated MCP servers",
@@ -459,7 +466,15 @@
 			"label": "Question",
 			"skip": "Skip",
 			"orType": "Or type your own answer below.",
-			"skipAnswer": "Use your best judgement and say what you assumed."
+			"skipAnswer": "Use your best judgement and say what you assumed.",
+			"confirm": {
+				"subtitle": "Warp will make this change once you confirm.",
+				"destructiveSubtitle": "Warp will make this change once you confirm. Check it carefully.",
+				"cannotUndo": "This cannot be undone.",
+				"noArguments": "No arguments.",
+				"cancel": "Cancel",
+				"confirm": "Confirm"
+			}
 		},
 		"message": {
 			"whatThisCovers": "What this covers",

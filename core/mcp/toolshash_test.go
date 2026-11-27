@@ -47,11 +47,9 @@ func TestComputeDiscoveryHash_CoversToolMetadata(t *testing.T) {
 // registered callback's whole purpose (persist to DB, resync the local MCP
 // server) is wasted work when nothing actually changed.
 func TestSetClientDiscovery_UnchangedTools_DoesNotFireCallback(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "client-1", Name: "client-one"}
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
-	m.mu.Unlock()
+	putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config})
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
 
@@ -80,10 +78,11 @@ func TestWriteBackTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 	manager := &MCPManager{
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		logger:         &MockLogger{},
-		clientMap:      map[string]*schemas.MCPClientState{},
+		account:        newTestAccount(),
+		clientMap:      map[string]*clientConn{},
 	}
 	state, config := newSyncTestClientState("client-checker", "checker-client", schemas.MCPAuthTypeHeaders)
-	manager.clientMap[config.ID] = state
+	putClient(manager, state)
 
 	callCount := 0
 	manager.SetDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
@@ -110,7 +109,7 @@ func TestWriteBackTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 // look like a "change" even when it rediscovers the exact same tools,
 // causing a needless persist/resync immediately after every boot.
 func TestAddClient_RestoreFromConfig_SeedsHashSoSubsequentIdenticalDiscoveryNoOps(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	callCount := 0
@@ -128,7 +127,7 @@ func TestAddClient_RestoreFromConfig_SeedsHashSoSubsequentIdenticalDiscoveryNoOp
 		PerUserHeaderKeys: []string{"X-User-Token"},
 		DiscoveredTools:   restoredTools,
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	require.Equal(t, 0, callCount, "restoring from config must not itself fire")
 
 	// Simulate the periodic checker rediscovering the exact same tools right

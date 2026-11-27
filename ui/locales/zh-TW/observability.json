@@ -518,8 +518,7 @@
 			"guardrailActions": {
 				"allowed": "允許",
 				"blocked": "被阻止",
-				"redacted": "已編輯",
-				"transformed": "變身",
+				"redacted": "已遮蔽",
 				"monitored": "監控",
 				"detected": "檢測到"
 			},
@@ -565,11 +564,9 @@
 			"audioMeta": "編號：{{id}} |過期：{{expires}}",
 			"guardrailHints": {
 				"blocked": "該規則已阻止此請求。",
-				"redacted": "該規則已移除匹配的內容，請求繼續處理。",
-				"transformed": "該規則已改寫匹配的內容，請求繼續處理。",
+				"redacted": "該規則已遮蔽或改寫匹配的內容，請求繼續處理。",
 				"monitoredWouldBlock": "該規則僅作監控：本應阻止此請求，但請求未經更改繼續處理。",
 				"monitoredWouldRedact": "該規則僅作監控：本應移除相關內容，但請求未經更改繼續處理。",
-				"monitoredWouldTransform": "該規則僅作監控：本應改寫相關內容，但請求未經更改繼續處理。",
 				"monitored": "該規則僅作監控：請求未經更改繼續處理。",
 				"detected": "該規則已標記此請求，並讓其未經更改繼續處理。"
 			},

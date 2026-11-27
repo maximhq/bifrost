@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
@@ -72,7 +71,7 @@ func TestMain(m *testing.M) {
 func TestLoadConfigServesCatalogFeedsFromFixture(t *testing.T) {
 	initTestLogger()
 	tempDir := createTempDir(t)
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	createConfigFile(t, tempDir, makeConfigDataWithProvidersAndDir(providers, tempDir))

@@ -8,7 +8,7 @@ describe("guardrailMatchAction", () => {
 
 	it("labels detections by their action", () => {
 		expect(guardrailMatchAction({ action: "redact", enforced: true }, false)).toBe("redacted");
-		expect(guardrailMatchAction({ action: "transform" }, false)).toBe("transformed");
+		expect(guardrailMatchAction({ action: "transform" }, false)).toBe("redacted");
 		expect(guardrailMatchAction({ action: "block", enforced: true }, false)).toBe("blocked");
 		expect(guardrailMatchAction({ action: "detect" }, false)).toBe("detected");
 	});

@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/tests/cmd/complexitysuggesteval
 
-go 1.27.3
+go 1.27.4
 
 replace (
 	github.com/mark3labs/mcp-go => github.com/maximhq/mcp-go v0.0.0-20261102181017-b7da3bc145a1
@@ -12,7 +12,7 @@ replace (
 
 require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
-	github.com/maximhq/bifrost/core v1.15.1
+	github.com/maximhq/bifrost/core v1.15.2
 	github.com/maximhq/bifrost/plugins/routing v0.0.0
 	github.com/stretchr/testify v1.12.1
 )
@@ -118,7 +118,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/framework v1.12.1 // indirect
+	github.com/maximhq/bifrost/framework v1.12.2 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/oapi-codegen/runtime v1.6.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.2 // indirect

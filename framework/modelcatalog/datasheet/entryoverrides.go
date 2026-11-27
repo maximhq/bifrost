@@ -316,8 +316,8 @@ func (s *Store) installEntryOverrides(overrides []EntryOverride) {
 	orderEntryOverrides(overrides)
 	patches := buildParamsPatches(overrides)
 	s.entryOverridesMu.Lock()
-	s.entryOverrides = overrides
-	s.paramsPatches = patches
+	s.entryOverrides.store(overrides)
+	s.paramsPatches.store(patches)
 	s.entryOverridesMu.Unlock()
 }
 
@@ -408,7 +408,7 @@ func PricingClaimKey(o *EntryOverride) *string {
 func (s *Store) CheckPricingClaim(o *EntryOverride) error {
 	s.entryOverridesMu.RLock()
 	defer s.entryOverridesMu.RUnlock()
-	return pricingClaimConflict(s.entryOverrides, o)
+	return pricingClaimConflict(s.entryOverrides.load(), o)
 }
 
 // pricingClaimConflict returns an error naming the override in overrides whose
@@ -490,13 +490,13 @@ func (s *Store) UpsertEntryOverride(ctx context.Context, row configstoreTables.T
 	target := entryOverrideTarget(parsed.Provider, parsed.Model, parsed.Mode)
 	s.entryOverridesWriteMu.Lock()
 	s.entryOverridesMu.RLock()
-	if err := pricingClaimConflict(s.entryOverrides, &parsed); err != nil {
+	if err := pricingClaimConflict(s.entryOverrides.load(), &parsed); err != nil {
 		s.entryOverridesMu.RUnlock()
 		s.entryOverridesWriteMu.Unlock()
 		return err
 	}
-	overrides := make([]EntryOverride, 0, len(s.entryOverrides)+1)
-	for _, existing := range s.entryOverrides {
+	overrides := make([]EntryOverride, 0, len(s.entryOverrides.load())+1)
+	for _, existing := range s.entryOverrides.load() {
 		if existing.ID == parsed.ID || entryOverrideTarget(existing.Provider, existing.Model, existing.Mode) == target {
 			continue
 		}
@@ -514,8 +514,8 @@ func (s *Store) UpsertEntryOverride(ctx context.Context, row configstoreTables.T
 func (s *Store) DeleteEntryOverride(ctx context.Context, id string) {
 	s.entryOverridesWriteMu.Lock()
 	s.entryOverridesMu.RLock()
-	overrides := make([]EntryOverride, 0, len(s.entryOverrides))
-	for _, existing := range s.entryOverrides {
+	overrides := make([]EntryOverride, 0, len(s.entryOverrides.load()))
+	for _, existing := range s.entryOverrides.load() {
 		if existing.ID != id {
 			overrides = append(overrides, existing)
 		}
@@ -532,11 +532,11 @@ func (s *Store) DeleteEntryOverride(ctx context.Context, id string) {
 // so per-model records are re-resolved.
 func (s *Store) refreshEntryOverrides(ctx context.Context) {
 	s.mu.Lock()
-	for key, row := range s.pricingUpstream {
-		s.pricingData[key] = row
+	for key, row := range tableEntries(s.pricingUpstream) {
+		s.pricingData.Put(key, row)
 	}
-	for key := range s.customPricingKeys {
-		delete(s.pricingData, key)
+	for key := range tableEntries(s.customPricingKeys) {
+		s.pricingData.Delete(key)
 	}
 	s.applyPricingEntryOverridesUnsafe()
 	s.rebuildDatasheetViewUnsafe(s.datasheetViewRowsUnsafe())
@@ -548,7 +548,7 @@ func (s *Store) refreshEntryOverrides(ctx context.Context) {
 		}
 	} else {
 		s.mu.RLock()
-		sheet := s.paramsSheet
+		sheet := s.paramsSheet.load()
 		s.mu.RUnlock()
 		if sheet != nil {
 			s.applyModelParameters(sheet)
@@ -566,20 +566,20 @@ func (s *Store) refreshEntryOverrides(ctx context.Context) {
 // so without this a removed custom model would keep answering there.
 func (s *Store) dropRemovedOverrideOnlyParams() {
 	s.entryOverridesMu.RLock()
-	stillPatched := make(map[string]struct{}, len(s.paramsPatches))
-	for _, p := range s.paramsPatches {
+	stillPatched := make(map[string]struct{}, len(s.paramsPatches.load()))
+	for _, p := range s.paramsPatches.load() {
 		stillPatched[p.model] = struct{}{}
 	}
 	s.entryOverridesMu.RUnlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for model := range s.paramsOverrideOnly {
+	for model := range tableEntries(s.paramsOverrideOnly) {
 		if _, ok := stillPatched[model]; ok {
 			continue
 		}
-		delete(s.supportedParams, model)
-		delete(s.supportedResponseTypes, model)
-		delete(s.paramsOverrideOnly, model)
+		s.supportedParams.Delete(model)
+		s.supportedResponseTypes.Delete(model)
+		s.paramsOverrideOnly.Delete(model)
 	}
 }
 
@@ -590,21 +590,21 @@ func (s *Store) dropRemovedOverrideOnlyParams() {
 // entryOverridesMu), which keeps a concurrent sync from applying a stale set.
 func (s *Store) applyPricingEntryOverridesUnsafe() {
 	s.entryOverridesMu.RLock()
-	overrides := s.entryOverrides
+	overrides := s.entryOverrides.load()
 	s.entryOverridesMu.RUnlock()
 
-	s.pricingUpstream = nil
-	s.customPricingKeys = nil
+	s.pricingUpstream.Flush()
+	s.customPricingKeys.Flush()
 	if len(overrides) == 0 {
 		return
 	}
-	s.pricingUpstream = make(map[string]configstoreTables.TableModelPricing)
-	s.customPricingKeys = make(map[string]struct{})
+	s.pricingUpstream.Flush()
+	s.customPricingKeys.Flush()
 
 	apply := func(key string, row configstoreTables.TableModelPricing, o *EntryOverride) {
-		if _, recorded := s.pricingUpstream[key]; !recorded {
-			if _, custom := s.customPricingKeys[key]; !custom {
-				s.pricingUpstream[key] = row
+		if _, recorded := s.pricingUpstream.Get(key); !recorded {
+			if _, custom := s.customPricingKeys.Get(key); !custom {
+				s.pricingUpstream.Put(key, row)
 			}
 		}
 		patched, err := patchPricingRow(row, o.PricingPatch)
@@ -614,7 +614,7 @@ func (s *Store) applyPricingEntryOverridesUnsafe() {
 			}
 			return
 		}
-		s.pricingData[key] = patched
+		s.pricingData.Put(key, patched)
 	}
 
 	for i := range overrides {
@@ -622,13 +622,13 @@ func (s *Store) applyPricingEntryOverridesUnsafe() {
 		provider := normalizeProvider(o.Provider)
 		if o.Mode != "" {
 			key := makeKeyNormalized(o.Model, provider, o.Mode)
-			row, ok := s.pricingData[key]
+			row, ok := s.pricingData.Get(key)
 			if !ok {
 				if !o.IsCustom {
 					continue
 				}
 				row = configstoreTables.TableModelPricing{Model: o.Model, Provider: provider, Mode: o.Mode}
-				s.customPricingKeys[key] = struct{}{}
+				s.customPricingKeys.Put(key, struct{}{})
 			}
 			apply(key, row, o)
 			continue
@@ -637,7 +637,7 @@ func (s *Store) applyPricingEntryOverridesUnsafe() {
 			continue
 		}
 		prefix := strings.ToLower(o.Model + "|" + provider + "|")
-		for key, row := range s.pricingData {
+		for key, row := range tableEntries(s.pricingData) {
 			if strings.HasPrefix(key, prefix) {
 				apply(key, row, o)
 			}
@@ -650,21 +650,21 @@ func (s *Store) applyPricingEntryOverridesUnsafe() {
 // override patched (keeping that row's own spelling), plus the custom rows.
 // Without overrides it returns pricingRows as is. Caller holds s.mu.
 func (s *Store) datasheetViewRowsUnsafe() []configstoreTables.TableModelPricing {
-	if len(s.pricingUpstream) == 0 && len(s.customPricingKeys) == 0 {
-		return s.pricingRows
+	if s.pricingUpstream.Len() == 0 && s.customPricingKeys.Len() == 0 {
+		return s.pricingRows.load()
 	}
-	rows := make([]configstoreTables.TableModelPricing, 0, len(s.pricingRows)+len(s.customPricingKeys))
-	for _, row := range s.pricingRows {
+	rows := make([]configstoreTables.TableModelPricing, 0, len(s.pricingRows.load())+s.customPricingKeys.Len())
+	for _, row := range s.pricingRows.load() {
 		key := makeKeyNormalized(row.Model, row.Provider, row.Mode)
-		if _, patched := s.pricingUpstream[key]; patched {
-			effective := s.pricingData[key]
+		if _, patched := s.pricingUpstream.Get(key); patched {
+			effective := lookup(s.pricingData, key)
 			effective.Model, effective.Provider, effective.Mode = row.Model, row.Provider, row.Mode
 			row = effective
 		}
 		rows = append(rows, row)
 	}
-	for key := range s.customPricingKeys {
-		rows = append(rows, s.pricingData[key])
+	for key := range tableEntries(s.customPricingKeys) {
+		rows = append(rows, lookup(s.pricingData, key))
 	}
 	return rows
 }
@@ -675,11 +675,11 @@ func (s *Store) datasheetViewRowsUnsafe() []configstoreTables.TableModelPricing 
 // With no params patches it returns paramsData untouched.
 func (s *Store) withParamsEntryOverrides(paramsData map[string]json.RawMessage) (map[string]json.RawMessage, map[string]struct{}) {
 	s.entryOverridesMu.RLock()
-	patches := s.paramsPatches
+	patches := s.paramsPatches.load()
 	s.entryOverridesMu.RUnlock()
 	if len(patches) == 0 {
 		s.entryOverridesMu.Lock()
-		s.paramsUpstream = nil
+		s.paramsUpstream.store(nil)
 		s.entryOverridesMu.Unlock()
 		return paramsData, nil
 	}
@@ -751,7 +751,7 @@ func (s *Store) withParamsEntryOverrides(paramsData map[string]json.RawMessage) 
 		out[model] = patched
 	}
 	s.entryOverridesMu.Lock()
-	s.paramsUpstream = upstream
+	s.paramsUpstream.store(upstream)
 	s.entryOverridesMu.Unlock()
 	return out, overrideOnly
 }
@@ -777,7 +777,7 @@ func qualifiedParamsRow(paramsData map[string]json.RawMessage, provider, model s
 func (s *Store) hasParamsPatches() bool {
 	s.entryOverridesMu.RLock()
 	defer s.entryOverridesMu.RUnlock()
-	return len(s.paramsPatches) > 0
+	return len(s.paramsPatches.load()) > 0
 }
 
 // paramsPatchFor returns the params patch for provider and the first of names
@@ -785,11 +785,11 @@ func (s *Store) hasParamsPatches() bool {
 func (s *Store) paramsPatchFor(provider string, names ...string) (paramsPatch, bool) {
 	s.entryOverridesMu.RLock()
 	defer s.entryOverridesMu.RUnlock()
-	if len(s.paramsPatches) == 0 {
+	if len(s.paramsPatches.load()) == 0 {
 		return paramsPatch{}, false
 	}
 	for _, name := range names {
-		if p, ok := s.paramsPatches[paramsPatchKey(provider, name)]; ok {
+		if p, ok := s.paramsPatches.load()[paramsPatchKey(provider, name)]; ok {
 			return p, true
 		}
 	}
@@ -827,7 +827,7 @@ func (s *Store) FindEntryOverride(provider, model, mode string) *configstoreTabl
 	s.entryOverridesMu.RLock()
 	defer s.entryOverridesMu.RUnlock()
 	target := entryOverrideTarget(provider, model, mode)
-	for _, o := range s.entryOverrides {
+	for _, o := range s.entryOverrides.load() {
 		if entryOverrideTarget(o.Provider, o.Model, o.Mode) == target {
 			row := o.Row
 			return &row
@@ -873,7 +873,7 @@ type DatasheetEntryDetail struct {
 func (s *Store) entryOverridesSnapshot() ([]EntryOverride, map[string]json.RawMessage) {
 	s.entryOverridesMu.RLock()
 	defer s.entryOverridesMu.RUnlock()
-	return s.entryOverrides, s.paramsUpstream
+	return s.entryOverrides.load(), s.paramsUpstream.load()
 }
 
 // ListDatasheetEntries returns one entry per pricing row (upstream and
@@ -896,8 +896,9 @@ func (s *Store) ListDatasheetEntries(q DatasheetEntryQuery) ([]DatasheetEntry, i
 	matched := make([]bool, len(overrides))
 	var entries []DatasheetEntry
 	s.mu.RLock()
-	for key, effective := range s.pricingData {
-		if !matchesFilter(effective.Provider, effective.Model) {
+	for key, effective := range tableEntries(s.pricingData) {
+		// No lookup prices a provider-less row and no override can target one.
+		if effective.Provider == "" || !matchesFilter(effective.Provider, effective.Model) {
 			continue
 		}
 		entry := DatasheetEntry{Provider: effective.Provider, Model: effective.Model, Mode: effective.Mode}
@@ -912,8 +913,8 @@ func (s *Store) ListDatasheetEntries(q DatasheetEntryQuery) ([]DatasheetEntry, i
 		}
 		effectiveCopy := effective
 		entry.Effective = &effectiveCopy
-		_, entry.IsCustom = s.customPricingKeys[key]
-		if upstream, replaced := s.pricingUpstream[key]; replaced {
+		entry.IsCustom = has(s.customPricingKeys, key)
+		if upstream, replaced := s.pricingUpstream.Get(key); replaced {
 			entry.Upstream = &upstream
 		} else if !entry.IsCustom {
 			entry.Upstream = &effectiveCopy
@@ -1141,13 +1142,13 @@ func (s *Store) upstreamPricingRow(o *EntryOverride) *configstoreTables.TableMod
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	lookup := func(key string) *configstoreTables.TableModelPricing {
-		if row, ok := s.pricingUpstream[key]; ok {
+		if row, ok := s.pricingUpstream.Get(key); ok {
 			return &row
 		}
-		if _, custom := s.customPricingKeys[key]; custom {
+		if _, custom := s.customPricingKeys.Get(key); custom {
 			return nil
 		}
-		if row, ok := s.pricingData[key]; ok {
+		if row, ok := s.pricingData.Get(key); ok {
 			return &row
 		}
 		return nil
@@ -1157,7 +1158,7 @@ func (s *Store) upstreamPricingRow(o *EntryOverride) *configstoreTables.TableMod
 	}
 	prefix := strings.ToLower(o.Model + "|" + provider + "|")
 	var keys []string
-	for key := range s.pricingData {
+	for key := range tableEntries(s.pricingData) {
 		if strings.HasPrefix(key, prefix) {
 			keys = append(keys, key)
 		}

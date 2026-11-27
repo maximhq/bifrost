@@ -4,13 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,8 +31,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -48,6 +54,68 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 	require.NoError(t, err)
 	assert.Equal(t, "openai/whisper-1", model)
 	assert.True(t, stream)
+}
+
+// TestHandlePassthrough_MultipartModelIsStrict asserts a streamed multipart passthrough body names
+// its model the way a JSON body must: at most one model field, spelled "model", or 400 before the
+// upstream is called. Repeated fields routed and governed the first value while the forwarded body
+// still carried every value, so the upstream could run a model that was never checked.
+func TestHandlePassthrough_MultipartModelIsStrict(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"ok"}`))
+	}))
+	defer upstream.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughRewriteAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	for _, tc := range []struct {
+		name       string
+		fields     [][2]string
+		wantStatus int
+		wantErr    string
+	}{
+		{"one model", [][2]string{{"model", "whisper-1"}}, fasthttp.StatusOK, ""},
+		{"repeated model", [][2]string{{"model", "whisper-1"}, {"model", "gpt-4o-transcribe"}}, fasthttp.StatusBadRequest, "at most once"},
+		{"model under two spellings", [][2]string{{"model", "whisper-1"}, {"Model", "gpt-4o-transcribe"}}, fasthttp.StatusBadRequest, "at most once"},
+		{"misspelled model", [][2]string{{"Model", "whisper-1"}}, fasthttp.StatusBadRequest, "spelled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body bytes.Buffer
+			w := multipart.NewWriter(&body)
+			for _, f := range tc.fields {
+				require.NoError(t, w.WriteField(f[0], f[1]))
+			}
+			part, err := w.CreateFormFile("file", "sample.mp3")
+			require.NoError(t, err)
+			_, _ = part.Write([]byte("audio-bytes"))
+			require.NoError(t, w.Close())
+			raw := append([]byte(fmt.Sprintf("POST /openai_passthrough/v1/audio/transcriptions HTTP/1.1\r\nHost: bifrost\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", w.FormDataContentType(), body.Len())), body.Bytes()...)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&fasthttp.Request{}, nil, nil)
+			require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewReader(raw))))
+			defer ctx.Request.Reset()
+			before := hits.Load()
+
+			r.Handler(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			if tc.wantErr != "" {
+				assert.Contains(t, string(ctx.Response.Body()), tc.wantErr)
+				assert.Equal(t, before, hits.Load(), "the upstream was called for a refused request")
+			}
+		})
+	}
 }
 
 // TestParsePassthroughBody_JSONModelIsStrict: the model governance checks must be
@@ -1319,6 +1387,21 @@ func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*
 	return config, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a passthroughTestAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a passthroughTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a passthroughTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // passthroughTestStore reports the test account's custom providers the way lib.Config does.
 func passthroughTestStore() *mockHandlerStore {
 	return &mockHandlerStore{customProviders: map[schemas.ModelProvider]mockCustomProvider{
@@ -1647,6 +1730,10 @@ func TestRegisterPassthroughTextRewriters(t *testing.T) {
 		{"openai chat", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ChatCompletionRequest}, true},
 		{"openai responses", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ResponsesRequest}, true},
 		{"openai embeddings", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.EmbeddingRequest}, false},
+		{"gemini interactions", passthroughparse.Route{Wire: passthroughparse.WireGeminiInteractions, RequestType: schemas.ResponsesRequest}, true},
+		{"runware tasks", passthroughparse.Route{Wire: schemas.Runware}, true},
+		{"sagemaker invocations", passthroughparse.Route{Wire: schemas.SageMaker}, true},
+		{"bedrock agent", passthroughparse.Route{Wire: schemas.Bedrock}, true},
 		{"untyped route", passthroughparse.Route{}, false},
 	}
 	for _, tc := range cases {
@@ -1655,6 +1742,189 @@ func TestRegisterPassthroughTextRewriters(t *testing.T) {
 			registerPassthroughTextRewriters(ctx, tc.route)
 			_, registered := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
 			require.Equal(t, tc.want, registered)
+		})
+	}
+}
+
+// TestPassthroughRequestRewritersMatchTheReaders verifies, for every request shape the Runware, SageMaker, Bedrock agent
+// and Gemini Interactions readers accept, that the route's rewriter rewrites exactly the texts passthroughparse hands
+// guardrails: rewriting a value the reader read gives a body that reads back with only that value replaced. A text the
+// reader reads but the rewriter cannot reach would turn a decided redaction into a refused request. Synthetic payloads.
+func TestPassthroughRequestRewritersMatchTheReaders(t *testing.T) {
+	const secret = "alice@example.com"
+	runware := passthroughparse.Input{Provider: schemas.Runware, Method: "POST", Path: "/v1"}
+	sageMaker := passthroughparse.Input{Provider: schemas.SageMaker, Method: "POST", Path: "/endpoints/e/invocations"}
+	agent := passthroughparse.Input{Provider: schemas.Bedrock, Method: "POST", Path: "/agents/A/agentAliases/B/sessions/c/text"}
+	gemini := passthroughparse.Input{Provider: schemas.Gemini, Method: "POST", Path: "/v1beta/interactions"}
+	vertex := passthroughparse.Input{Provider: schemas.Vertex, Method: "POST", Path: "/v1beta1/projects/p/locations/global/interactions"}
+	interactionSteps := `{"model":"gemini-3.8-flash","system_instruction":"reply to alice@example.com","input":[` +
+		`{"type":"user_input","content":[{"type":"text","text":"mail alice@example.com"},{"type":"image","uri":"gs://b/i.png"}]},` +
+		`{"type":"model_output","content":[{"type":"text","text":"sent to alice@example.com"}]},` +
+		`{"type":"function_call","id":"c1","name":"send","arguments":{"to":"alice@example.com","cc":["alice@example.com"]}},` +
+		`{"type":"function_result","name":"send","call_id":"c1","result":"delivered to alice@example.com"},` +
+		`{"type":"function_result","name":"send","call_id":"c2","result":[{"type":"text","text":"list alice@example.com"}]},` +
+		`{"type":"function_result","name":"send","call_id":"c3","result":{"content":[{"type":"text","text":"content alice@example.com"}]}},` +
+		`{"type":"text","text":"part alice@example.com"}]}`
+	cases := []struct {
+		name string
+		in   passthroughparse.Input
+		body string
+	}{
+		{"runware text and image tasks", runware, `[{"taskType":"textInference","taskUUID":"t1","settings":{"systemPrompt":"sys alice@example.com"},` +
+			`"messages":[{"role":"user","content":"hi alice@example.com"},{"role":"assistant","content":"ok alice@example.com"}]},` +
+			`{"taskType":"imageInference","taskUUID":"t2","positivePrompt":"draw alice@example.com","negativePrompt":"blurry"}]`},
+		{"runware single image task", runware, `{"taskType":"imageInference","taskUUID":"t1","positivePrompt":"draw alice@example.com"}`},
+		{"runware video tasks", runware, `[{"taskType":"videoInference","taskUUID":"t1","positivePrompt":"film alice@example.com"}]`},
+		{"runware avatar speech and kling shots", runware, `[{"taskType":"videoInference","taskUUID":"t1","positivePrompt":"office",` +
+			`"speech":{"text":"email alice@example.com","voice":"v1"}},{"taskType":"videoInference","taskUUID":"t2",` +
+			`"providerSettings":{"klingai":{"multiPrompt":[{"prompt":"wide shot","duration":3},{"prompt":"screen shows alice@example.com","duration":3}]}}}]`},
+		{"runware image system prompt", runware, `[{"taskType":"imageInference","taskUUID":"t1","positivePrompt":"a red fox","settings":{"systemPrompt":"sign as alice@example.com"}}]`},
+		{"runware caption and prompt enhance", runware, `[{"taskType":"caption","taskUUID":"t1","inputs":{"image":"https://example.com/i.png"},"prompt":"mention alice@example.com"},` +
+			`{"taskType":"promptEnhance","taskUUID":"t2","prompt":"portrait of alice@example.com","promptMaxLength":64}]`},
+		{"sagemaker inputs", sageMaker, `{"inputs":"say alice@example.com","parameters":{"max_new_tokens":8}}`},
+		{"sagemaker input list", sageMaker, `{"inputs":["a alice@example.com","b alice@example.com"]}`},
+		{"sagemaker chat with tools", sageMaker, `{"messages":[{"role":"system","content":"sys alice@example.com"},` +
+			`{"role":"user","content":[{"type":"text","text":"hi alice@example.com"}]},` +
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"send","arguments":"{\"to\":\"alice@example.com\"}"}}]},` +
+			`{"role":"tool","tool_call_id":"c1","content":"sent to alice@example.com"}]}`},
+		{"sagemaker completion prompt", sageMaker, `{"prompt":"say alice@example.com","max_tokens":5}`},
+		{"sagemaker messages and inputs", sageMaker, `{"messages":[{"role":"user","content":"hello"}],"inputs":"mail alice@example.com"}`},
+		{"sagemaker messages and prompt", sageMaker, `{"messages":[{"role":"user","content":"hi"}],"prompt":"mail alice@example.com"}`},
+		{"sagemaker prompt and inputs", sageMaker, `{"prompt":["a","b"],"inputs":"mail alice@example.com"}`},
+		{"sagemaker null prompt and inputs", sageMaker, `{"prompt":null,"inputs":"mail alice@example.com"}`},
+		{"sagemaker empty messages and inputs", sageMaker, `{"messages":[],"inputs":"mail alice@example.com"}`},
+		{"sagemaker inputs with token ids", sageMaker, `{"inputs":["mail alice@example.com",[101,2023,102]]}`},
+		{"bedrock agent prompt session attributes", agent, `{"inputText":"book it","sessionState":{"sessionAttributes":{"k":"v"},"promptSessionAttributes":{"contact":"alice@example.com","tz":"UTC"}}}`},
+		{"bedrock agent turn", agent, `{"inputText":"mail alice@example.com","sessionState":{"sessionAttributes":{"k":"v"},` +
+			`"conversationHistory":{"messages":[{"role":"user","content":[{"text":"earlier alice@example.com"}]},{"role":"assistant","content":[{"text":"reply alice@example.com"}]}]},` +
+			`"returnControlInvocationResults":[{"functionResult":{"actionGroup":"g","function":"f","responseBody":{"TEXT":{"body":"result alice@example.com"}}}},` +
+			`{"apiResult":{"actionGroup":"g","apiPath":"/p","httpMethod":"GET","responseBody":{"application/json":{"body":"{\"to\":\"alice@example.com\"}"}}}}]}}`},
+		{"interactions string input", gemini, `{"model":"gemini-3.8-flash","system_instruction":"reply to alice@example.com","input":"mail alice@example.com"}`},
+		{"interactions text part", gemini, `{"model":"gemini-3.8-flash","input":{"type":"text","text":"mail alice@example.com"}}`},
+		{"interactions steps", gemini, interactionSteps},
+		{"vertex interactions steps", vertex, interactionSteps},
+		{"interactions object function result", gemini, `{"model":"gemini-3.8-flash","input":[{"type":"function_result","name":"lookup","call_id":"c1","result":{"owner":"alice@example.com","rows":2,"tags":["alice@example.com"]}}]}`},
+		{"interactions string arguments", gemini, `{"model":"gemini-3.8-flash","input":[{"type":"function_call","id":"c1","name":"send","arguments":"{\"to\":\"alice@example.com\"}"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The rewriter the route registers for the call, as the passthrough handler registers it.
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			registerPassthroughTextRewriters(ctx, passthroughparse.Classify(tc.in.Provider, "", tc.in.Method, tc.in.Path))
+			rewrite, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			require.NotNil(t, rewrite)
+			read := func(body []byte) []string {
+				in := tc.in
+				in.RequestBody = body
+				result, err := passthroughparse.Parse(in)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.NotNil(t, result.Request)
+				return requestStringLeaves(t, result.Request)
+			}
+			before := read([]byte(tc.body))
+			require.True(t, strings.Contains(strings.Join(before, "\n"), secret), "the reader reads the value: %q", before)
+			rewritten, err := rewrite([]byte(tc.body), map[string]string{secret: "[EMAIL]"})
+			require.NoError(t, err)
+			want := make([]string, len(before))
+			for i, text := range before {
+				want[i] = strings.ReplaceAll(text, secret, "[EMAIL]")
+			}
+			require.Equal(t, want, read(rewritten), "the rewritten body reads back as the reader's texts with only the value replaced")
+		})
+	}
+}
+
+// requestStringLeaves returns every string value of v's JSON form, in document order, so two reads of a parsed request
+// can be compared whatever type the reader produced.
+func requestStringLeaves(t *testing.T, v any) []string {
+	t.Helper()
+	encoded, err := json.Marshal(v)
+	require.NoError(t, err)
+	var leaves []string
+	var walk func(gjson.Result)
+	walk = func(value gjson.Result) {
+		switch {
+		case value.Type == gjson.String:
+			leaves = append(leaves, value.Str)
+		case value.IsObject() || value.IsArray():
+			value.ForEach(func(_, child gjson.Result) bool {
+				walk(child)
+				return true
+			})
+		}
+	}
+	walk(gjson.ParseBytes(encoded))
+	return leaves
+}
+
+// TestRewritePassthroughOnlyRawRequestBodies verifies the Runware, SageMaker and Bedrock agent rewriters change only the
+// text fields passthroughparse reads, and keep every other field, unknown ones included, as sent. Synthetic payloads.
+func TestRewritePassthroughOnlyRawRequestBodies(t *testing.T) {
+	replacements := map[string]string{"alice@example.com": "[EMAIL]"}
+	cases := []struct {
+		name      string
+		rewrite   schemas.RawRequestBodyTextRewriter
+		body      string
+		redacted  []string
+		untouched map[string]string
+	}{
+		{
+			name:    "runware tasks",
+			rewrite: rewriteRunwareRawRequestBody,
+			body: `[{"taskType":"textInference","taskUUID":"t1","settings":{"systemPrompt":"sys alice@example.com"},"messages":[{"role":"user","content":"hi alice@example.com"}]},` +
+				`{"taskType":"imageInference","taskUUID":"t2","positivePrompt":"draw alice@example.com","negativePrompt":"alice@example.com"},` +
+				`{"taskType":"imageUpscale","taskUUID":"t3","inputImage":"alice@example.com"}]`,
+			redacted:  []string{"0.settings.systemPrompt", "0.messages.0.content", "1.positivePrompt"},
+			untouched: map[string]string{"1.negativePrompt": "alice@example.com", "2.inputImage": "alice@example.com", "0.taskUUID": "t1"},
+		},
+		{
+			name:      "runware single task",
+			rewrite:   rewriteRunwareRawRequestBody,
+			body:      `{"taskType":"videoInference","positivePrompt":"film alice@example.com","futureField":"alice@example.com"}`,
+			redacted:  []string{"positivePrompt"},
+			untouched: map[string]string{"futureField": "alice@example.com"},
+		},
+		{
+			name:      "sagemaker inputs",
+			rewrite:   rewriteSageMakerRawRequestBody,
+			body:      `{"inputs":"say alice@example.com","parameters":{"stop":["alice@example.com"]}}`,
+			redacted:  []string{"inputs"},
+			untouched: map[string]string{"parameters.stop.0": "alice@example.com"},
+		},
+		{
+			name:     "sagemaker input list",
+			rewrite:  rewriteSageMakerRawRequestBody,
+			body:     `{"inputs":["a alice@example.com","b alice@example.com"]}`,
+			redacted: []string{"inputs.0", "inputs.1"},
+		},
+		{
+			name:      "sagemaker messages",
+			rewrite:   rewriteSageMakerRawRequestBody,
+			body:      `{"messages":[{"role":"user","content":"hi alice@example.com"}],"futureField":"alice@example.com"}`,
+			redacted:  []string{"messages.0.content"},
+			untouched: map[string]string{"futureField": "alice@example.com"},
+		},
+		{
+			name:    "bedrock agent",
+			rewrite: rewriteBedrockAgentRawRequestBody,
+			body: `{"inputText":"mail alice@example.com","sessionState":{"sessionAttributes":{"k":"alice@example.com"},` +
+				`"conversationHistory":{"messages":[{"role":"user","content":[{"text":"earlier alice@example.com"}]}]},` +
+				`"returnControlInvocationResults":[{"functionResult":{"actionGroup":"g","function":"f","responseBody":{"TEXT":{"body":"result alice@example.com"}}}}]}}`,
+			redacted: []string{
+				"inputText",
+				"sessionState.conversationHistory.messages.0.content.0.text",
+				"sessionState.returnControlInvocationResults.0.functionResult.responseBody.TEXT.body",
+			},
+			untouched: map[string]string{"sessionState.sessionAttributes.k": "alice@example.com"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.rewrite([]byte(tc.body), replacements)
+			require.NoError(t, err)
+			assertRawPaths(t, got, tc.redacted, tc.untouched)
 		})
 	}
 }
@@ -1719,6 +1989,21 @@ func (a passthroughRewriteAccount) GetConfigForProvider(p schemas.ModelProvider)
 	return config, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a passthroughRewriteAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a passthroughRewriteAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a passthroughRewriteAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // passthroughRewritingPlugin stands in for a plugin that redacts a passthrough request: it records what the router
 // handed over and rewrites the body through the registered rewriter, as it would after finding a value.
 type passthroughRewritingPlugin struct {
@@ -1726,6 +2011,8 @@ type passthroughRewritingPlugin struct {
 	baseProvider schemas.ModelProvider
 	provider     schemas.ModelProvider
 	hasRewriter  bool
+	formTypes    map[string][]string
+	summary      string // the multipart log summary the logging plugin would store
 }
 
 // GetName identifies the test plugin.
@@ -1745,6 +2032,11 @@ func (p *passthroughRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req
 	defer p.mu.Unlock()
 	passthrough := req.PassthroughRequest
 	p.baseProvider, p.provider = passthrough.BaseProvider, passthrough.Provider
+	p.formTypes = passthrough.FormTypes
+	p.summary = ""
+	if summary, ok := passthroughparse.SummarizeMultipartForm(passthrough.Form, passthrough.FormTypes); ok {
+		p.summary = string(summary)
+	}
 	rewriter, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
 	p.hasRewriter = rewriter != nil
 	if rewriter == nil {
@@ -1764,6 +2056,204 @@ func (p *passthroughRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req
 // PostLLMHook leaves the response unchanged.
 func (*passthroughRewritingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, err, nil
+}
+
+// TestHandlePassthrough_MultipartParseErrorRefused asserts a streamed multipart passthrough upload
+// whose form does not parse (here 1,001 parts, over Go's limit) is refused with 400 and never
+// forwarded. The body stream is partly read by the failed parse, so falling back to Body() would
+// forward only the unread rest of the upload.
+func TestHandlePassthrough_MultipartParseErrorRefused(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		io.Copy(io.Discard, r.Body) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"file-abc"}`)) //nolint:errcheck
+	}))
+	defer server.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughRewriteAccount{baseURL: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	for i := 0; i <= 1000; i++ {
+		require.NoError(t, w.WriteField(fmt.Sprintf("f%d", i), "v"))
+	}
+	require.NoError(t, w.Close())
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/openai_passthrough/v1/files")
+	ctx.Request.Header.SetContentType(w.FormDataContentType())
+	ctx.Request.SetBodyStream(bytes.NewReader(body.Bytes()), body.Len())
+	defer ctx.Request.Reset()
+	r.Handler(ctx)
+
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	assert.Equal(t, int32(0), hits.Load(), "a multipart body that does not parse must not be forwarded")
+}
+
+// TestHandlePassthrough_MultipartUploadStreamed pins the passthrough Files API upload path. A 17 MB
+// multipart upload (over fasthttp's 16 MB in-memory limit, so the server keeps it in a temp file)
+// must reach the upstream intact with a Content-Length. OpenAI streams it from the parsed form, so
+// the gateway allocates less than the file's size; before, the router rebuilt the form in memory
+// with Body() and the provider copied it into the request. Anthropic does not stream passthrough
+// bodies, so Bifrost reads the form into Body once and it must still arrive intact.
+func TestHandlePassthrough_MultipartUploadStreamed(t *testing.T) {
+	const fileSize = 17 << 20
+	file := bytes.Repeat([]byte(`{"custom_id":"r","method":"POST"}`+"\n"), fileSize/34+1)[:fileSize]
+	wantSum := sha256.Sum256(file)
+
+	upstream := &fileUploadUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughRewriteAccount{baseURL: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	for _, tc := range []struct {
+		name          string
+		uri           string
+		streams       bool
+		wantUpstream  string
+		wantFieldName string
+	}{
+		{name: "openai streams the form", uri: "/openai_passthrough/v1/files", streams: true, wantUpstream: "/v1/files"},
+		{name: "anthropic reads the form once", uri: "/anthropic_passthrough/v1/files", wantUpstream: "/v1/files"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body bytes.Buffer
+			w := multipart.NewWriter(&body)
+			require.NoError(t, w.WriteField("purpose", "batch"))
+			part, err := w.CreateFormFile("file", "batch.jsonl")
+			require.NoError(t, err)
+			_, err = part.Write(file)
+			require.NoError(t, err)
+			require.NoError(t, w.Close())
+			raw := append([]byte(fmt.Sprintf("POST %s HTTP/1.1\r\nHost: bifrost\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", tc.uri, w.FormDataContentType(), body.Len())), body.Bytes()...)
+			body.Reset()
+
+			// Read the request the way the server does: the form is parsed while reading
+			// and the file lands in a temp file.
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&fasthttp.Request{}, nil, nil)
+			require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewReader(raw))))
+			raw = nil
+			defer ctx.Request.Reset()
+
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			r.Handler(ctx)
+			runtime.ReadMemStats(&after)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			upstream.mu.Lock()
+			defer upstream.mu.Unlock()
+			assert.Equal(t, tc.wantUpstream, upstream.path)
+			assert.Greater(t, upstream.contentLength, int64(fileSize), "upstream must get a Content-Length, not a chunked body")
+			assert.Equal(t, "batch", upstream.fields["purpose"])
+			assert.Equal(t, "batch.jsonl", upstream.filename)
+			assert.Equal(t, int64(fileSize), upstream.fileSize)
+			assert.Equal(t, wantSum, upstream.fileSum, "upstream file content differs from the upload")
+			allocated := after.TotalAlloc - before.TotalAlloc
+			t.Logf("%d-byte upload allocated %d bytes in the gateway", fileSize, allocated)
+			if tc.streams {
+				assert.Less(t, allocated, uint64(fileSize), "a %d-byte upload allocated %d bytes in the gateway; the form must be streamed, not held in memory", fileSize, allocated)
+			}
+		})
+	}
+}
+
+// TestHandlePassthrough_MultipartValueTypesKept asserts a passthrough upload keeps the Content-Type of
+// a part sent without a filename, which the parsed form alone has lost: the upstream receives the
+// part with it, and plugins (the logging summary) get it in FormTypes, so a file sent without a
+// filename is not logged as a text field. Streamed and buffered bodies behave the same.
+func TestHandlePassthrough_MultipartValueTypesKept(t *testing.T) {
+	upstream := &fileUploadUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+	plugin := &passthroughRewritingPlugin{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    passthroughRewriteAccount{baseURL: server.URL},
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	// pluginReadsFirst stands in for a transport plugin that opens the upload before the route runs
+	// (multipartFormBodySource.Open), on the same route middleware chain.
+	var pluginReadsFirst bool
+	readsBody := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if pluginReadsFirst {
+				if _, _, err := lib.SharedMultipartForm(ctx); err != nil {
+					t.Errorf("plugin read of the upload: %v", err)
+				}
+			}
+			next(ctx)
+		}
+	}
+	r := router.New()
+	NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, readsBody)
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	require.NoError(t, w.WriteField("purpose", "batch"))
+	part, err := w.CreatePart(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="mask"`}, "Content-Type": {"application/octet-stream"}})
+	require.NoError(t, err)
+	_, err = part.Write([]byte("printable file bytes sent without a filename"))
+	require.NoError(t, err)
+	part, err = w.CreateFormFile("file", "batch.jsonl")
+	require.NoError(t, err)
+	_, err = part.Write([]byte(`{"custom_id":"r"}`))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	for _, tc := range []struct{ streamed, pluginFirst bool }{{true, false}, {false, false}, {true, true}, {false, true}} {
+		streamed := tc.streamed
+		t.Run(fmt.Sprintf("streamed=%v/plugin-reads-first=%v", tc.streamed, tc.pluginFirst), func(t *testing.T) {
+			pluginReadsFirst = tc.pluginFirst
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/openai_passthrough/v1/files")
+			ctx.Request.Header.SetContentType(w.FormDataContentType())
+			if streamed {
+				ctx.Request.SetBodyStream(bytes.NewReader(body.Bytes()), body.Len())
+			} else {
+				ctx.Request.SetBody(body.Bytes())
+			}
+			defer ctx.Request.Reset()
+			r.Handler(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+
+			upstream.mu.Lock()
+			assert.Equal(t, "application/octet-stream", upstream.fieldTypes["mask"], "the upstream must get the part's Content-Type")
+			assert.Equal(t, "", upstream.fieldTypes["purpose"], "a plain field stays a plain field")
+			assert.Equal(t, "printable file bytes sent without a filename", upstream.fields["mask"])
+			assert.Equal(t, "batch.jsonl", upstream.filename)
+			upstream.mu.Unlock()
+			plugin.mu.Lock()
+			assert.Equal(t, map[string][]string{"purpose": {""}, "mask": {"application/octet-stream"}}, plugin.formTypes)
+			assert.NotContains(t, plugin.summary, "printable file bytes", "the log summary must not hold the part's bytes")
+			assert.Contains(t, plugin.summary, `"content_type":"application/octet-stream"`, "the log summary must record the part like a file")
+			plugin.mu.Unlock()
+		})
+	}
 }
 
 // TestHandlePassthrough_PluginRewritesBodyThroughRegisteredRewriter drives passthrough calls end to end and verifies a
@@ -1875,6 +2365,21 @@ func (a directKeyTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*sc
 		return nil, fmt.Errorf("unsupported provider %s", p)
 	}
 	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a directKeyTestAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a directKeyTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a directKeyTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
 }
 
 // A direct key is the caller's credential for the provider whose SDK called the route. A drop-in
@@ -2078,6 +2583,21 @@ func (codexPassthroughAccount) GetConfigForProvider(schemas.ModelProvider) (*sch
 	return &schemas.ProviderConfig{}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (codexPassthroughAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (codexPassthroughAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (codexPassthroughAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // codexPassthroughReceipt witnesses the real router-to-core request before an explicit synthetic policy denial.
 type codexPassthroughReceipt struct {
 	request          *schemas.BifrostRequest
@@ -2200,6 +2720,21 @@ func (geminiPassthroughAccount) GetKeysForProvider(context.Context, schemas.Mode
 // GetConfigForProvider uses defaults.
 func (geminiPassthroughAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	return &schemas.ProviderConfig{}, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (geminiPassthroughAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (geminiPassthroughAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (geminiPassthroughAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
 }
 
 // TestGenAIPassthroughInteractionsAgentIsTheModel covers Deep Research runs on /genai_passthrough: the
@@ -2987,6 +3522,21 @@ func (a heldDeadlineAccount) GetConfigForProvider(p schemas.ModelProvider) (*sch
 		return nil, fmt.Errorf("unsupported provider %s", p)
 	}
 	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a heldDeadlineAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a heldDeadlineAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a heldDeadlineAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
 }
 
 // A first-token deadline still governs a held stream. The startup check only learns that a held

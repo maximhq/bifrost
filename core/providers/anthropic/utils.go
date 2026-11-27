@@ -228,10 +228,13 @@ var (
 
 	// Maps Bifrost finish reasons to provider-specific format
 	bifrostToAnthropicFinishReason = map[string]AnthropicStopReason{
-		"stop":       AnthropicStopReasonEndTurn, // canonical default
-		"length":     AnthropicStopReasonMaxTokens,
-		"tool_calls": AnthropicStopReasonToolUse,
-		"compaction": AnthropicStopReasonCompaction,
+		"stop":           AnthropicStopReasonEndTurn, // canonical default
+		"length":         AnthropicStopReasonMaxTokens,
+		"tool_calls":     AnthropicStopReasonToolUse,
+		"compaction":     AnthropicStopReasonCompaction,
+		"content_filter": AnthropicStopReasonRefusal,
+		// Bedrock Converse guardrail block; Anthropic's value for a policy-blocked turn.
+		"guardrail_intervened": AnthropicStopReasonRefusal,
 	}
 )
 
@@ -2009,17 +2012,17 @@ func trimUserTurnTail(msgs []AnthropicMessage) {
 
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
-// system messages). Anthropic API: Opus 4.8+, Sonnet 5.5 (not Sonnet 5) and
-// Fable/Mythos. Vertex, Bedrock InvokeModel, Mantle and Azure: Claude 5 Opus,
+// system messages). Anthropic API: Opus 4.8+, Sonnet 5.5 (not Sonnet 5), Haiku 5.5
+// and Fable/Mythos. Vertex, Bedrock InvokeModel, Mantle and Azure: Claude 5 Opus,
 // Sonnet 5.5, Haiku 5.5 and Fable. Fallback only; the datasheet's
-// supports_mid_conversation_system_messages wins when set.
+// supports_native_mid_conversation_system wins when set (midConversationSystemSupported).
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
 	m := strings.ToLower(model)
 	switch provider {
 	case schemas.Anthropic:
-		if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
+		if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) || IsHaiku5Plus(m) {
 			return true
 		}
 		return strings.Contains(m, "opus") &&
@@ -2029,6 +2032,15 @@ func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model 
 			(IsFableFamily(m) && !strings.Contains(m, "mythos"))
 	}
 	return false
+}
+
+// midConversationSystemSupported resolves whether a mid-conversation system message may be
+// emitted as role:"system": the datasheet's supports_native_mid_conversation_system, then
+// DefaultSupportsMidConversationSystem. The older key is not read here: gateways without
+// enforceMidConversationSystemPlacement (core <= v1.15.2) read it and flip a tail reminder
+// between native and wrapped across turns, so it is held false for them; they ignore this key.
+func midConversationSystemSupported(caps schemas.ModelCaps) bool {
+	return caps.SupportsNativeMidConversationSystem(DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
 }
 
 // DefaultSupportsMidConversationOutputConfig reports whether the provider+model pair
@@ -4024,12 +4036,23 @@ func ConvertAnthropicFinishReasonToBifrost(providerReason AnthropicStopReason) s
 	return string(providerReason)
 }
 
-// ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format
+// ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format.
+// The result is always a stop_reason Anthropic defines (or empty for an unset reason).
+// A policy block (content_filter, Bedrock's guardrail_intervened) is refusal, so a client
+// on /anthropic/v1/messages, which has no guardrail header, can still tell it apart from a
+// finished turn. Any other reason with no Anthropic equivalent, such as Bedrock's
+// malformed_model_output, becomes end_turn instead of leaking to the client.
 func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopReason {
 	if providerReason, ok := bifrostToAnthropicFinishReason[bifrostReason]; ok {
 		return providerReason
 	}
-	return AnthropicStopReason(bifrostReason)
+	switch reason := AnthropicStopReason(bifrostReason); reason {
+	case "", AnthropicStopReasonEndTurn, AnthropicStopReasonMaxTokens, AnthropicStopReasonStopSequence,
+		AnthropicStopReasonToolUse, AnthropicStopReasonPauseTurn, AnthropicStopReasonRefusal,
+		AnthropicStopReasonModelContextWindowExceeded, AnthropicStopReasonCompaction:
+		return reason
+	}
+	return AnthropicStopReasonEndTurn
 }
 
 // anthropicStopReasonWithSequence restores Anthropic's stop_sequence stop reason, which
@@ -4064,9 +4087,9 @@ func anthropicResponsesStatus(stopReason *string) (*string, *schemas.ResponsesRe
 	return &status, details
 }
 
-// anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
+// AnthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
 // Anthropic stop_reason, for terminal events that carry no explicit stop reason.
-func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
+func AnthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
 	if details == nil {
 		return ""
 	}
@@ -4164,6 +4187,13 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 		documentBlock.Title = file.Filename
 	}
 
+	// file_content wins over file_id, file_data and file_url: an Anthropic document has exactly one
+	// source and this converter has no error path. Bedrock rejects the same mix with a 400.
+	if len(file.FileContent) > 0 {
+		documentBlock.Source.SourceObj = &AnthropicSource{Type: "content", Content: file.FileContent}
+		return documentBlock
+	}
+
 	// Handle uploaded file references from OpenAI-compatible file blocks.
 	if file.FileID != nil && *file.FileID != "" {
 		documentBlock.Source.SourceObj.Type = "file"
@@ -4254,6 +4284,12 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 	// Set title if provided
 	if fileBlock != nil && fileBlock.Filename != nil {
 		documentBlock.Title = fileBlock.Filename
+	}
+
+	// file_content takes precedence over the other sources, as in ConvertToAnthropicDocumentBlock.
+	if fileBlock != nil && len(fileBlock.FileContent) > 0 {
+		documentBlock.Source.SourceObj = &AnthropicSource{Type: "content", Content: fileBlock.FileContent}
+		return documentBlock
 	}
 
 	// Handle file_id reference
@@ -5281,9 +5317,61 @@ func sanitizeWebSearchArguments(argumentsJSON string) string {
 	return argumentsJSON
 }
 
+// anthropicServerToolUseIDPrefix starts every id Anthropic gives a server_tool_use block.
+const anthropicServerToolUseIDPrefix = "srvtoolu_"
+
+// isWebSearchPendingCall reports whether a web_search_call is a search Anthropic has not
+// run yet (deferred beside a client tool, or a paused turn): it is replayed as a bare
+// server_tool_use.
+func isWebSearchPendingCall(msg *schemas.ResponsesMessage) bool {
+	return msg.Status != nil && *msg.Status == "in_progress"
+}
+
+// isWebSearchResultOnlyCall reports whether a web_search_call carries only the result of a
+// search whose server_tool_use was sent in an earlier assistant message. Anthropic returns
+// a deferred search's web_search_tool_result at the start of the next assistant message;
+// newWebSearchResultOnlyCall represents it as a finished web_search_call with the same id
+// and no query. An Anthropic server_tool_use always has a query (its input requires one),
+// so a finished Anthropic search (srvtoolu_ id) with none can only be a result. Other
+// providers' calls (OpenAI ws_ ids) may legitimately omit the query and are never
+// result-only: they keep the server_tool_use plus result rebuild.
+func isWebSearchResultOnlyCall(msg *schemas.ResponsesMessage) bool {
+	if msg == nil || msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeWebSearchCall ||
+		msg.ID == nil || !strings.HasPrefix(*msg.ID, anthropicServerToolUseIDPrefix) ||
+		msg.Status == nil || isWebSearchPendingCall(msg) ||
+		msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil {
+		return false
+	}
+	action := msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+	return action != nil && action.Type == "search" &&
+		(action.Query == nil || *action.Query == "") && len(action.Queries) == 0
+}
+
+// newWebSearchResultOnlyCall builds the web_search_call for a web_search_tool_result whose
+// server_tool_use is not in the same message (see isWebSearchResultOnlyCall).
+func newWebSearchResultOnlyCall(toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) schemas.ResponsesMessage {
+	action := &schemas.ResponsesWebSearchToolCallAction{Type: "search"}
+	if resultBlock.Content != nil && len(resultBlock.Content.ContentBlocks) > 0 {
+		action.Sources = extractWebSearchSources(resultBlock.Content.ContentBlocks, includeExtendedFields)
+	}
+	toolMsg := &schemas.ResponsesToolMessage{
+		Action: &schemas.ResponsesToolMessageActionStruct{ResponsesWebSearchToolCallAction: action},
+	}
+	if resultBlock.Caller != nil {
+		toolMsg.Caller = &schemas.ResponsesToolCaller{Type: string(resultBlock.Caller.Type), ToolID: resultBlock.Caller.ToolID}
+	}
+	return schemas.ResponsesMessage{
+		ID:                   schemas.Ptr(toolUseID),
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+		Status:               schemas.Ptr("completed"),
+		ResponsesToolMessage: toolMsg,
+	}
+}
+
 // attachWebSearchSourcesToCall finds a web_search_call by tool_use_id and attaches sources to it.
-// It searches backwards through bifrostMessages to find the matching call and updates its action.
-func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) {
+// It searches backwards through bifrostMessages to find the matching call and updates its action,
+// and reports whether it found one.
+func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) bool {
 	// Search backwards to find matching web_search_call
 	for i := len(bifrostMessages) - 1; i >= 0; i-- {
 		msg := &bifrostMessages[i]
@@ -5293,6 +5381,12 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 
 			if msg.ResponsesToolMessage == nil {
 				msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+			}
+
+			// The result is here, so the search is no longer pending. Written in place:
+			// the status was allocated for this item when its server_tool_use was converted.
+			if msg.Status != nil && *msg.Status == "in_progress" {
+				*msg.Status = "completed"
 			}
 
 			// Found the matching web_search_call, add sources
@@ -5310,9 +5404,10 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 				}
 				msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources = sources
 			}
-			break
+			return true
 		}
 	}
+	return false
 }
 
 // attachToolSearchReferencesToCall finds the tool_search_call emitted for this

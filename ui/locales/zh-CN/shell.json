@@ -23,6 +23,12 @@
 		"circuitBreaker": "熔断器",
 		"pricingOverrides": "定价覆盖",
 		"modelSettings": "模型设置",
+		"finops": "FinOps",
+		"finopsOverview": "概览",
+		"finopsConnections": "连接",
+		"finopsExplorer": "成本浏览器",
+		"finopsForecast": "预测",
+		"finopsAnomalies": "异常",
 		"mcpGateway": "MCP 服务器",
 		"mcpCatalog": "MCP 目录",
 		"mcpLibrary": "MCP 库",
@@ -107,6 +113,7 @@
 		"circuitBreaker": "主端点失败时自动回退",
 		"pricingOverrides": "作用域定价覆盖",
 		"modelSettings": "模型与路由配置",
+		"finops": "所有提供商账户的 AI 支出",
 		"mcpGateway": "MCP 配置",
 		"mcpCatalog": "MCP 工具目录",
 		"mcpLibrary": "安装精选 MCP 服务器",
@@ -459,7 +466,15 @@
 			"label": "问题",
 			"skip": "跳过",
 			"orType": "或在下方输入你自己的回答。",
-			"skipAnswer": "请自行判断，并说明你的假设。"
+			"skipAnswer": "请自行判断，并说明你的假设。",
+			"confirm": {
+				"subtitle": "确认后，Warp 将执行此更改。",
+				"destructiveSubtitle": "确认后，Warp 将执行此更改。请仔细检查。",
+				"cannotUndo": "此操作无法撤销。",
+				"noArguments": "无参数。",
+				"cancel": "取消",
+				"confirm": "确认"
+			}
 		},
 		"message": {
 			"whatThisCovers": "涵盖内容",

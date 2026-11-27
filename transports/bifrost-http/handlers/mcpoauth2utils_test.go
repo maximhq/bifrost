@@ -38,7 +38,7 @@ func TestMatchRedirectURI(t *testing.T) {
 func TestOAuth2IssuerURL(t *testing.T) {
 	t.Run("uses the configured issuer when set", func(t *testing.T) {
 		store := &mockOAuth2Store{}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
+		cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeBoth, false)
 		assert.Equal(t, testIssuer, oauth2IssuerURL(&fasthttp.RequestCtx{}, cfg))
 	})
 

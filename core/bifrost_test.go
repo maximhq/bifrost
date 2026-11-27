@@ -141,6 +141,101 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	})
 }
 
+// Selecting a provider key stamps its content-logging decision for the post-hooks, which run after
+// selection. The stamp is sticky: once a key that turned content off has been sent the request, a
+// retry onto a key that turns it on does not reopen content, and a request that fails outright keeps
+// the stamp although the selected key itself is cleared.
+func TestExecuteRequestWithRetries_StampsProviderKeyContentLogging(t *testing.T) {
+	logger := NewDefaultLogger(schemas.LogLevelError)
+	keyOff := schemas.Key{ID: "key-off", Name: "off", DisableContentLogging: Ptr(true)}
+	keyOn := schemas.Key{ID: "key-on", Name: "on", DisableContentLogging: Ptr(false)}
+	keyInherit := schemas.Key{ID: "key-inherit", Name: "inherit"}
+	inOrder := func(keys ...schemas.Key) func(map[string]bool, map[string]bool) (schemas.Key, error) {
+		return func(used, _ map[string]bool) (schemas.Key, error) {
+			for _, k := range keys {
+				if !used[k.ID] {
+					return k, nil
+				}
+			}
+			return keys[len(keys)-1], nil
+		}
+	}
+	// failFirst fails the first n attempts with status and records the key each attempt was sent on.
+	failFirst := func(n, status int, sent *[]string) func(schemas.Key) (string, *schemas.BifrostError) {
+		calls := 0
+		return func(key schemas.Key) (string, *schemas.BifrostError) {
+			*sent = append(*sent, key.Name)
+			calls++
+			if calls <= n {
+				return "", createBifrostError("upstream refused", Ptr(status), nil, false)
+			}
+			return "success", nil
+		}
+	}
+	for _, tc := range []struct {
+		name        string
+		keys        []schemas.Key
+		failures    int
+		status      int
+		maxRetries  int
+		wantKeys    []string
+		wantPresent bool
+		wantValue   bool
+	}{
+		{name: "a key that turns content off", keys: []schemas.Key{keyOff}, wantKeys: []string{"off"}, wantPresent: true, wantValue: true},
+		{name: "a key that turns content on", keys: []schemas.Key{keyOn}, wantKeys: []string{"on"}, wantPresent: true, wantValue: false},
+		{name: "a key that inherits stamps nothing", keys: []schemas.Key{keyInherit}, wantKeys: []string{"inherit"}},
+		// A rate limit is a per-key failure, so the retry rotates onto the on key.
+		{name: "off stays off after a retry onto an on key", keys: []schemas.Key{keyOff, keyOn}, failures: 1, status: 429, maxRetries: 2, wantKeys: []string{"off", "on"}, wantPresent: true, wantValue: true},
+		// A 5xx is transient: the retry stays on the same key, which keeps its own decision.
+		{name: "a transient retry stays on the same key", keys: []schemas.Key{keyOff, keyOn}, failures: 1, status: 503, maxRetries: 2, wantKeys: []string{"off", "off"}, wantPresent: true, wantValue: true},
+		{name: "a failed request keeps the stamp", keys: []schemas.Key{keyOff}, failures: 10, status: 503, maxRetries: 0, wantKeys: []string{"off"}, wantPresent: true, wantValue: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			config := createTestConfig(tc.maxRetries, time.Millisecond, time.Millisecond)
+			var sent []string
+			_, _ = executeRequestWithRetries(ctx, config, failFirst(tc.failures, tc.status, &sent), inOrder(tc.keys...), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+			if !slices.Equal(sent, tc.wantKeys) {
+				t.Fatalf("attempts were sent on keys %v, want %v", sent, tc.wantKeys)
+			}
+			value, present := ctx.Value(schemas.BifrostContextKeyProviderKeyDisableContentLogging).(bool)
+			if present != tc.wantPresent || value != tc.wantValue {
+				t.Fatalf("provider key layer = (%v, present %v), want (%v, present %v)", value, present, tc.wantValue, tc.wantPresent)
+			}
+		})
+	}
+}
+
+// Realtime and WebSocket sessions pick their key here rather than through the retry executor, and
+// their turns are logged on the same context, so the key's content-logging decision is stamped at
+// this selection too.
+func TestSelectKeyForProviderRequestType_StampsProviderKeyContentLogging(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-off", Name: "Key Off", Value: *schemas.NewSecretVar("sk-off"), Models: schemas.WhiteList{"*"}, Weight: 1, DisableContentLogging: Ptr(true)},
+	})
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(bifrost.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.RealtimeRequest, schemas.OpenAI, "gpt-4o-realtime-preview")
+	if err != nil {
+		t.Fatalf("SelectKeyForProviderRequestType: %v", err)
+	}
+	if key.ID != "key-off" {
+		t.Fatalf("selected %q, want key-off", key.ID)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderKeyDisableContentLogging).(bool); !got {
+		t.Fatalf("provider key layer = %v, want true", ctx.Value(schemas.BifrostContextKeyProviderKeyDisableContentLogging))
+	}
+}
+
 // Test executeRequestWithRetries - retry limits
 func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 	config := createTestConfig(2, 100*time.Millisecond, 1*time.Second)
@@ -909,9 +1004,10 @@ func BenchmarkIsRateLimitError(b *testing.B) {
 
 // Mock Account implementation for testing UpdateProvider
 type MockAccount struct {
-	mu      sync.RWMutex
-	configs map[schemas.ModelProvider]*schemas.ProviderConfig
-	keys    map[schemas.ModelProvider][]schemas.Key
+	mu         sync.RWMutex
+	configs    map[schemas.ModelProvider]*schemas.ProviderConfig
+	keys       map[schemas.ModelProvider][]schemas.Key
+	mcpClients []*schemas.MCPClientConfig // in the order they were added
 	// keyLookups counts GetKeysForProvider calls per provider
 	keyLookups sync.Map
 }
@@ -981,6 +1077,73 @@ func (ma *MockAccount) GetConfigForProvider(provider schemas.ModelProvider) (*sc
 		return &configCopy, nil
 	}
 	return nil, fmt.Errorf("provider %s not configured", provider)
+}
+
+// AddMCPClients configures MCP clients on the account, for ConnectConfiguredMCPClients to dial.
+func (ma *MockAccount) AddMCPClients(clients ...*schemas.MCPClientConfig) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	ma.mcpClients = append(ma.mcpClients, clients...)
+}
+
+// SetMCPClient stores client as the record for its ID, replacing the record added with that ID or
+// adding it last. A record is read-only once stored: to edit a client, store a changed copy.
+func (ma *MockAccount) SetMCPClient(client *schemas.MCPClientConfig) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	for i, existing := range ma.mcpClients {
+		if existing.ID == client.ID {
+			ma.mcpClients[i] = client
+			return
+		}
+	}
+	ma.mcpClients = append(ma.mcpClients, client)
+}
+
+// addMCPClient stores client on b's MockAccount and adds it, as a caller writes the client's
+// configuration and then adds the client by ID.
+func addMCPClient(ctx context.Context, b *Bifrost, client *schemas.MCPClientConfig) error {
+	account, ok := b.account.(*MockAccount)
+	if !ok {
+		return fmt.Errorf("addMCPClient: the Bifrost account is a %T, not a *MockAccount", b.account)
+	}
+	account.SetMCPClient(client)
+	return b.AddMCPClient(ctx, client.ID)
+}
+
+// GetConfiguredMCPClients lists the IDs of the MCP clients added with AddMCPClients.
+func (ma *MockAccount) GetConfiguredMCPClients() ([]string, error) {
+	ma.mu.RLock()
+	defer ma.mu.RUnlock()
+	ids := make([]string, 0, len(ma.mcpClients))
+	for _, client := range ma.mcpClients {
+		ids = append(ids, client.ID)
+	}
+	return ids, nil
+}
+
+// GetConfigForMCPClient returns the MCP client added with this ID.
+func (ma *MockAccount) GetConfigForMCPClient(clientID string) (*schemas.MCPClientConfig, error) {
+	ma.mu.RLock()
+	defer ma.mu.RUnlock()
+	for _, client := range ma.mcpClients {
+		if client.ID == clientID {
+			return client, nil
+		}
+	}
+	return nil, fmt.Errorf("MCP client %s not configured", clientID)
+}
+
+// GetConfigForMCPClientByName returns the MCP client added with this name.
+func (ma *MockAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	ma.mu.RLock()
+	defer ma.mu.RUnlock()
+	for _, client := range ma.mcpClients {
+		if client.Name == name {
+			return client, nil
+		}
+	}
+	return nil, fmt.Errorf("MCP client %s not configured", name)
 }
 
 func (ma *MockAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
@@ -1310,62 +1473,61 @@ func TestRunStreamPreHooks_ReturnsPreHookRequest(t *testing.T) {
 	})
 }
 
-// mockKVStore implements schemas.KVStore for session stickiness tests.
+// mockKVStore implements SessionAffinityStore for session stickiness tests, keeping each
+// value with the TTL it was written with so tests can check both.
 type mockKVStore struct {
 	mu   sync.RWMutex
 	data map[string]struct {
-		value any
+		value string
 		ttl   time.Duration
 	}
 }
 
+// newMockKVStore returns an empty store.
 func newMockKVStore() *mockKVStore {
 	return &mockKVStore{data: make(map[string]struct {
-		value any
+		value string
 		ttl   time.Duration
 	})}
 }
 
-func (m *mockKVStore) Get(key string) (any, error) {
+// Get implements SessionAffinityStore.
+func (m *mockKVStore) Get(key string) (string, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.data[key]; ok {
-		return e.value, nil
-	}
-	return nil, fmt.Errorf("key not found")
+	e, ok := m.data[key]
+	return e.value, ok
 }
 
-func (m *mockKVStore) SetWithTTL(key string, value any, ttl time.Duration) error {
+// PutWithTTL implements SessionAffinityStore.
+func (m *mockKVStore) PutWithTTL(key, value string, ttl time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.data[key] = struct {
-		value any
+		value string
 		ttl   time.Duration
 	}{value: value, ttl: ttl}
-	return nil
 }
 
-func (m *mockKVStore) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, error) {
+// PutIfAbsent implements SessionAffinityStore.
+func (m *mockKVStore) PutIfAbsent(key, value string, ttl time.Duration) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.data[key]; ok {
-		return false, nil
+		return false
 	}
 	m.data[key] = struct {
-		value any
+		value string
 		ttl   time.Duration
 	}{value: value, ttl: ttl}
-	return true, nil
+	return true
 }
 
-func (m *mockKVStore) Delete(key string) (bool, error) {
+// Delete implements SessionAffinityStore.
+func (m *mockKVStore) Delete(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.data[key]; ok {
-		delete(m.data, key)
-		return true, nil
-	}
-	return false, nil
+	delete(m.data, key)
 }
 
 // Test selectKeyFromProviderForModelWithPool with session stickiness: nothing is bound until a
@@ -1388,10 +1550,10 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 
 	ctx := context.Background()
 	bifrost, err := Init(ctx, schemas.BifrostConfig{
-		Account:     account,
-		Logger:      NewDefaultLogger(schemas.LogLevelError),
-		KVStore:     kvStore,
-		KeySelector: deterministicSelector,
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(kvStore),
+		KeySelector:     deterministicSelector,
 	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -1413,7 +1575,7 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 		t.Errorf("first call: the pool builder should not select, got %d keySelector calls", keySelectorCalls)
 	}
 	kvKey := SessionStateKey(bfCtx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")
-	if _, err := kvStore.Get(kvKey); err == nil {
+	if _, ok := kvStore.Get(kvKey); ok {
 		t.Error("session bound before anything served it")
 	}
 
@@ -1421,8 +1583,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
 	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
 	bifrost.observeSessionOutcome(bfCtx, route, &route, false, false, nil)
-	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
-		t.Errorf("kvstore after the request served: expected key-a, got %v (err=%v)", raw, err)
+	if raw, ok := kvStore.Get(kvKey); !ok || raw != "key-a" {
+		t.Errorf("session store after the request served: expected key-a, got %q (found=%v)", raw, ok)
 	}
 
 	// Second request: the bound key comes first with the rest of the pool behind it, rotation off,
@@ -1460,10 +1622,10 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 
 	ctx := context.Background()
 	bifrost, err := Init(ctx, schemas.BifrostConfig{
-		Account:     account,
-		Logger:      NewDefaultLogger(schemas.LogLevelError),
-		KVStore:     kvStore,
-		KeySelector: deterministicSelector,
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(kvStore),
+		KeySelector:     deterministicSelector,
 	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -1487,7 +1649,7 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	if keySelectorCalls != 0 {
 		t.Errorf("expected 0 keySelector calls from pool building (no session id), got %d", keySelectorCalls)
 	}
-	// KVStore should not have a sticky entry for an empty session id
+	// The session store should not have a sticky entry for an empty session id
 	kvStore.mu.RLock()
 	entries := len(kvStore.data)
 	kvStore.mu.RUnlock()
@@ -1513,10 +1675,10 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 
 	ctx := context.Background()
 	bifrost, err := Init(ctx, schemas.BifrostConfig{
-		Account:     account,
-		Logger:      NewDefaultLogger(schemas.LogLevelError),
-		KVStore:     kvStore,
-		KeySelector: deterministicSelector,
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(kvStore),
+		KeySelector:     deterministicSelector,
 	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -3932,10 +4094,18 @@ func newAgentLoopClient(t *testing.T, account *MockAccount, plugins ...schemas.L
 	}
 	for _, state := range client.MCPManager.GetClients() {
 		if state.ExecutionConfig.ID == "bifrostInternal" {
-			state.ExecutionConfig.ToolsToAutoExecute = []string{"*"}
-			if err := client.MCPManager.UpdateClient(state.ExecutionConfig.ID, state.ExecutionConfig); err != nil {
+			// The reported configuration is the read-only record: edit a copy and store that.
+			edited := *state.ExecutionConfig
+			edited.ToolsToAutoExecute = []string{"*"}
+			account.SetMCPClient(&edited)
+			if err := client.MCPManager.UpdateClient(edited.ID); err != nil {
 				t.Fatalf("UpdateClient failed: %v", err)
 			}
+		}
+	}
+	for _, state := range client.MCPManager.GetClients() {
+		if state.ExecutionConfig.ID == "bifrostInternal" && !reflect.DeepEqual(state.ExecutionConfig.ToolsToAutoExecute, schemas.WhiteList{"*"}) {
+			t.Fatalf("the internal client's tools are not auto-executed after the edit (ToolsToAutoExecute = %v): core ignored its edited configuration", state.ExecutionConfig.ToolsToAutoExecute)
 		}
 	}
 	return client
@@ -6454,9 +6624,9 @@ func (r *scenarioRouter) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.
 
 // scenarioClient starts core over the account, with the router when given and session state in kv
 // when given.
-func scenarioClient(t *testing.T, account *MockAccount, router *scenarioRouter, kv schemas.KVStore) *Bifrost {
+func scenarioClient(t *testing.T, account *MockAccount, router *scenarioRouter, kv SessionAffinityStore) *Bifrost {
 	t.Helper()
-	config := schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv}
+	config := schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), SessionAffinity: storeAffinity(kv)}
 	if router != nil {
 		config.LLMPlugins = []schemas.LLMPlugin{router}
 	}
@@ -7451,7 +7621,7 @@ func TestScenarioProviderPrefixedRequestUnderThePinnedRule(t *testing.T) {
 	u := newScenarioUpstream(t)
 	kv := newMockKVStore()
 	account := pinnedRuleAccount(u)
-	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv, LLMPlugins: []schemas.LLMPlugin{providerRulePlugin{}}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), SessionAffinity: storeAffinity(kv), LLMPlugins: []schemas.LLMPlugin{providerRulePlugin{}}})
 	if initErr != nil {
 		t.Fatalf("Init: %v", initErr)
 	}
@@ -7591,20 +7761,18 @@ func setMaxRetries(account *MockAccount, provider schemas.ModelProvider, n int) 
 
 // sessionState reads one of a session's bindings: its route for model (provider "") or its key on
 // provider for model.
-func sessionState(kv schemas.KVStore, session, kind string, provider schemas.ModelProvider, model string) (string, bool) {
+func sessionState(kv SessionAffinityStore, session, kind string, provider schemas.ModelProvider, model string) (string, bool) {
 	return SessionStateString(kv, SessionStateKey(sessionCtx(session), kind, string(provider), model))
 }
 
 // bindSession writes one of a session's bindings directly, as earlier turns would have left it.
-func bindSession(t *testing.T, kv schemas.KVStore, session, kind string, provider schemas.ModelProvider, model, value string) {
+func bindSession(t *testing.T, kv SessionAffinityStore, session, kind string, provider schemas.ModelProvider, model, value string) {
 	t.Helper()
-	if err := kv.SetWithTTL(SessionStateKey(sessionCtx(session), kind, string(provider), model), value, time.Hour); err != nil {
-		t.Fatalf("binding the session: %v", err)
-	}
+	kv.PutWithTTL(SessionStateKey(sessionCtx(session), kind, string(provider), model), value, time.Hour)
 }
 
 // requireSessionState fails the test unless the binding holds want, or is absent when want is "".
-func requireSessionState(t *testing.T, kv schemas.KVStore, session, kind string, provider schemas.ModelProvider, model, want string) {
+func requireSessionState(t *testing.T, kv SessionAffinityStore, session, kind string, provider schemas.ModelProvider, model, want string) {
 	t.Helper()
 	got, found := sessionState(kv, session, kind, provider, model)
 	if want == "" && found {
@@ -8866,15 +9034,16 @@ func TestSetMCPManager_ReceivesTheRegisteredFactory(t *testing.T) {
 	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
 		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
 	}
-	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	account := NewMockAccount()
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 	defer b.Shutdown()
 	b.SetMCPInProcessServerFactory(factory)
-	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, NewNoOpLogger(), nil)
 	b.SetMCPManager(injected)
-	err = b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "oa-id", Name: "oa", ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}})
+	err = addMCPClient(context.Background(), b, &schemas.MCPClientConfig{ID: "oa-id", Name: "oa", ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}})
 	if err != nil {
 		t.Fatalf("the injected manager did not get the registered factory: %v", err)
 	}
@@ -8884,7 +9053,7 @@ func TestSetMCPManager_ReceivesTheRegisteredFactory(t *testing.T) {
 	go func() { defer wg.Done(); b.SetMCPInProcessServerFactory(factory) }()
 	go func() {
 		defer wg.Done()
-		b.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil))
+		b.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, NewNoOpLogger(), nil))
 	}()
 	wg.Wait()
 }
@@ -8904,7 +9073,7 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 		}
 		var wg sync.WaitGroup
 		wg.Add(3)
-		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
+		go func() { defer wg.Done(); _ = addMCPClient(context.Background(), b, client("a")) }()
 		go func() {
 			defer wg.Done()
 			_, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
@@ -8917,14 +9086,15 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 		b.Shutdown()
 	}
 
-	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	account := NewMockAccount()
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 	defer b.Shutdown()
-	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, NewNoOpLogger(), nil)
 	b.SetMCPManager(injected)
-	_ = b.AddMCPClient(context.Background(), client("d"))
+	_ = addMCPClient(context.Background(), b, client("d"))
 	if b.MCPManager != mcp.MCPManagerInterface(injected) {
 		t.Fatal("an injected MCP manager was replaced by the lazy one")
 	}
@@ -8975,7 +9145,7 @@ func TestSetMCPDiscoveryChangeCallback_ReachesLazyManager(t *testing.T) {
 		})
 		return s, nil
 	})
-	if err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{
+	if err := addMCPClient(context.Background(), b, &schemas.MCPClientConfig{
 		ID:             "first-id",
 		Name:           "first",
 		ConnectionType: schemas.MCPConnectionTypeOpenAPI,
@@ -9089,10 +9259,10 @@ func TestSetMCPInProcessServerFactory_RacesLazyManagerCreation(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			_ = b.AddMCPClient(context.Background(), openAPIClient("first"))
+			_ = addMCPClient(context.Background(), b, openAPIClient("first"))
 		}()
 		wg.Wait()
-		if err := b.AddMCPClient(context.Background(), openAPIClient("second")); err != nil {
+		if err := addMCPClient(context.Background(), b, openAPIClient("second")); err != nil {
 			t.Fatalf("iteration %d: the manager lost the registered factory: %v", i, err)
 		}
 		b.Shutdown()
@@ -9780,6 +9950,140 @@ func TestPatternKeyAliasTemplateFollowsSelectedKey(t *testing.T) {
 	}
 }
 
+// TestKeyAliasResolvesAdvisorToolModel pins that advisor tool models follow the attempt key's alias.
+func TestKeyAliasResolvesAdvisorToolModel(t *testing.T) {
+	var mu sync.Mutex
+	var calls [][3]string // key, request model, advisor model
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		model := gjson.GetBytes(body, "model").String()
+		mu.Lock()
+		calls = append(calls, [3]string{r.Header.Get("x-api-key"), model, gjson.GetBytes(body, "tools.0.model").String()})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(model, "fail.") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"m",`+
+			`"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(server.Close)
+	lastCall := func() [3]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls[len(calls)-1]
+	}
+
+	const requested = "anthropic.claude-opus-5"
+	newRequest := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    requested,
+			Input: []schemas.ResponsesMessage{{
+				Role:    new(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                 schemas.ResponsesToolTypeAdvisor,
+				ResponsesToolAdvisor: &schemas.ResponsesToolAdvisor{Model: requested},
+			}}},
+			RawRequestBody: []byte(`{"model":"` + requested + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],` +
+				`"tools":[{"type":"advisor_20260301","name":"advisor","model":"` + requested + `"}]}`),
+		}
+	}
+	send := func(client *Bifrost, request *schemas.BifrostResponsesRequest, raw bool) *schemas.BifrostError {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		defer ctx.Cancel()
+		if raw {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
+		_, bifrostErr := client.ResponsesRequest(ctx, request)
+		return bifrostErr
+	}
+
+	t.Run("single key", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+		account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{
+			ID: "sk-alias", Value: *schemas.NewSecretVar("sk-alias"), Models: schemas.WhiteList{"*"}, Weight: 100,
+			Aliases: schemas.KeyAliases{requested: {ModelID: "claude-opus-5"}},
+		}})
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		for _, raw := range []bool{false, true} {
+			request := newRequest()
+			if bifrostErr := send(client, request, raw); bifrostErr != nil {
+				t.Fatalf("raw=%v: request failed: %s", raw, bifrostErr.Error.Message)
+			}
+			if got := lastCall(); got[1] != "claude-opus-5" || got[2] != "claude-opus-5" {
+				t.Errorf("raw=%v: upstream model=%q advisor model=%q, want both claude-opus-5", raw, got[1], got[2])
+			}
+			if got := request.Params.Tools[0].ResponsesToolAdvisor.Model; got != requested {
+				t.Errorf("raw=%v: caller's advisor model rewritten to %q", raw, got)
+			}
+			if got := gjson.GetBytes(request.RawRequestBody, "tools.0.model").String(); got != requested {
+				t.Errorf("raw=%v: caller's raw advisor model rewritten to %q", raw, got)
+			}
+		}
+
+		// An advisor declared in an additional_tools item is hoisted into the tools during prep.
+		declared := json.RawMessage(`[{"type":"advisor","model":"` + requested + `"}]`)
+		request := newRequest()
+		request.Params = nil
+		request.RawRequestBody = nil
+		request.Input = append(request.Input, schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: declared})
+		if bifrostErr := send(client, request, false); bifrostErr != nil {
+			t.Fatalf("additional_tools: request failed: %s", bifrostErr.Error.Message)
+		}
+		if got := lastCall(); got[2] != "claude-opus-5" {
+			t.Errorf("additional_tools: upstream advisor model=%q, want claude-opus-5", got[2])
+		}
+		if got := string(request.Input[1].AdditionalTools); got != string(declared) {
+			t.Errorf("additional_tools: caller's declaration rewritten to %s", got)
+		}
+	})
+
+	t.Run("each retry follows its key", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+		account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 2
+		account.configs[schemas.Anthropic].NetworkConfig.RetryBackoffInitial = time.Millisecond
+		account.configs[schemas.Anthropic].NetworkConfig.RetryBackoffMax = 2 * time.Millisecond
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+			{ID: "sk-fail", Value: *schemas.NewSecretVar("sk-fail"), Models: schemas.WhiteList{"*"}, Weight: 1,
+				Aliases: schemas.KeyAliases{requested: {ModelID: "fail.claude-opus-5"}}},
+			{ID: "sk-plain", Value: *schemas.NewSecretVar("sk-plain"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		})
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		for i := 0; i < 20; i++ {
+			for _, raw := range []bool{false, true} {
+				if bifrostErr := send(client, newRequest(), raw); bifrostErr != nil {
+					t.Fatalf("raw=%v: request %d failed: %s", raw, i, bifrostErr.Error.Message)
+				}
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, call := range calls {
+			if call[0] == "sk-fail" && call[2] != "fail.claude-opus-5" || call[0] == "sk-plain" && call[2] != requested {
+				t.Errorf("key %q sent advisor model %q with request model %q", call[0], call[2], call[1])
+			}
+		}
+	})
+}
+
 // customToolProvider answers with a function call to apply_patch, the way a wire that
 // took the rewritten custom tool does, and records what it was sent.
 type customToolProvider struct {
@@ -10446,5 +10750,315 @@ func TestExecuteRequestWithRetries_GrammarLimitUnmarkedNotRetried(t *testing.T) 
 	}
 	if callCount != 1 {
 		t.Fatalf("expected a single attempt, got %d", callCount)
+	}
+}
+
+// plainFileProvider is a provider that does not stream uploads (no FileSourceUploader).
+type plainFileProvider struct{ schemas.Provider }
+
+// streamingFileProvider is a provider that streams BifrostFileUploadRequest.FileSource.
+type streamingFileProvider struct{ schemas.Provider }
+
+func (streamingFileProvider) UploadsFileSource() {}
+
+// openCountingSource is a BodySource that counts Open calls, to assert a file is not read.
+type openCountingSource struct {
+	schemas.BodySource
+	opens int
+}
+
+func (s *openCountingSource) Open() (io.ReadCloser, error) {
+	s.opens++
+	return s.BodySource.Open()
+}
+
+// TestPrepareFileUploadContent asserts an upload passed as a FileSource is read into File only
+// for a provider that needs the bytes, and is left as a handle for one that streams it.
+func TestPrepareFileUploadContent(t *testing.T) {
+	newReq := func() *schemas.BifrostFileUploadRequest {
+		return &schemas.BifrostFileUploadRequest{FileSource: schemas.NewBytesBodySource([]byte("file-bytes"))}
+	}
+
+	req := newReq()
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider: %v", err.Error.Message)
+	}
+	if string(req.File) != "file-bytes" {
+		t.Errorf("plain provider: File = %q, want the source read into memory", req.File)
+	}
+
+	source := &openCountingSource{BodySource: schemas.NewBytesBodySource([]byte("file-bytes"))}
+	req = &schemas.BifrostFileUploadRequest{FileSource: source}
+	if err := prepareFileUploadContent(streamingFileProvider{}, req); err != nil {
+		t.Fatalf("streaming provider: %v", err.Error.Message)
+	}
+	if req.File != nil {
+		t.Errorf("streaming provider: File = %q, want nil (the file must stay a stream)", req.File)
+	}
+	if req.FileSource != schemas.BodySource(source) {
+		t.Errorf("streaming provider: FileSource = %v, want the caller's source kept for the provider to stream", req.FileSource)
+	}
+	if source.opens != 0 {
+		t.Errorf("streaming provider: the source was opened %d times, want 0 (preparation must not read the file)", source.opens)
+	}
+
+	req = &schemas.BifrostFileUploadRequest{File: []byte("sdk-bytes")}
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil || string(req.File) != "sdk-bytes" {
+		t.Errorf("File set by a Go SDK caller must be left as is, got %q", req.File)
+	}
+
+	// FileSource is used instead of File, for every provider: a provider that needs bytes must
+	// read the source even when File already holds other bytes, as OpenAI streams the source.
+	// The source is cleared once read, so a retry or fallback reuses File instead of reading again.
+	req = &schemas.BifrostFileUploadRequest{File: []byte("stale"), FileSource: schemas.NewBytesBodySource([]byte("from source"))}
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider with File and FileSource: %v", err.Error.Message)
+	}
+	if string(req.File) != "from source" || req.FileSource != nil {
+		t.Errorf("plain provider with File and FileSource: File = %q, FileSource set = %v; want the source's bytes and the source cleared", req.File, req.FileSource != nil)
+	}
+	got, readErr := schemas.ReadBodySource(providerUtils.FileUploadSource(req))
+	if readErr != nil || string(got) != "from source" {
+		t.Errorf("a fallback to a streaming provider would send %q, want the same bytes", got)
+	}
+}
+
+func (streamingFileProvider) SendsPassthroughBodySource() {}
+
+// TestPreparePassthroughBody asserts a passthrough body passed as a BodySource is read into Body
+// only for a provider that needs the bytes, and stays a stream for one that sends it.
+func TestPreparePassthroughBody(t *testing.T) {
+	newReq := func() *schemas.BifrostPassthroughRequest {
+		return &schemas.BifrostPassthroughRequest{BodySource: schemas.NewBytesBodySource([]byte("form-bytes"))}
+	}
+
+	req := newReq()
+	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider: %v", err.Error.Message)
+	}
+	if string(req.Body) != "form-bytes" {
+		t.Errorf("plain provider: Body = %q, want the source read into memory", req.Body)
+	}
+
+	req = newReq()
+	if err := preparePassthroughBody(streamingFileProvider{}, req); err != nil {
+		t.Fatalf("streaming provider: %v", err.Error.Message)
+	}
+	if req.Body != nil {
+		t.Errorf("streaming provider: Body = %q, want nil (the body must stay a stream)", req.Body)
+	}
+
+	req = &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"gpt-4o"}`)}
+	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil || string(req.Body) != `{"model":"gpt-4o"}` {
+		t.Errorf("a JSON Body must be left as is, got %q", req.Body)
+	}
+}
+
+// Pin image delivery through real core dispatch, including custom/built-in
+// Responses fallback and both streaming modes, against a strict Chat wire.
+func TestChatToolImages(t *testing.T) {
+	const firstImage = "data:image/png;base64,aW1hZ2UtYQ=="
+	const secondImage = "data:image/png;base64,aW1hZ2UtYg=="
+	type capturedRequest struct {
+		path string
+		body []byte
+	}
+	captures := make(chan capturedRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Never block the handler: a subtest that fails before reading its capture
+		// would otherwise stall every later request.
+		select {
+		case captures <- capturedRequest{r.URL.Path, body}:
+		default:
+		}
+		for _, message := range gjson.GetBytes(body, "messages").Array() {
+			if message.Get("role").String() != "tool" || !message.Get("content").IsArray() {
+				continue
+			}
+			for _, part := range message.Get("content").Array() {
+				if part.Get("type").String() != "text" {
+					w.WriteHeader(http.StatusBadRequest)
+					fmt.Fprint(w, `{"error":{"message":"tool content must contain text only"}}`)
+					return
+				}
+			}
+		}
+		streaming := gjson.GetBytes(body, "stream").Bool()
+		if r.URL.Path == "/v1/responses" {
+			response := `{"id":"resp_capture","object":"response","created_at":1,"model":"vision","status":"completed","output":[{"type":"message","id":"msg_capture","role":"assistant","status":"completed","content":[{"type":"output_text","text":"captured","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+			if streaming {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":%s}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":%s}\n\n", response, response)
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, response)
+			}
+			return
+		}
+		if streaming {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, `data: {"id":"chatcmpl_capture","object":"chat.completion.chunk","created":1,"model":"vision","choices":[{"index":0,"delta":{"role":"assistant","content":"captured"},"finish_reason":null}]}`+"\n\n")
+			fmt.Fprint(w, `data: {"id":"chatcmpl_capture","object":"chat.completion.chunk","created":1,"model":"vision","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\ndata: [DONE]\n\n")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"id":"chatcmpl_capture","object":"chat.completion","created":1,"model":"vision","choices":[{"index":0,"message":{"role":"assistant","content":"captured"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	// Ollama and SGL serve text-only models too; with no datasheet record saying
+	// the model takes images they keep the placeholder and get no extra user turn.
+	cases := []struct {
+		name                           string
+		provider                       schemas.ModelProvider
+		responses, native, placeholder bool
+	}{
+		{"custom direct Chat", "custom_chat", false, false, false},
+		{"custom Responses fallback", "custom_chat", true, false, false},
+		{"strict OpenAI Chat", schemas.OpenAI, false, false, false},
+		{"Ollama Responses fallback", schemas.Ollama, true, false, true},
+		{"SGL Responses fallback", schemas.SGL, true, false, true},
+		{"custom native Responses", "custom_native", true, true, false},
+	}
+	account := NewMockAccount()
+	for _, tc := range cases {
+		account.AddProviderWithBaseURL(tc.provider, 1, 10, upstream.URL)
+		account.configs[tc.provider].NetworkConfig.MaxRetries = 0
+		account.configs[tc.provider].NetworkConfig.AllowPrivateNetwork = true
+		key := schemas.Key{ID: "key-" + string(tc.provider), Value: *schemas.NewSecretVar("dummy-test-key"), Models: schemas.WhiteList{"*"}, Weight: 1}
+		switch tc.provider {
+		case "custom_chat", "custom_native":
+			account.SetCustomProviderConfig(tc.provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, AllowedRequests: &schemas.AllowedRequests{ChatCompletion: true, ChatCompletionStream: true, Responses: tc.native, ResponsesStream: tc.native}})
+		case schemas.Ollama:
+			key.OllamaKeyConfig = &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar(upstream.URL)}
+		case schemas.SGL:
+			key.SGLKeyConfig = &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar(upstream.URL)}
+		}
+		account.SetKeysForProvider(tc.provider, []schemas.Key{key})
+	}
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	for _, tc := range cases {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, streaming), func(t *testing.T) {
+				select {
+				case <-captures: // a capture left by an earlier failed subtest
+				default:
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+				defer ctx.Cancel()
+				assistant := &schemas.ChatAssistantMessage{}
+				chat := &schemas.BifrostChatRequest{Provider: tc.provider, Model: "vision", Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Read both images")}},
+					{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: assistant},
+				}}
+				for _, image := range []struct{ id, url string }{{"call_a", firstImage}, {"call_b", secondImage}} {
+					assistant.ToolCalls = append(assistant.ToolCalls, schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr(image.id), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("read"), Arguments: `{}`}})
+					chat.Input = append(chat.Input, schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(image.id)}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: image.url}}}}})
+				}
+				before, err := schemas.MarshalSorted(chat.Input)
+				require.NoError(t, err)
+				if streaming {
+					var stream chan *schemas.BifrostStreamChunk
+					var bifrostErr *schemas.BifrostError
+					if tc.responses {
+						stream, bifrostErr = client.ResponsesStreamRequest(ctx, chat.ToResponsesRequest())
+					} else {
+						stream, bifrostErr = client.ChatCompletionStreamRequest(ctx, chat)
+					}
+					require.Nil(t, bifrostErr)
+					completed := false
+					for chunk := range stream {
+						require.Nil(t, chunk.BifrostError)
+						if response := chunk.BifrostResponsesStreamResponse; response != nil && response.Type == schemas.ResponsesStreamResponseTypeCompleted {
+							completed = true
+						}
+						if response := chunk.BifrostChatResponse; response != nil {
+							for _, choice := range response.Choices {
+								if choice.FinishReason != nil && *choice.FinishReason == "stop" {
+									completed = true
+								}
+							}
+						}
+					}
+					require.True(t, completed, "stream closed without completion")
+				} else {
+					var response any
+					var bifrostErr *schemas.BifrostError
+					if tc.responses {
+						response, bifrostErr = client.ResponsesRequest(ctx, chat.ToResponsesRequest())
+					} else {
+						response, bifrostErr = client.ChatCompletionRequest(ctx, chat)
+					}
+					require.Nil(t, bifrostErr)
+					wire, err := schemas.MarshalSorted(response)
+					require.NoError(t, err)
+					require.Contains(t, string(wire), "captured")
+				}
+				var captured capturedRequest
+				select {
+				case captured = <-captures:
+				case <-ctx.Done():
+					t.Fatal("no upstream request captured")
+				}
+				var images []string
+				if tc.native {
+					require.Equal(t, "/v1/responses", captured.path)
+					require.False(t, gjson.GetBytes(captured.body, "messages").Exists())
+					for _, item := range gjson.GetBytes(captured.body, "input").Array() {
+						if item.Get("type").String() != "function_call_output" {
+							continue
+						}
+						for _, part := range item.Get("output").Array() {
+							if part.Get("type").String() == "input_image" {
+								images = append(images, part.Get("image_url").String())
+							}
+						}
+					}
+				} else if tc.placeholder {
+					require.Equal(t, "/v1/chat/completions", captured.path)
+					messages := gjson.GetBytes(captured.body, "messages").Array()
+					require.Len(t, messages, 4, "no user turn may be added: %s", captured.body)
+					for i, id := range []string{"call_a", "call_b"} {
+						tool := messages[2+i]
+						require.Equal(t, id, tool.Get("tool_call_id").String())
+						require.Equal(t, "[image/png, 9 bytes returned by the tool, not shown]", tool.Get("content").String(), string(captured.body))
+					}
+					require.NotContains(t, string(captured.body), "image_url")
+					after, err := schemas.MarshalSorted(chat.Input)
+					require.NoError(t, err)
+					require.Equal(t, string(before), string(after), "dispatch mutated the caller's history")
+					return
+				} else {
+					require.Equal(t, "/v1/chat/completions", captured.path)
+					messages := gjson.GetBytes(captured.body, "messages").Array()
+					require.Len(t, messages, 5, string(captured.body))
+					require.Equal(t, "tool", messages[2].Get("role").String())
+					require.Equal(t, "call_a", messages[2].Get("tool_call_id").String())
+					require.Equal(t, "tool", messages[3].Get("role").String())
+					require.Equal(t, "call_b", messages[3].Get("tool_call_id").String())
+					require.Equal(t, "user", messages[4].Get("role").String())
+					parts := messages[4].Get("content").Array()
+					require.Len(t, parts, 4)
+					require.Equal(t, "Images returned by tool call call_a:", parts[0].Get("text").String())
+					require.Equal(t, "Images returned by tool call call_b:", parts[2].Get("text").String())
+					for _, part := range parts {
+						if part.Get("type").String() == "image_url" {
+							images = append(images, part.Get("image_url.url").String())
+						}
+					}
+				}
+				require.Equal(t, []string{firstImage, secondImage}, images, string(captured.body))
+				after, err := schemas.MarshalSorted(chat.Input)
+				require.NoError(t, err)
+				require.Equal(t, string(before), string(after), "dispatch mutated the caller's history")
+			})
+		}
 	}
 }

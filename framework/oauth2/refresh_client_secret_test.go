@@ -62,7 +62,7 @@ func TestRefresh_ClientSecretOnlySentWhenConfigured(t *testing.T) {
 			store.oauthConfigs[oauthConfigID].ClientSecret = tt.clientSecret
 			seedAccessToken(store, oauthConfigID, "shared", "tok-1", "old-access-token", "refresh-token", bifrost.Ptr(time.Now().Add(-time.Minute)))
 
-			provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			token, err := provider.GetAccessToken(context.Background(), oauthConfigID)
 			require.NoError(t, err)
 			assert.Equal(t, "refreshed-access-token", token)
@@ -120,7 +120,7 @@ func TestRefresh_ProviderRejectionShapes(t *testing.T) {
 			store, oauthConfigID := newAccessTokenTestStore(server.URL + "/token")
 			seedAccessToken(store, oauthConfigID, "shared", "tok-1", "old-access-token", "refresh-token", bifrost.Ptr(time.Now().Add(-time.Minute)))
 
-			provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			provider.retryBaseDelay = time.Millisecond
 			_, err := provider.GetAccessToken(context.Background(), oauthConfigID)
 			require.Error(t, err)

@@ -28,6 +28,12 @@ export interface WarpConfig {
 	 */
 	api_key_id?: string;
 	/**
+	 * The virtual key Warp's model calls present when the person asking has no
+	 * user identity (the local admin, or no identity provider). A reference to
+	 * the key row, not the secret. Absent when none is set.
+	 */
+	virtual_key_id?: string;
+	/**
 	 * The other models an operator exposed. `provider` and `model` above stay
 	 * the default; the panel's switcher offers the default followed by these.
 	 */
@@ -62,8 +68,10 @@ export interface WarpConfig {
 	/** How many requests that matched no topic start a discovery of new topics. */
 	topic_discovery_min_requests: number;
 	vector_store_connected: boolean;
-	/** Whether the gateway's Bifrost MCP is loaded. Warp does not answer without it. */
+	/** Whether the gateway's Bifrost MCP is loaded. While bifrost_mcp_enabled, Warp does not answer without it. */
 	bifrost_mcp_available: boolean;
+	/** Whether Warp uses the Bifrost MCP at all. Off for now: no setup step, no management tools section. */
+	bifrost_mcp_enabled: boolean;
 	/** Kinds of configuration change Warp may offer; empty is reads only (the default). */
 	management_writes: WarpManagementWrite[];
 	/** Whether the Bifrost MCP serves writes at all: bifrost_mcp_allow_writes is the ceiling. */
@@ -91,6 +99,8 @@ export interface WarpConfigInput {
 	provider: string;
 	model: string;
 	api_key_id?: string;
+	/** Omitted keeps the stored value; "" clears it. */
+	virtual_key_id?: string;
 	/** Replaced whole on every write: leaving it out clears the list. */
 	additional_models?: WarpModel[];
 	max_iterations?: number;
@@ -213,6 +223,8 @@ export interface WarpStoredMessage {
 		options?: { label: string; hint?: string }[];
 		allow_other?: boolean;
 		kind?: string;
+		/** On a confirmation card, the write it asks about. */
+		action?: { tool: string; arguments: string; destructive?: boolean };
 	};
 	total_tokens?: number;
 	cost?: number;

@@ -20,16 +20,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/lrucache"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 const (
-	// defaultCacheCapacity bounds the discovery cache to this many distinct
-	// discoveries, one per (client, hash) however many callers hold it;
-	// least-recently-used entries are dropped past it and read again on their
-	// next use.
-	defaultCacheCapacity = 4096
-
 	// membershipRefreshInterval is how old a client's set may get before its
 	// next read reloads it in the background. Writes and deletes keep it
 	// current on the process that makes them and, through EvictDiscovery, on
@@ -129,22 +123,24 @@ var _ schemas.MCPDiscoveryStore = (*PerUserStore)(nil)
 //
 // Each process keeps two things per client: the set of callers that hold a
 // discovery on it, with each one's discovery hash, loaded from the database
-// the first time the client is read; and a bounded cache of the distinct
-// discoveries those callers hold, keyed by (client, hash), so callers holding
-// the same discovery share one copy. A caller outside the set has no
-// discovery and costs no database read, and a member is served the copy
-// cached under the hash the set records for it. The set changes on this
-// process's own writes and deletes, on another process's (delivered through
-// EvictDiscovery), and is reloaded from the database once it is older than
-// membershipRefreshInterval, which corrects a process that missed one. A
-// cached copy no member's hash names any more is never served again, and ages
-// out of the cache.
+// the first time the client is read; and a cache of the distinct discoveries
+// those callers hold, one entry per (client, hash), so callers holding the
+// same discovery share one copy. A caller outside the set has no discovery
+// and costs no database read, and a member is served the copy cached under
+// the hash the set records for it. The set changes on this process's own
+// writes and deletes, on another process's (delivered through EvictDiscovery),
+// and is reloaded from the database once it is older than
+// membershipRefreshInterval, which corrects a process that missed one. The
+// cache has no capacity and no expiry: an entry stays until the client's
+// discoveries are evicted (EvictDiscoveriesByMCPClient) or the cache is
+// flushed. A cached copy no member's hash names any more is never served
+// again, but stays until then.
 //
 // All methods are safe on a nil receiver: reads miss and writes are refused.
 type PerUserStore struct {
 	configStore configstore.ConfigStore
 	logger      schemas.Logger
-	cache       *lrucache.Cache[cachedDiscovery]
+	cache       *livestore.Cache[cachedDiscovery]
 
 	mu      sync.RWMutex
 	clients map[string]*clientMembers // by client ID
@@ -154,26 +150,39 @@ type PerUserStore struct {
 	onWritten atomic.Pointer[func(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string)]
 }
 
-// NewPerUserStore returns a PerUserStore reading and writing through
-// configStore. A nil configStore leaves every caller with no per-user
-// discovery.
-func NewPerUserStore(configStore configstore.ConfigStore, logger schemas.Logger) *PerUserStore {
+// NewPerUserStore returns a PerUserStore reading and writing through configStore, with its
+// discovery cache in live, which is required: one entry per distinct discovery of a client, shared
+// by every caller holding it, kept until evicted. A nil configStore leaves every caller with no
+// per-user discovery.
+func NewPerUserStore(configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (*PerUserStore, error) {
+	if live == nil {
+		return nil, fmt.Errorf("mcp discovery: %w", livestore.ErrNoLiveStore)
+	}
 	if logger == nil {
 		logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+	}
+	// Concurrent discoveries for one user share one load and its result or error, as the cache
+	// this replaced did.
+	cache, err := live.NewCache[cachedDiscovery](context.Background(), discoveryCache, livestore.WithSharedFills[cachedDiscovery]())
+	if err != nil {
+		return nil, err
 	}
 	return &PerUserStore{
 		configStore: configStore,
 		logger:      logger,
-		cache:       lrucache.New[cachedDiscovery](defaultCacheCapacity),
 		clients:     make(map[string]*clientMembers),
-	}
+		cache:       cache,
+	}, nil
 }
 
+// discoveryCache is the discovery cache's name in the live store.
+const discoveryCache = "mcp_user_discoveries"
+
 // contentKey builds the cache key for one distinct discovery of a client. The
-// parts are length-prefixed (lrucache.EncodeKey) rather than joined with a
+// parts are length-prefixed (livestore.EncodeKey) rather than joined with a
 // separator, so a client ID cannot run into the hash.
 func contentKey(mcpClientID, hash string) string {
-	return lrucache.EncodeKey(mcpClientID, hash)
+	return livestore.EncodeKey(mcpClientID, hash)
 }
 
 // callerIdentity returns the caller a per-user discovery is kept for: the mode
@@ -583,7 +592,7 @@ func (s *PerUserStore) EvictDiscoveriesByMCPClient(mcpClientID string) {
 	delete(s.clients, mcpClientID)
 	s.mu.Unlock()
 	s.cache.EvictWhere(func(key string) bool {
-		parts, ok := lrucache.DecodeKey(key, 2)
+		parts, ok := livestore.DecodeKey(key, 2)
 		return ok && parts[0] == mcpClientID
 	})
 }

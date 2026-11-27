@@ -263,6 +263,19 @@ func TestWarpAgentNamesAGovernanceRefusal(t *testing.T) {
 		require.Contains(t, last.Message, "virtual key is inactive")
 	})
 
+	// Inference auth enforced and the call carrying no credential: governance's
+	// own refusal, which used to read as "Warp's model could not be reached".
+	// Its reason names an x-bf-vk header nobody using the dashboard can send, so
+	// the message says what is actually missing.
+	t.Run("no credential where inference auth requires one", func(t *testing.T) {
+		last := run(refused("virtual_key_required", schemas.ErrorTypePolicyAccessDenied, "virtual key is required. Provide a virtual key via the x-bf-vk header."))
+		require.Equal(t, ErrAccessDenied, last.Code)
+		require.Contains(t, last.Message, "inference authentication")
+		require.Contains(t, last.Message, "Settings > Warp", "names the setting that fixes it")
+		require.Contains(t, last.Message, "virtual key is required", "the deployment's own reason is kept")
+		require.NotContains(t, last.Message, "access profile")
+	})
+
 	t.Run("a provider failure is still an upstream error", func(t *testing.T) {
 		last := run(&schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider exploded"}})
 		require.Equal(t, ErrUpstream, last.Code)
@@ -2174,7 +2187,8 @@ func TestWarpSystemPromptStatesWhatItCanAndCannotDo(t *testing.T) {
 	require.Contains(t, content, "Never write chart or diagram code")
 	require.NotContains(t, content, "You cannot draw charts")
 	require.Contains(t, content, `one query_metrics call with interval "hour" or "day" returns the whole series`)
-	require.Contains(t, content, managementNotAllowed, "reads only by default: changes are an administrator's to allow")
+	// Decoupled from the Bifrost MCP, Warp only reads.
+	require.Contains(t, content, "You only read")
 	require.Contains(t, content, "Nothing carries over between conversations")
 	// "Remember my team" got "I'll use it in this conversation" and no link.
 	require.Contains(t, content, "saying you will use it here does not replace the link")

@@ -124,7 +124,7 @@ func (provider *BedrockProvider) ConnectRealtime(ctx *schemas.BifrostContext, ke
 	if _, credErr := credentials(); credErr != nil {
 		return nil, credErr
 	}
-	host := resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
+	host := provider.serviceHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
 	return newBedrockRealtimeConn(ctx, provider, fmt.Sprintf("https://%s/model/%s", host, path), region, credentials, model), nil
 }
 
@@ -353,7 +353,11 @@ func (c *bedrockRealtimeConn) run(req *http.Request, body *io.PipeReader) {
 	resp, err := c.provider.realtimeClient.Do(req)
 	if err != nil {
 		if c.reqCtx.Err() == nil {
-			c.reportFailure(&schemas.BifrostError{Error: &schemas.ErrorField{Message: schemas.ErrProviderNetworkError, Error: err}})
+			if errors.As(err, new(*providerUtils.DialBlockedError)) {
+				c.reportFailure(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err))
+			} else {
+				c.reportFailure(&schemas.BifrostError{Error: &schemas.ErrorField{Message: schemas.ErrProviderNetworkError, Error: err}})
+			}
 		}
 		_ = body.CloseWithError(err)
 		return

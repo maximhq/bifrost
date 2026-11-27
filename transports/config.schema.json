@@ -1393,6 +1393,10 @@
                 "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
                 "default": false
               },
+              "disable_content_logging": {
+                "type": ["boolean", "null"],
+                "description": "Team-level override of content logging for requests made by or through this team. Omit to inherit. Precedence, highest first: business unit, team, user, then the credential (virtual key, provider key and access profile, where any that says true wins), then client.disable_content_logging. So a team that says true keeps content off even for a virtual key set to false, and a team that says false keeps content on even for a key set to true. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence for the log store."
+              },
               "virtual_key_count": {
                 "type": "integer",
                 "description": "Computed count of virtual keys associated with this team",
@@ -1606,8 +1610,8 @@
                 "default": false
               },
               "disable_content_logging": {
-                "type": "boolean",
-                "description": "Per-key override of client.disable_content_logging for requests made with this virtual key. Omit to inherit the client setting. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
+                "type": ["boolean", "null"],
+                "description": "Per-key override of client.disable_content_logging for requests made with this virtual key. Omit to inherit the client setting. A decision from the key's business unit, team or user outranks this value; within the credential tier, a provider key or access profile that says true wins over false here. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
               },
               "metadata": {
                 "type": "object",
@@ -6298,6 +6302,10 @@
           "type": "string",
           "description": "ID of one of the provider's configured keys to pin Warp to. Omit to load-balance across the provider's keys, or for a provider that needs no key."
         },
+        "virtual_key_id": {
+          "type": "string",
+          "description": "ID of a virtual key (governance.virtual_keys[].id) that Warp's model calls present when the person asking has no user identity of their own: the local admin, or a deployment without an identity provider. Required for that caller while client.enforce_auth_on_inference is true. Signed-in users are governed as themselves and never use it. The key's permits, budgets and rate limits apply, and Warp's spend is attributed to it. Omitted keeps the stored value; an empty string clears it."
+        },
         "additional_models": {
           "type": "array",
           "maxItems": 20,
@@ -6414,15 +6422,6 @@
           },
           "default": 100,
           "description": "New topic threshold: how many requests that matched no topic must be waiting before Warp clusters them into new topics. Between 10 and 20000; 0 resets it to the default; omitting it keeps the stored value."
-        },
-        "management_writes": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": ["create", "update", "delete", "action"]
-          },
-          "uniqueItems": true,
-          "description": "Kinds of configuration change Warp may offer through the Bifrost MCP, each run only after the person confirms it: create (POST create operations), update (PUT and PATCH), delete (DELETE) and action (the other POSTs, such as tests and cache flushes). Reads are always offered. Empty, the default, is reads only. Every kind adds its tools to every Warp request, so turning on more grows each request's context. client.bifrost_mcp_allow_writes is the ceiling: with it off no write is offered. Omitting it keeps the stored value."
         }
       },
       "additionalProperties": false
@@ -8193,7 +8192,7 @@
         "openapi_url": {
           "type": "string",
           "maxLength": 2048,
-          "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Supports env var syntax (\"env.MY_VAR\"). Leave empty to read the default spec, dev's docs/openapi/openapi-oss.json.",
+          "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Supports env var syntax (\"env.MY_VAR\"). Leave empty to read the default spec, https://getbifrost.ai/openapi-oss.json.",
           "optional": true
         }
       },
@@ -8205,7 +8204,7 @@
         "base_url": {
           "type": "string",
           "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama). Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
+          "description": "Base URL for the provider (optional, required for Ollama). For Bedrock, only the host is used: it replaces the bedrock-runtime host for all inference, a key's bedrock_key_config.endpoints.runtime still wins over it, and the other Bedrock services keep their per-key endpoints or public hosts. Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
         },
         "extra_headers": {
           "type": "object",
@@ -8749,6 +8748,10 @@
           "type": "boolean",
           "description": "Whether this key can be used for batch API operations (default: false)",
           "default": false
+        },
+        "disable_content_logging": {
+          "type": ["boolean", "null"],
+          "description": "The provider key's own content-logging decision. Omit or null to inherit. The key sits in the credential tier with the virtual key and access profile, below the business unit, team and user, so any of those that decides outranks it; inside the tier, any that says true wins. Stamped when the key is selected; once a request has been sent on a key that says true, a retry onto another key does not turn content back on. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
         },
         "aliases": {
           "type": "object",
@@ -13382,6 +13385,11 @@
                 "minimum": 0,
                 "description": "Number of preceding conversation turns to include when send_all_conversation_turns is false. 0 sends only the current input."
               },
+              "exclude_system_prompt": {
+                "type": "boolean",
+                "default": false,
+                "description": "Keep system messages away from the rule's guardrail providers, both as content to check and as conversation context. When false (default), they are sent like any other turn. Applies to LLM rules; the turn window counts only the turns that are sent."
+              },
               "evaluation_mode": {
                 "type": "string",
                 "enum": [
@@ -13407,12 +13415,35 @@
                 "default": "enforce",
                 "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
               },
+              "input_timing": {
+                "type": "string",
+                "enum": [
+                  "pre_call",
+                  "parallel"
+                ],
+                "default": "pre_call",
+                "description": "When the rule's input check runs. 'pre_call' (default) finishes the check before the request is sent, so it can block, redact, or transform the input. 'parallel' runs the check alongside the LLM call and holds the response until the verdict arrives; only a block is enforced, and redaction findings reach only the logs. Parallel requires target 'llm' and apply_to 'input' or 'both'."
+              },
+              "fail_closed": {
+                "type": "boolean",
+                "default": false,
+                "description": "Block traffic when one of the rule's guardrail providers errors, times out, or returns an invalid or partial result. When false (default), the content goes through and the failure is logged. Applies only to profiles that can block or rewrite content; the block returns the usual guardrail_intervention error with code 'guardrail_unavailable'."
+              },
+              "profile_execution_mode": {
+                "type": "string",
+                "enum": [
+                  "independent",
+                  "chained"
+                ],
+                "default": "independent",
+                "description": "How the rule's profiles see the payload. 'independent' (default) gives every profile the original payload. 'chained' runs profiles in provider_config_ids order and gives each one the payload as earlier profiles redacted or transformed it. A rule with one profile never chains."
+              },
               "provider_config_ids": {
                 "type": "array",
                 "items": {
                   "type": "integer"
                 },
-                "description": "IDs of provider configurations to use with this rule"
+                "description": "IDs of provider configurations to use with this rule, in execution order"
               }
             },
             "required": [

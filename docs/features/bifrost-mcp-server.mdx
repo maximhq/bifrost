@@ -20,8 +20,6 @@ Bifrost has three MCP endpoints, and they do different things:
 | [`/mcp`](../mcp/overview#bifrost-as-an-mcp-gateway) | The tools of the MCP servers you connect to Bifrost, filtered per virtual key |
 | [`/v1/mcp/tool/execute`](../mcp/tool-execution) | A plain HTTP endpoint that runs one tool from your connected MCP servers |
 
-[Warp](./warp#configuration-tools), the dashboard's agent, reads and changes configuration through this same server.
-
 ---
 
 ## Set it up
@@ -156,7 +154,7 @@ The server builds its tools from Bifrost's OpenAPI spec. Every operation becomes
 - **Deprecated operations.**
 - **Operations a request-and-response tool cannot carry:** login, logout and other session endpoints, the browser steps of OAuth flows, streams and WebSocket upgrades (such as `/v1/realtime` and Warp's chat stream), binary downloads, and the two MCP endpoints themselves.
 - **Routes this gateway does not serve.** On Bifrost OSS that removes the Enterprise-only operations.
-- **Configuration changes, when writes are off.** With **Allow configuration changes through the Bifrost MCP** off, every non-GET operation under `/api` is left out. Inference, batch and file routes stay available, since they are the caller's own requests rather than changes to the gateway. The switch is also the ceiling for what [Warp](./warp#configuration-tools) may change.
+- **Configuration changes, when writes are off.** With **Allow configuration changes through the Bifrost MCP** off, every non-GET operation under `/api` is left out. Inference, batch and file routes stay available, since they are the caller's own requests rather than changes to the gateway.
 
 Each tool carries MCP hints a client can use to decide what to confirm with the user:
 
@@ -174,10 +172,10 @@ A tool call always returns one complete answer. The `stream` argument is removed
 
 ## Where the tools come from
 
-By default the server reads the published OSS spec, `docs/openapi/openapi-oss.json` from Bifrost's `dev` branch on GitHub, when Bifrost starts. To use another copy, set **OpenAPI URL** under **Settings → Client Settings**, `framework_config.openapi_url` in `PUT /api/config`, or `framework.pricing.openapi_url` in `config.json` (`bifrost.framework.pricing.openapiUrl` on Helm). It takes an `http(s)` URL, or a path relative to the app directory.
+By default the server reads the published OSS spec, `https://getbifrost.ai/openapi-oss.json`, when Bifrost starts. To use another copy, set **OpenAPI URL** under **Settings → Client Settings**, `framework_config.openapi_url` in `PUT /api/config`, or `framework.pricing.openapi_url` in `config.json` (`bifrost.framework.pricing.openapiUrl` on Helm). It takes an `http(s)` URL, or a path relative to the app directory.
 
 <Note>
-**Air-gapped installs:** Bifrost cannot reach GitHub, so copy the spec into the app directory and set the OpenAPI URL to its relative path, such as `openapi.json`. Without it the server does not load, and `/v1/mcp` answers `503`.
+**Air-gapped installs:** Bifrost cannot reach `getbifrost.ai`, so copy the spec into the app directory and set the OpenAPI URL to its relative path, such as `openapi.json`. Without it the server does not load, and `/v1/mcp` answers `503`.
 </Note>
 
 If the spec cannot be loaded when Bifrost starts, the server retries it in the background, at most once every 30 seconds as requests arrive, so a source that was briefly unreachable needs no restart. A save is different: saving a new OpenAPI URL rebuilds the tools, and if the new spec cannot be loaded, the previous tools stay in service and the new spec is tried again only on the next save or restart. See [`pricing.openapi_url`](/deployment-guides/config-json/schema-reference) for how a save that also changes the Bifrost URL or the writes switch is applied.
@@ -189,7 +187,7 @@ If the spec cannot be loaded when Bifrost starts, the server retries it in the b
 ### `503`: the Bifrost MCP needs bifrost_url set
 
 **Cause:** The Bifrost URL is not set.
-**Fix:** Set it as described in [Set it up](#set-it-up). Warp's panel shows a setup message for the same reason, since Warp uses this server.
+**Fix:** Set it as described in [Set it up](#set-it-up).
 
 ### `503`: the Bifrost MCP spec is unavailable
 
@@ -220,7 +218,6 @@ If the spec cannot be loaded when Bifrost starts, the server retries it in the b
 
 ## Next steps
 
-- **[Warp](./warp)** - The dashboard's agent, which uses this server for its configuration tools
 - **[MCP Gateway](../mcp/overview)** - Serve the tools of your own MCP servers on `/mcp`
 - **[Client configuration](/deployment-guides/config-json/client)** - All `client` settings in `config.json`
 - **[Bifrost MCP message](/api-reference/infrastructure/bifrost-mcp-message)** - The `/v1/mcp` endpoint in the API reference

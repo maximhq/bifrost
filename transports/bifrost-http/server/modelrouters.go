@@ -5,70 +5,94 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
 )
 
-// storedModelRouter reads a router as it is stored, to serve it. The caller's
-// context can carry a user whose data access control hides the router, as
-// when they have just moved its routing out of their own scope, and the
-// gateway serves what is saved, not what the editor can see, so the read does
-// not carry the caller.
-func (s *BifrostHTTPServer) storedModelRouter(id string) (*configstore.ModelRouter, error) {
-	return s.Config.ConfigStore.GetModelRouter(context.Background(), id)
+// refreshModelRouter brings a saved router's row into memory and returns its record. A row that
+// cannot be read, or is stored in a form this version cannot read, keeps the router's record and
+// returns the read error; a row gone by the time it is read was deleted meanwhile, so its record is
+// dropped and configstore.ErrNotFound returned, as a reload of it always has. The read does not
+// carry the caller's data access: the gateway serves what is saved, not what the editor can see.
+func (s *BifrostHTTPServer) refreshModelRouter(ctx context.Context, id string) (*registry.ModelRouter, error) {
+	if err := s.refreshRows(ctx, []livestore.Ref{{Kind: livestore.KindModelRouter, ID: id}}); err != nil {
+		return nil, fmt.Errorf("failed to get model router from config store: %w", err)
+	}
+	live, err := s.liveStore()
+	if err != nil {
+		return nil, err
+	}
+	record, ok := live.Collections.ModelRouters.Get(id)
+	if !ok {
+		return nil, fmt.Errorf("failed to get model router from config store: %w", configstore.ErrNotFound)
+	}
+	return record, nil
 }
 
-// ReloadModelRouter serves a saved model router from the config store.
-func (s *BifrostHTTPServer) ReloadModelRouter(_ context.Context, id string) error {
-	routingPlugin, err := s.getRoutingPlugin()
-	if err != nil {
-		return fmt.Errorf("routing plugin not found: %w", err)
+// ReloadModelRouter brings a saved model router into memory and serves it. Without the routing
+// plugin it returns that plugin's error after refreshing, so memory follows the database either
+// way.
+func (s *BifrostHTTPServer) ReloadModelRouter(ctx context.Context, id string) error {
+	routingPlugin, pluginErr := s.getRoutingPlugin()
+	record, err := s.refreshModelRouter(ctx, id)
+	if pluginErr != nil {
+		return fmt.Errorf("routing plugin not found: %w", pluginErr)
 	}
-	router, err := s.storedModelRouter(id)
 	if err != nil {
-		return fmt.Errorf("failed to get model router from config store: %w", err)
+		return err
 	}
-	return routingPlugin.ReloadModelRouter(router)
+	return routingPlugin.ReloadModelRouter(&record.Router)
 }
 
-// ReloadModelRouterTargets serves a saved router's targets from the config
-// store without reconfiguring its classifiers, so changing which model a tier
-// gets never restarts a semantic warmup.
-func (s *BifrostHTTPServer) ReloadModelRouterTargets(_ context.Context, id string) error {
-	routingPlugin, err := s.getRoutingPlugin()
-	if err != nil {
-		return fmt.Errorf("routing plugin not found: %w", err)
+// ReloadModelRouterTargets brings a saved router's targets into memory without reconfiguring its
+// classifiers, so changing which model a tier gets never restarts a semantic warmup. The router
+// reads its targets from the record. configstore.ErrNotFound means the plugin does not serve the
+// router.
+func (s *BifrostHTTPServer) ReloadModelRouterTargets(ctx context.Context, id string) error {
+	routingPlugin, pluginErr := s.getRoutingPlugin()
+	_, err := s.refreshModelRouter(ctx, id)
+	if pluginErr != nil {
+		return fmt.Errorf("routing plugin not found: %w", pluginErr)
 	}
-	router, err := s.storedModelRouter(id)
 	if err != nil {
-		return fmt.Errorf("failed to get model router from config store: %w", err)
+		return err
 	}
-	return routingPlugin.SetModelRouterTargets(id, router.Targets)
+	if _, served := routingPlugin.ModelRouterSemanticStatus(id); !served {
+		return configstore.ErrNotFound
+	}
+	return nil
 }
 
-// ReloadModelRouterRouting serves a saved router's routing from the config
-// store, leaving its classifiers and targets as they are.
-func (s *BifrostHTTPServer) ReloadModelRouterRouting(_ context.Context, id string) error {
-	routingPlugin, err := s.getRoutingPlugin()
-	if err != nil {
-		return fmt.Errorf("routing plugin not found: %w", err)
+// ReloadModelRouterRouting brings a saved router's routing into memory and records it for
+// matching, leaving its classifiers and targets as they are.
+func (s *BifrostHTTPServer) ReloadModelRouterRouting(ctx context.Context, id string) error {
+	routingPlugin, pluginErr := s.getRoutingPlugin()
+	record, err := s.refreshModelRouter(ctx, id)
+	if pluginErr != nil {
+		return fmt.Errorf("routing plugin not found: %w", pluginErr)
 	}
-	router, err := s.storedModelRouter(id)
 	if err != nil {
-		return fmt.Errorf("failed to get model router from config store: %w", err)
+		return err
 	}
-	if router.Routing == nil {
+	if record.Router.Routing == nil {
 		return fmt.Errorf("model router %q was read without routing", id)
 	}
-	return routingPlugin.SetModelRouterRouting(id, *router.Routing)
+	return routingPlugin.SetModelRouterRouting(id, *record.Router.Routing)
 }
 
-// RemoveModelRouter stops serving a deleted router.
-func (s *BifrostHTTPServer) RemoveModelRouter(_ context.Context, id string) error {
-	routingPlugin, err := s.getRoutingPlugin()
+// RemoveModelRouter drops a deleted router from memory and stops serving it. Without the routing
+// plugin it returns that plugin's error after dropping the record.
+func (s *BifrostHTTPServer) RemoveModelRouter(ctx context.Context, id string) error {
+	routingPlugin, pluginErr := s.getRoutingPlugin()
+	err := s.removeRecord(ctx, livestore.KindModelRouter, id)
+	if pluginErr != nil {
+		return fmt.Errorf("routing plugin not found: %w", pluginErr)
+	}
 	if err != nil {
-		return fmt.Errorf("routing plugin not found: %w", err)
+		return err
 	}
 	return routingPlugin.RemoveModelRouter(id)
 }
