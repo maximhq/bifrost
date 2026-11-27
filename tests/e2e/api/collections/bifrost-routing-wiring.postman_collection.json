@@ -27,6 +27,11 @@
       "type": "string"
     },
     {
+      "key": "fixture_url",
+      "value": "http://127.0.0.1:8795",
+      "type": "string"
+    },
+    {
       "key": "setup_token",
       "value": "bifrost-e2e-setup-token",
       "type": "string"
@@ -27616,6 +27621,1370 @@
                     "api",
                     "providers",
                     "catwiring-rt-vk-empty-configs-{{run_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "x-bf-request-timeout ends a request whose primary keeps failing before its retries and fallback run out",
+      "description": "A answers 503 to every attempt and may retry 20 times (100 to 200ms backoff); B, the caller's fallback, would answer at once. Under a 1500ms x-bf-request-timeout the request ends with a 504 request_timed_out within the cap plus a 1000ms allowance: A was tried more than once, so retries ran under the deadline, and B was never called, so the deadline also stops the fallback chain. Without the cap the same request runs out A's retries and B serves (#10010).",
+      "item": [
+        {
+          "id": "rt-request-timeout-caps-retries-01-add-provider",
+          "name": "01. add provider [request-timeout-caps-retries]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-retries]\";",
+                  "pm.test(\"01. add provider [request-timeout-caps-retries]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-request-timeout-caps-retries-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"{{fixture_url}}\",\"max_retries\":20,\"retry_backoff_initial\":100,\"retry_backoff_max\":200}}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-retries-02-add-key",
+          "name": "02. add key ka [request-timeout-caps-retries]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-retries]\";",
+                  "pm.test(\"02. add key ka [request-timeout-caps-retries]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-request-timeout-caps-retries-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-request-timeout-caps-retries-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"ka-{{run_id}}\",\"name\":\"catwiring-rt-request-timeout-caps-retries-ka-{{run_id}}\",\"models\":[\"catwiring-rto1-{{run_id}}\"],\"enabled\":true,\"value\":\"test-key\",\"aliases\":{\"catwiring-rto1-{{run_id}}\":\"upstream-503~rto1-a-{{run_id}}\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-retries-03-add-provider",
+          "name": "03. add provider (b) [request-timeout-caps-retries]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-retries]\";",
+                  "pm.test(\"03. add provider (b) [request-timeout-caps-retries]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-request-timeout-caps-retries-b-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"{{fixture_url}}\",\"max_retries\":0}}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-retries-04-add-key",
+          "name": "04. add key kb (b) [request-timeout-caps-retries]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-retries]\";",
+                  "pm.test(\"04. add key kb (b) [request-timeout-caps-retries]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-request-timeout-caps-retries-b-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-request-timeout-caps-retries-b-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"kb-{{run_id}}\",\"name\":\"catwiring-rt-request-timeout-caps-retries-kb-{{run_id}}\",\"models\":[\"catwiring-rto1-{{run_id}}\"],\"enabled\":true,\"value\":\"test-key\",\"aliases\":{\"catwiring-rto1-{{run_id}}\":\"upstream-ok~rto1-b-{{run_id}}\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-retries-05-await-catalog",
+          "name": "05. wait for the catalog to list the provider's models [request-timeout-caps-retries]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-retries]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-request-timeout-caps-retries-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-rto1-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"05. wait for the catalog to list the provider's models [request-timeout-caps-retries]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"05. wait for the catalog to list the provider's models [request-timeout-caps-retries]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-request-timeout-caps-retries-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-request-timeout-caps-retries-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-retries-06-await-catalog",
+          "name": "06. wait for the catalog to list b's models [request-timeout-caps-retries]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-retries]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-request-timeout-caps-retries-b-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-rto1-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"06. wait for the catalog to list b's models [request-timeout-caps-retries]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"06. wait for the catalog to list b's models [request-timeout-caps-retries]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-request-timeout-caps-retries-b-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-request-timeout-caps-retries-b-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-retries-07-route",
+          "name": "07. a 1500ms cap ends the retries with a 504 request_timed_out [request-timeout-caps-retries]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-retries]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 504) { throw new Error('expected status 504 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
+                  "  if (!body.error || body.error.type !== \"request_timed_out\") { throw new Error('error.type=' + (body.error && body.error.type) + ' expected request_timed_out'); }",
+                  "  if (pm.response.responseTime >= 2500) { throw new Error('the request took ' + pm.response.responseTime + 'ms, expected under 2500ms'); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"07. a 1500ms cap ends the retries with a 504 request_timed_out [request-timeout-caps-retries]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-request-timeout",
+                "value": "1500ms"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-request-timeout-caps-retries-{{run_id}}/catwiring-rto1-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5,\"fallbacks\":[\"catwiring-rt-request-timeout-caps-retries-b-{{run_id}}/catwiring-rto1-{{run_id}}\"]}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-retries-08-fixture-hits",
+          "name": "08. A was retried under the deadline and B was never called [request-timeout-caps-retries]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-retries]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('fixture hits status ' + pm.response.code); }",
+                  "  var hits = (((pm.response.json() || {}).data || [])[0] || {}).hits || {};",
+                  "  [{\"model\":\"upstream-503~rto1-a-{{run_id}}\",\"min\":2,\"max\":20},{\"model\":\"upstream-ok~rto1-b-{{run_id}}\",\"min\":0}].forEach(function (h) {",
+                  "    var model = pm.variables.replaceIn(h.model);",
+                  "    var n = hits[model] || 0;",
+                  "    var max = h.max === undefined ? h.min : h.max;",
+                  "    if (n < h.min || n > max) { throw new Error('the fixture saw ' + n + ' requests for ' + model + ', expected ' + h.min + (max === h.min ? '' : ' to ' + max)); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"08. A was retried under the deadline and B was never called [request-timeout-caps-retries]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{fixture_url}}/__hits",
+              "host": [
+                "{{fixture_url}}"
+              ],
+              "path": [
+                "__hits"
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-retries-09-route",
+          "name": "09. under a 60s cap A's retries run out and B serves [request-timeout-caps-retries]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-retries]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
+                  "  var ri = (body.extra_fields || {}).routing_info || {};",
+                  "  var allowedProviders = ['catwiring-rt-request-timeout-caps-retries-b-' + pm.variables.get('run_id')];",
+                  "  if (allowedProviders.indexOf(ri.provider) < 0) { throw new Error('routing_info.provider=' + ri.provider + ' not in ' + JSON.stringify(allowedProviders)); }",
+                  "  if (Boolean(ri.is_fallback) !== true) { throw new Error('is_fallback=' + ri.is_fallback); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"09. under a 60s cap A's retries run out and B serves [request-timeout-caps-retries]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-request-timeout",
+                "value": "60s"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-request-timeout-caps-retries-{{run_id}}/catwiring-rto1-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5,\"fallbacks\":[\"catwiring-rt-request-timeout-caps-retries-b-{{run_id}}/catwiring-rto1-{{run_id}}\"]}"
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-request-timeout-caps-retries-cleanup-provider-self",
+              "name": "cleanup: delete provider [request-timeout-caps-retries]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [request-timeout-caps-retries]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-request-timeout-caps-retries-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-request-timeout-caps-retries-{{run_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-request-timeout-caps-retries-cleanup-provider-b",
+              "name": "cleanup: delete provider b [request-timeout-caps-retries]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider b [request-timeout-caps-retries]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-request-timeout-caps-retries-b-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-request-timeout-caps-retries-b-{{run_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "x-bf-request-timeout cancels the fallback in flight and starts no later fallback",
+      "description": "A answers 503 with no retries, its first fallback B answers only after 2s, and its second fallback C would answer at once. Under a 1000ms x-bf-request-timeout the deadline passes while B is in flight: the request ends with a 504 request_timed_out within the cap plus a 1000ms allowance and C is never called. With a 60s cap the same chain is served by B (#10010).",
+      "item": [
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-01-add-provider",
+          "name": "01. add provider [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "pm.test(\"01. add provider [request-timeout-caps-fallback-chain]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-request-timeout-caps-fallback-chain-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"{{fixture_url}}\",\"max_retries\":0}}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-02-add-key",
+          "name": "02. add key ka [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "pm.test(\"02. add key ka [request-timeout-caps-fallback-chain]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-request-timeout-caps-fallback-chain-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-request-timeout-caps-fallback-chain-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"ka-{{run_id}}\",\"name\":\"catwiring-rt-request-timeout-caps-fallback-chain-ka-{{run_id}}\",\"models\":[\"catwiring-rto2-{{run_id}}\"],\"enabled\":true,\"value\":\"test-key\",\"aliases\":{\"catwiring-rto2-{{run_id}}\":\"upstream-503~rto2-a-{{run_id}}\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-03-add-provider",
+          "name": "03. add provider (b) [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "pm.test(\"03. add provider (b) [request-timeout-caps-fallback-chain]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-request-timeout-caps-fallback-chain-b-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"{{fixture_url}}\",\"max_retries\":0}}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-04-add-key",
+          "name": "04. add key kb (b) [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "pm.test(\"04. add key kb (b) [request-timeout-caps-fallback-chain]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-request-timeout-caps-fallback-chain-b-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-request-timeout-caps-fallback-chain-b-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"kb-{{run_id}}\",\"name\":\"catwiring-rt-request-timeout-caps-fallback-chain-kb-{{run_id}}\",\"models\":[\"catwiring-rto2-{{run_id}}\"],\"enabled\":true,\"value\":\"test-key\",\"aliases\":{\"catwiring-rto2-{{run_id}}\":\"upstream-slow~rto2-b-{{run_id}}\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-05-add-provider",
+          "name": "05. add provider (c) [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "pm.test(\"05. add provider (c) [request-timeout-caps-fallback-chain]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-request-timeout-caps-fallback-chain-c-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"{{fixture_url}}\",\"max_retries\":0}}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-06-add-key",
+          "name": "06. add key kc (c) [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "pm.test(\"06. add key kc (c) [request-timeout-caps-fallback-chain]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-request-timeout-caps-fallback-chain-c-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-request-timeout-caps-fallback-chain-c-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"kc-{{run_id}}\",\"name\":\"catwiring-rt-request-timeout-caps-fallback-chain-kc-{{run_id}}\",\"models\":[\"catwiring-rto2-{{run_id}}\"],\"enabled\":true,\"value\":\"test-key\",\"aliases\":{\"catwiring-rto2-{{run_id}}\":\"upstream-ok~rto2-c-{{run_id}}\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-07-await-catalog",
+          "name": "07. wait for the catalog to list the provider's models [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-request-timeout-caps-fallback-chain-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-rto2-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"07. wait for the catalog to list the provider's models [request-timeout-caps-fallback-chain]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"07. wait for the catalog to list the provider's models [request-timeout-caps-fallback-chain]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-request-timeout-caps-fallback-chain-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-request-timeout-caps-fallback-chain-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-08-await-catalog",
+          "name": "08. wait for the catalog to list b's models [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-request-timeout-caps-fallback-chain-b-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-rto2-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"08. wait for the catalog to list b's models [request-timeout-caps-fallback-chain]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"08. wait for the catalog to list b's models [request-timeout-caps-fallback-chain]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-request-timeout-caps-fallback-chain-b-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-request-timeout-caps-fallback-chain-b-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-09-await-catalog",
+          "name": "09. wait for the catalog to list c's models [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-request-timeout-caps-fallback-chain-c-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-rto2-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"09. wait for the catalog to list c's models [request-timeout-caps-fallback-chain]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"09. wait for the catalog to list c's models [request-timeout-caps-fallback-chain]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-request-timeout-caps-fallback-chain-c-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-request-timeout-caps-fallback-chain-c-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-10-route",
+          "name": "10. a 1000ms cap ends the chain while B is in flight with a 504 request_timed_out [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 504) { throw new Error('expected status 504 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
+                  "  if (!body.error || body.error.type !== \"request_timed_out\") { throw new Error('error.type=' + (body.error && body.error.type) + ' expected request_timed_out'); }",
+                  "  if (pm.response.responseTime >= 2000) { throw new Error('the request took ' + pm.response.responseTime + 'ms, expected under 2000ms'); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"10. a 1000ms cap ends the chain while B is in flight with a 504 request_timed_out [request-timeout-caps-fallback-chain]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-request-timeout",
+                "value": "1000ms"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-request-timeout-caps-fallback-chain-{{run_id}}/catwiring-rto2-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5,\"fallbacks\":[\"catwiring-rt-request-timeout-caps-fallback-chain-b-{{run_id}}/catwiring-rto2-{{run_id}}\",\"catwiring-rt-request-timeout-caps-fallback-chain-c-{{run_id}}/catwiring-rto2-{{run_id}}\"]}"
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-11-fixture-hits",
+          "name": "11. A and B were each called once and C never [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('fixture hits status ' + pm.response.code); }",
+                  "  var hits = (((pm.response.json() || {}).data || [])[0] || {}).hits || {};",
+                  "  [{\"model\":\"upstream-503~rto2-a-{{run_id}}\",\"min\":1},{\"model\":\"upstream-slow~rto2-b-{{run_id}}\",\"min\":1},{\"model\":\"upstream-ok~rto2-c-{{run_id}}\",\"min\":0}].forEach(function (h) {",
+                  "    var model = pm.variables.replaceIn(h.model);",
+                  "    var n = hits[model] || 0;",
+                  "    var max = h.max === undefined ? h.min : h.max;",
+                  "    if (n < h.min || n > max) { throw new Error('the fixture saw ' + n + ' requests for ' + model + ', expected ' + h.min + (max === h.min ? '' : ' to ' + max)); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"11. A and B were each called once and C never [request-timeout-caps-fallback-chain]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{fixture_url}}/__hits",
+              "host": [
+                "{{fixture_url}}"
+              ],
+              "path": [
+                "__hits"
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-request-timeout-caps-fallback-chain-12-route",
+          "name": "12. under a 60s cap the slow B serves [request-timeout-caps-fallback-chain]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [request-timeout-caps-fallback-chain]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
+                  "  var ri = (body.extra_fields || {}).routing_info || {};",
+                  "  var allowedProviders = ['catwiring-rt-request-timeout-caps-fallback-chain-b-' + pm.variables.get('run_id')];",
+                  "  if (allowedProviders.indexOf(ri.provider) < 0) { throw new Error('routing_info.provider=' + ri.provider + ' not in ' + JSON.stringify(allowedProviders)); }",
+                  "  if (Boolean(ri.is_fallback) !== true) { throw new Error('is_fallback=' + ri.is_fallback); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"12. under a 60s cap the slow B serves [request-timeout-caps-fallback-chain]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-request-timeout",
+                "value": "60s"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-request-timeout-caps-fallback-chain-{{run_id}}/catwiring-rto2-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5,\"fallbacks\":[\"catwiring-rt-request-timeout-caps-fallback-chain-b-{{run_id}}/catwiring-rto2-{{run_id}}\",\"catwiring-rt-request-timeout-caps-fallback-chain-c-{{run_id}}/catwiring-rto2-{{run_id}}\"]}"
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-request-timeout-caps-fallback-chain-cleanup-provider-self",
+              "name": "cleanup: delete provider [request-timeout-caps-fallback-chain]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [request-timeout-caps-fallback-chain]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-request-timeout-caps-fallback-chain-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-request-timeout-caps-fallback-chain-{{run_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-request-timeout-caps-fallback-chain-cleanup-provider-b",
+              "name": "cleanup: delete provider b [request-timeout-caps-fallback-chain]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider b [request-timeout-caps-fallback-chain]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-request-timeout-caps-fallback-chain-b-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-request-timeout-caps-fallback-chain-b-{{run_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-request-timeout-caps-fallback-chain-cleanup-provider-c",
+              "name": "cleanup: delete provider c [request-timeout-caps-fallback-chain]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider c [request-timeout-caps-fallback-chain]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-request-timeout-caps-fallback-chain-c-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-request-timeout-caps-fallback-chain-c-{{run_id}}"
                   ]
                 }
               }
