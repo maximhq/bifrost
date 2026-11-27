@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -221,14 +222,13 @@ func TestConvertBifrostReasoningToBedrockReasoning(t *testing.T) {
 	}
 }
 
-// TestConvertBifrostReasoningToBedrockReasoningEncryptedContent keeps the original
-// test's intent -- encrypted replay data must survive translation into the Bedrock
-// signature field -- and corrects the shape it pinned.
+// TestConvertBifrostReasoningToBedrockReasoningEncryptedContent checks that
+// encrypted replay data survives translation into the Bedrock signature field with
+// the text present as an explicit empty string.
 //
-// It previously asserted Text was nil. That is the state Bedrock rejects: `text` is
-// omitempty, so a nil pointer means the key is absent from the serialised request,
-// and Converse answers "reasoningContent.reasoningText.text ... Member must not be
-// null". Preserving the signature was right; dropping the text was not.
+// `text` is omitempty: a nil pointer leaves the key out of the serialised request,
+// and Converse rejects that block with "reasoningContent.reasoningText.text ...
+// Member must not be null". The signature alone is not a complete block.
 func TestConvertBifrostReasoningToBedrockReasoningEncryptedContent(t *testing.T) {
 	encryptedContent := "EqQBCgIYAhIM...fixture"
 	message := &schemas.ResponsesMessage{
@@ -579,4 +579,143 @@ func TestChatReplayDropsForeignRedactedToken(t *testing.T) {
 	require.False(t, gjson.GetBytes(raw, "content.#.reasoningContent").Exists() && len(gjson.GetBytes(raw, "content.#.reasoningContent").Array()) > 0,
 		"a foreign token reached redactedContent: %s", raw)
 	require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
+}
+
+// TestClaudeRedactedReasoningSurvivesTheReplayLoop is the Claude half of
+// TestRedactedReasoningSurvivesTheReplayLoop. The response side surfaces a Claude
+// redacted-thinking block as an encrypted reasoning detail the same way it does for
+// Grok, and replay has to carry that detail back for a text-shape model too.
+//
+// The blob cannot go back as reasoningContent.redactedContent: converseReasoningShape
+// documents that Anthropic answers that variant with a 400. The Responses converter
+// already carries the identical item (empty summary plus encrypted content) for a
+// text-shape model as an empty-text reasoningText with the blob in signature
+// (TestConvertBifrostReasoningToBedrockReasoningEncryptedContent), so the Chat path
+// replays it the same way.
+func TestClaudeRedactedReasoningSurvivesTheReplayLoop(t *testing.T) {
+	blob := "Y2xhdWRlLXJlZGFjdGVkLWJsb2I="
+	const model = "global.anthropic.claude-sonnet-4-6"
+
+	t.Run("blob survives the replay in signature form", func(t *testing.T) {
+		resp := &BedrockConverseResponse{
+			Output: &BedrockConverseOutput{
+				Message: &BedrockMessage{
+					Role: BedrockMessageRoleAssistant,
+					Content: []BedrockContentBlock{
+						{ReasoningContent: &BedrockReasoningContent{RedactedContent: &blob}},
+						{Text: schemas.Ptr("Hello!")},
+					},
+				},
+			},
+		}
+
+		bifrostResp, err := resp.ToBifrostChatResponse(context.Background(), model)
+		require.NoError(t, err)
+		require.NotEmpty(t, bifrostResp.Choices)
+
+		assistant := bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage
+		require.NotNil(t, assistant, "the blob must reach the client, not be dropped")
+		require.Len(t, assistant.ReasoningDetails, 1)
+		require.Equal(t, schemas.BifrostReasoningDetailsTypeEncrypted, assistant.ReasoningDetails[0].Type)
+		require.NotNil(t, assistant.ReasoningDetails[0].Data)
+		require.Equal(t, blob, *assistant.ReasoningDetails[0].Data)
+
+		replayed, err := convertMessage(context.Background(), model,
+			*bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message, newBedrockDocNamer())
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(replayed)
+		require.NoError(t, err)
+
+		require.Equal(t, blob, gjson.GetBytes(raw, "content.0.reasoningContent.reasoningText.signature").String(),
+			"the redacted blob was dropped from the replay: %s", raw)
+		require.True(t, gjson.GetBytes(raw, "content.0.reasoningContent.reasoningText.text").Exists(),
+			"an absent text key is the Converse 400 (see reasoningTextInvariant): %s", raw)
+		require.False(t, gjson.GetBytes(raw, "content.#.reasoningContent.redactedContent").Exists() && len(gjson.GetBytes(raw, "content.#.reasoningContent.redactedContent").Array()) > 0,
+			"the candidate shape is reasoningText, so redactedContent must not be emitted: %s", raw)
+		require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
+	})
+
+	t.Run("a token that is not a Converse blob stays dropped", func(t *testing.T) {
+		foreign := "rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.e30.c2ln"
+		msg := schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")},
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				ReasoningDetails: []schemas.ChatReasoningDetails{{Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: &foreign}},
+			},
+		}
+		replayed, err := convertMessage(context.Background(), model, msg, newBedrockDocNamer())
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(replayed)
+		require.NoError(t, err)
+		require.False(t, gjson.GetBytes(raw, "content.#.reasoningContent").Exists() && len(gjson.GetBytes(raw, "content.#.reasoningContent").Array()) > 0,
+			"a foreign token cannot deserialize for Claude either, so it must not reach the request: %s", raw)
+		require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
+	})
+}
+
+// BenchmarkConvertMessageRedactedReplay measures the request-path cost of the
+// encrypted-detail branch. The plain case is the common path: a replayed tool
+// turn with no reasoning details must not pay for the new branch. The docNamer
+// is built once outside the loop because these messages carry no documents, so
+// naming is not part of what is being measured.
+func BenchmarkConvertMessageRedactedReplay(b *testing.B) {
+	const model = "global.anthropic.claude-sonnet-4-6"
+
+	toolTurn := func(details []schemas.ChatReasoningDetails) schemas.ChatMessage {
+		return schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")},
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				ReasoningDetails: details,
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					Index: 0,
+					Type:  schemas.Ptr("function"),
+					ID:    schemas.Ptr("call_1"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name: schemas.Ptr("get_time"), Arguments: `{"timezone":"UTC"}`,
+					},
+				}},
+			},
+		}
+	}
+
+	blob := func(size int) *string {
+		encoded := base64.StdEncoding.EncodeToString(make([]byte, size))
+		return &encoded
+	}
+
+	hundred := make([]schemas.ChatReasoningDetails, 100)
+	for i := range hundred {
+		hundred[i] = schemas.ChatReasoningDetails{
+			Index: i,
+			Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+			Data:  blob(1024),
+		}
+	}
+
+	for _, bc := range []struct {
+		name string
+		msg  schemas.ChatMessage
+	}{
+		{"plain_tool_turn", toolTurn(nil)},
+		{"encrypted_1KiB", toolTurn([]schemas.ChatReasoningDetails{{
+			Index: 0, Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: blob(1024),
+		}})},
+		{"encrypted_64KiB", toolTurn([]schemas.ChatReasoningDetails{{
+			Index: 0, Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: blob(64 * 1024),
+		}})},
+		{"encrypted_100x1KiB", toolTurn(hundred)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			namer := newBedrockDocNamer()
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := convertMessage(ctx, model, bc.msg, namer); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
