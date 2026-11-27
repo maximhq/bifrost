@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -177,6 +179,29 @@ func TestFetchAndEncodeURL_UsesProviderProxy(t *testing.T) {
 		case "/img.png":
 			w.Header().Set("Content-Type", "image/png; charset=binary")
 			_, _ = w.Write([]byte("PNGDATA"))
+		case "/img-gzip.png":
+			var compressed bytes.Buffer
+			gz := gzip.NewWriter(&compressed)
+			_, _ = gz.Write([]byte("PNGDATA"))
+			_ = gz.Close()
+			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("Content-Encoding", "gzip")
+			_, _ = w.Write(compressed.Bytes())
+		case "/huge-gzip.png":
+			// Small on the wire, larger than the fetch limit once decoded.
+			var compressed bytes.Buffer
+			gz := gzip.NewWriter(&compressed)
+			_, _ = gz.Write(make([]byte, maxFetchBytes+1))
+			_ = gz.Close()
+			w.Header().Set("Content-Encoding", "gzip")
+			_, _ = w.Write(compressed.Bytes())
+		case "/unknown-coding.png":
+			w.Header().Set("Content-Encoding", "compress")
+			_, _ = w.Write([]byte("PNGDATA"))
+		case "/unknown-coding-empty.png":
+			w.Header().Set("Content-Encoding", "compress")
+		case "/gzip-empty.png":
+			w.Header().Set("Content-Encoding", "gzip")
 		case "/redirect":
 			http.Redirect(w, r, "http://10.0.0.5/secret", http.StatusFound)
 		default:
@@ -207,6 +232,48 @@ func TestFetchAndEncodeURL_UsesProviderProxy(t *testing.T) {
 		}
 		if want := base64.StdEncoding.EncodeToString([]byte("PNGDATA")); encoded != want {
 			t.Errorf("encoded = %q, want %q", encoded, want)
+		}
+	})
+
+	// A server may apply a content coding even when the request names none. The
+	// encoded result is the resource itself, so the coding is removed first.
+	t.Run("a gzip-coded resource is decoded before encoding", func(t *testing.T) {
+		_, encoded, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/img-gzip.png")
+		if err != nil {
+			t.Fatalf("fetch of a gzip-coded resource failed: %v", err)
+		}
+		if want := base64.StdEncoding.EncodeToString([]byte("PNGDATA")); encoded != want {
+			t.Errorf("encoded = %q, want the decoded bytes %q", encoded, want)
+		}
+	})
+
+	t.Run("the size limit applies to the decoded resource", func(t *testing.T) {
+		_, _, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/huge-gzip.png")
+		if err == nil || !strings.Contains(err.Error(), "limit") {
+			t.Fatalf("expected the decoded size to be refused by the limit, got %v", err)
+		}
+	})
+
+	t.Run("an unsupported content coding is an error, not raw bytes", func(t *testing.T) {
+		_, _, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/unknown-coding.png")
+		if err == nil || !strings.Contains(err.Error(), "Content-Encoding") {
+			t.Fatalf("expected an unsupported Content-Encoding error, got %v", err)
+		}
+	})
+
+	// The coding is checked whether or not there are bytes to decode: an empty body under a
+	// coding that cannot be removed is still not the resource.
+	t.Run("an unsupported content coding on an empty body is an error", func(t *testing.T) {
+		_, _, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/unknown-coding-empty.png")
+		if err == nil || !strings.Contains(err.Error(), "Content-Encoding") {
+			t.Fatalf("expected an unsupported Content-Encoding error, got %v", err)
+		}
+	})
+
+	t.Run("an empty body under a supported coding stays empty", func(t *testing.T) {
+		_, encoded, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/gzip-empty.png")
+		if err != nil || encoded != "" {
+			t.Fatalf("encoded = %q, err = %v; want an empty resource and no error", encoded, err)
 		}
 	})
 

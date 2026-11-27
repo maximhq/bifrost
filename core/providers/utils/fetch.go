@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -124,12 +125,103 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 		return "", "", fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
 	}
 
+	// A server may apply a content coding even though the request names none. The
+	// caller wants the resource, so the coding is removed, under the same size limit.
+	body, err = decodeFetchedBody(body, resp.Header.Get("Content-Encoding"), maxBytes)
+	if err != nil {
+		if errors.Is(err, errFetchedBodyTooLarge) {
+			return "", "", fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+		}
+		return "", "", fmt.Errorf("failed to decode body from %q: %w", redacted, err)
+	}
+
 	mediaType = resp.Header.Get("Content-Type")
 	if i := strings.Index(mediaType, ";"); i != -1 {
 		mediaType = strings.TrimSpace(mediaType[:i])
 	}
 
 	return mediaType, base64.StdEncoding.EncodeToString(body), nil
+}
+
+// errFetchedBodyTooLarge reports a resource whose decoded form exceeds the fetch limit.
+var errFetchedBodyTooLarge = errors.New("decoded resource exceeds the fetch limit")
+
+// decodeFetchedBody removes the content codings named by contentEncoding from body,
+// last applied first, and returns the resource itself. It accepts the codings
+// CheckAndDecodeBody does (gzip, deflate, br, zstd), and an unsupported coding is an
+// error rather than a body returned still encoded. Each decoding step reads at most
+// maxBytes, so a small encoded body cannot expand past the limit a plain one is held to.
+func decodeFetchedBody(body []byte, contentEncoding string, maxBytes int64) ([]byte, error) {
+	contentEncoding = strings.ToLower(strings.TrimSpace(contentEncoding))
+	if contentEncoding == "" || contentEncoding == "identity" {
+		return body, nil
+	}
+	readBounded := func(r io.Reader) ([]byte, error) {
+		decoded, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(decoded)) > maxBytes {
+			return nil, errFetchedBodyTooLarge
+		}
+		return decoded, nil
+	}
+	encodings := strings.Split(contentEncoding, ",")
+	for i := len(encodings) - 1; i >= 0; i-- {
+		encoding := strings.TrimSpace(encodings[i])
+		if len(body) == 0 {
+			// Nothing to decode, but the coding is still checked: an empty body under a coding
+			// that cannot be removed is refused like a non-empty one.
+			switch encoding {
+			case "", "identity", "gzip", "x-gzip", "deflate", "br", "zstd":
+				continue
+			}
+			return nil, fmt.Errorf("unsupported Content-Encoding %q", encoding)
+		}
+		reader := bytes.NewReader(body)
+		var err error
+		switch encoding {
+		case "", "identity":
+			continue
+		case "gzip", "x-gzip":
+			gz, acquireErr := AcquireGzipReader(reader)
+			if acquireErr != nil {
+				ReleaseGzipReader(gz)
+				return nil, fmt.Errorf("decode %s: %w", encoding, acquireErr)
+			}
+			body, err = readBounded(gz)
+			ReleaseGzipReader(gz)
+		case "deflate":
+			fr, acquireErr := AcquireFlateReader(reader)
+			if acquireErr != nil {
+				ReleaseFlateReader(fr)
+				return nil, fmt.Errorf("decode %s: %w", encoding, acquireErr)
+			}
+			body, err = readBounded(fr)
+			ReleaseFlateReader(fr)
+		case "br":
+			br := AcquireBrotliReader(reader)
+			body, err = readBounded(br)
+			ReleaseBrotliReader(br)
+		case "zstd":
+			dec, acquireErr := AcquireZstdDecoder(reader)
+			if acquireErr != nil {
+				ReleaseZstdDecoder(dec)
+				return nil, fmt.Errorf("decode %s: %w", encoding, acquireErr)
+			}
+			body, err = readBounded(dec)
+			ReleaseZstdDecoder(dec)
+		default:
+			return nil, fmt.Errorf("unsupported Content-Encoding %q", encoding)
+		}
+		if err != nil {
+			if errors.Is(err, errFetchedBodyTooLarge) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("decode %s: %w", encoding, err)
+		}
+	}
+	return body, nil
 }
 
 // maxFetchBytes caps a fetched resource at 25 MiB.
