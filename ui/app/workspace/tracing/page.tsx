@@ -501,6 +501,7 @@ export default function TracingPage() {
 			<ProjectSheet
 				project={projects.find((project) => project.id === sheetProjectId)}
 				onClose={() => setSheetProjectId(null)}
+				onDeleted={(id) => setSheetProjectId((current) => (current === id ? null : current))}
 				onViewTraces={(id) => {
 					setSheetProjectId(null);
 					// Another project's traces drop the session or experiment the list was scoped to.
