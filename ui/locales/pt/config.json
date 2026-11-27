@@ -279,6 +279,8 @@
 		"allowRawOverrideHelp": "Quando ativado, pedidos individuais podem enviar bytes em bruto do pedido/resposta do fornecedor de volta ao autor da chamada usando os cabeçalhos x-bf-send-back-raw-request e x-bf-send-back-raw-response. Não afeta o armazenamento de registos; a persistência de bytes em bruto nos registos é controlada por {{setting}}.",
 		"logRetentionDays": "Dias de retenção de registos",
 		"logRetentionDaysHelp": "Número de dias para reter registos, incluindo os registos de relay, na base de dados. O mínimo é 1 dia. Registos mais antigos serão eliminados automaticamente.",
+		"vectorRetentionDays": "Dias de retenção de vetores",
+		"vectorRetentionDaysHelp": "Dias para manter os vetores criados a partir dos registos. Deixe em branco para seguir a retenção de registos; não pode ser maior.",
 		"hideDeletedVks": "Não mostrar chaves virtuais eliminadas nos filtros",
 		"hideDeletedVksHelp": "Quando ativado, as chaves virtuais eliminadas são excluídas das opções de filtro de chaves virtuais em Registos, Painel, Registos MCP e Registos de relay.",
 		"loggingHeaders": "Cabeçalhos de registo",

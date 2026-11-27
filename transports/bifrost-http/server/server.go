@@ -2786,29 +2786,56 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	return nil
 }
 
-// logRetentionSetter is a plugin that bounds what it keeps by the logs'
+// vectorRetentionSetter is a plugin that bounds what it keeps by the vector
 // retention; the routing plugin's request capture is one.
-type logRetentionSetter interface {
-	SetLogRetention(days func() int)
+type vectorRetentionSetter interface {
+	SetVectorRetention(days func() int)
 }
 
-// applyRoutingLogRetention tells a plugin that keeps per-log data how long
-// logs live, so captured request vectors never outlive their logs. It runs at
-// bootstrap and on every reload, since a reload builds a fresh plugin. The
-// retention is read at each sweep rather than once: LogsCleaner is built
-// later in Bootstrap, may be absent (0 means logs are kept forever), and its
-// retention can change at runtime.
-func (s *BifrostHTTPServer) applyRoutingLogRetention(plugin any) {
-	setter, ok := plugin.(logRetentionSetter)
+// effectiveVectorRetentionDays is how long vector store entries tied to logs
+// are kept: client_config.vector_retention_days, but never longer than the
+// logs, since a vector that outlives its log keeps the deleted request's
+// metadata and turns up in search with nothing behind its id. 0 for either
+// side means unbounded on that side; 0 overall means no sweep.
+func effectiveVectorRetentionDays(logDays, vectorDays int) int {
+	switch {
+	case vectorDays <= 0:
+		return max(logDays, 0)
+	case logDays <= 0:
+		return vectorDays
+	default:
+		return min(vectorDays, logDays)
+	}
+}
+
+// vectorRetentionDays reads the effective vector retention now. It is read at
+// each sweep rather than once: LogsCleaner is built later in Bootstrap, may be
+// absent (logs kept forever), and both retentions can change at runtime.
+func (s *BifrostHTTPServer) vectorRetentionDays() int {
+	logDays := 0
+	if s.LogsCleaner != nil {
+		logDays = s.LogsCleaner.RetentionDays()
+	}
+	vectorDays := 0
+	if s.Config != nil {
+		s.Config.Mu.RLock()
+		if s.Config.ClientConfig != nil {
+			vectorDays = s.Config.ClientConfig.VectorRetentionDays
+		}
+		s.Config.Mu.RUnlock()
+	}
+	return effectiveVectorRetentionDays(logDays, vectorDays)
+}
+
+// applyRoutingVectorRetention tells a plugin that keeps per-log data how long
+// its vectors live, so captured request vectors never outlive their logs. It
+// runs at bootstrap and on every reload, since a reload builds a fresh plugin.
+func (s *BifrostHTTPServer) applyRoutingVectorRetention(plugin any) {
+	setter, ok := plugin.(vectorRetentionSetter)
 	if !ok {
 		return
 	}
-	setter.SetLogRetention(func() int {
-		if s.LogsCleaner == nil {
-			return 0
-		}
-		return s.LogsCleaner.RetentionDays()
-	})
+	setter.SetVectorRetention(s.vectorRetentionDays)
 }
 
 // captureDropTimeout bounds dropping complexity request capture's vectors
@@ -3291,13 +3318,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	s.subscribeCaptureDeletes(loggerPlugin)
 	// Read at each sweep rather than once: the cleaner is built in Bootstrap,
-	// after this, and its retention can change at runtime.
-	s.WarpHandler.Service().SetLogRetention(func() int {
-		if s.LogsCleaner == nil {
-			return 0
-		}
-		return s.LogsCleaner.RetentionDays()
-	})
+	// after this, and both retentions can change at runtime.
+	s.WarpHandler.Service().SetVectorRetention(s.vectorRetentionDays)
 	// config.json's warp section saves through the service, so it is validated and provisions its
 	// vector namespace exactly like a save from the settings page.
 	s.Config.ApplyWarpFileConfig(s.Ctx, s.WarpHandler.Service())

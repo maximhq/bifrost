@@ -279,6 +279,8 @@
 		"allowRawOverrideHelp": "启用后，单个请求可用 x-bf-send-back-raw-request 和 x-bf-send-back-raw-response 请求头将原始供应商请求/响应字节回传给调用方。不影响日志存储；日志中的原始字节持久化由 {{setting}} 控制。",
 		"logRetentionDays": "日志保留天数",
 		"logRetentionDaysHelp": "在数据库中保留日志（包括中继日志）的天数。最少 1 天。更旧的日志会自动删除。",
+		"vectorRetentionDays": "向量保留天数",
+		"vectorRetentionDaysHelp": "保留由日志生成的向量的天数。留空则与日志保留期相同，且不能更长。",
 		"hideDeletedVks": "筛选器中不显示已删除的虚拟密钥",
 		"hideDeletedVksHelp": "启用后，已删除的虚拟密钥不会出现在日志、仪表盘、MCP 日志和中继日志的 Virtual Keys 筛选选项中。",
 		"loggingHeaders": "日志请求头",

@@ -937,6 +937,8 @@ export interface CoreConfig {
 	disable_db_pings_in_health: boolean;
 	dump_errors_in_console_logs: boolean;
 	log_retention_days: number;
+	// Days to keep log-derived vector store entries; 0 = same as logs, capped at log_retention_days.
+	vector_retention_days?: number;
 	enforce_auth_on_inference: boolean;
 	dual_credential_conflict_behavior?: "error" | "prefer_vk" | "prefer_idp";
 	extra_fields_placement?: "body" | "headers";

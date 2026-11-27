@@ -279,6 +279,8 @@
 		"allowRawOverrideHelp": "Wenn aktiviert, können einzelne Anfragen rohe Anbieter-Request-/Response-Bytes über die Header x-bf-send-back-raw-request und x-bf-send-back-raw-response an den Aufrufer zurücksenden. Beeinflusst nicht die Protokollspeicherung; die Persistenz roher Bytes in Protokollen wird von {{setting}} gesteuert.",
 		"logRetentionDays": "Protokollretention Tage",
 		"logRetentionDaysHelp": "Anzahl Tage, für die Protokolle, einschließlich Relay-Protokollen, im Datenbanksystem gespeichert werden. Minimum ist 1 Tag. Ältere Protokolle werden automatisch gelöscht.",
+		"vectorRetentionDays": "Vektor-Aufbewahrung (Tage)",
+		"vectorRetentionDaysHelp": "Tage, die aus Protokollen erzeugte Vektoren aufbewahrt werden. Leer lassen, um der Protokollaufbewahrung zu folgen; länger geht nicht.",
 		"hideDeletedVks": "Nicht anzeigen gelöschter Virtueller Schlüssel in Filtern",
 		"hideDeletedVksHelp": "Wenn aktiviert, werden gelöschte virtuelle Schlüssel aus den Filteroptionen für Virtuelle Schlüssel in Logs, Dashboard, MCP Logs und Relay-Protokollen ausgeschlossen.",
 		"loggingHeaders": "Logging-Header",

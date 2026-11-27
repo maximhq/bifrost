@@ -144,6 +144,7 @@
 	"validation": {
 		"modeIsRequired": "Mode is required",
 		"valueMustBeAPositiveWholeNumber": "Must be a positive whole number",
+		"vectorRetentionDaysAtMost106751": "Vector retention can be at most 106751 days.",
 		"mustBeAJsonObject": "Must be a JSON object",
 		"providerCannotBePatched": "provider cannot be patched; it identifies the entry",
 		"customProviderNameIsRequired": "Custom provider name is required",

@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -73,7 +74,7 @@ func TestWarpSweepsVectorsOfExpiredLogs(t *testing.T) {
 	require.Len(t, vectors.adds, 2)
 
 	days := 0
-	service.SetLogRetention(func() int { return days })
+	service.SetVectorRetention(func() int { return days })
 	swept, err = service.sweepExpiredVectors(context.Background(), now)
 	require.NoError(t, err)
 	require.Zero(t, swept, "a retention of zero keeps everything")
@@ -98,14 +99,14 @@ func TestWarpSweepsVectorsOfExpiredLogs(t *testing.T) {
 // nothing, and is skipped without a word.
 func TestWarpSweepsExpiredVectorsWhileWarpIsDisabled(t *testing.T) {
 	service, vectors := retentionTestService(t)
-	service.SetLogRetention(func() int { return 30 })
+	service.SetVectorRetention(func() int { return 30 })
 	service.store.(*recordingStore).row.Enabled = false
 	service.topicUpkeepTick(context.Background())
 	require.Equal(t, []string{"fresh"}, retentionTestIDs(vectors))
 
 	never := serviceForTest(t, nil, WithConfigStore(&recordingStore{}), WithVectorStore(newFakeWarpVectorStore()))
 	t.Cleanup(never.Shutdown)
-	never.SetLogRetention(func() int { return 30 })
+	never.SetVectorRetention(func() int { return 30 })
 	swept, err := never.sweepExpiredVectors(context.Background(), time.Now().UTC())
 	require.NoError(t, err)
 	require.Zero(t, swept)
@@ -212,4 +213,17 @@ func TestWarpForgetLogsRecordsNothingWithoutAnEmbeddingModel(t *testing.T) {
 	service.store.(*recordingStore).row.EmbeddingModel = ""
 	service.ForgetLogs(context.Background(), []string{"stale"})
 	require.Empty(t, pendingVectorDeletes(t, service))
+}
+
+// A retention longer than time.Duration can hold must not wrap into a cutoff
+// in the future, which would delete every vector, including today's.
+func TestWarpSweepSurvivesARetentionTooLongForADuration(t *testing.T) {
+	service, vectors := retentionTestService(t)
+	for _, days := range []int{106752, 200000, math.MaxInt} {
+		service.SetVectorRetention(func() int { return days })
+		swept, err := service.sweepExpiredVectors(context.Background(), time.Now().UTC())
+		require.NoError(t, err)
+		require.Zero(t, swept, "days=%d", days)
+		require.ElementsMatch(t, []string{"fresh", "stale"}, retentionTestIDs(vectors), "days=%d keeps both", days)
+	}
 }

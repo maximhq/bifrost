@@ -279,6 +279,8 @@
 		"allowRawOverrideHelp": "Lorsque cette option est activée, les requêtes individuelles peuvent renvoyer les octets bruts de requête/réponse du fournisseur à l’appelant via les en-têtes x-bf-send-back-raw-request et x-bf-send-back-raw-response. N’affecte pas le stockage des journaux ; la persistance des octets bruts dans les journaux est contrôlée par {{setting}}.",
 		"logRetentionDays": "Jours de rétention des journaux",
 		"logRetentionDaysHelp": "Nombre de jours de conservation des journaux, y compris les journaux des relais, dans la base de données. Minimum : 1 jour. Les journaux plus anciens seront automatiquement supprimés.",
+		"vectorRetentionDays": "Jours de rétention des vecteurs",
+		"vectorRetentionDaysHelp": "Jours de conservation des vecteurs issus des journaux. Laissez vide pour suivre la rétention des journaux ; elle ne peut pas être plus longue.",
 		"hideDeletedVks": "Ne pas afficher les clés virtuelles supprimées dans les filtres",
 		"hideDeletedVksHelp": "Lorsque cette option est activée, les clés virtuelles supprimées sont exclues des options de filtre Clés virtuelles dans Journaux, Tableau de bord, Journaux MCP et Journaux des relais.",
 		"loggingHeaders": "En-têtes de journalisation",

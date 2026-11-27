@@ -353,6 +353,7 @@
 	"validation": {
 		"modeIsRequired": "モードは必須です",
 		"valueMustBeAPositiveWholeNumber": "正の整数である必要があります",
+		"vectorRetentionDaysAtMost106751": "ベクトルの保持期間は最大 106751 日です。",
 		"mustBeAJsonObject": "JSON オブジェクトである必要があります",
 		"providerCannotBePatched": "provider はエントリを識別するため変更できません",
 		"customProviderNameIsRequired": "カスタムプロバイダー名は必須です",

@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { getRequestTypeLabel, RequestTypes } from "@/lib/constants/logs";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
+import { vectorRetentionDaysSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { TFunction } from "i18next";
@@ -31,7 +32,7 @@ const sameRequestTypes = (a: string[] | undefined, b: string[] | undefined): boo
 };
 
 export default function LoggingView() {
-	const { t } = useTranslation("config");
+	const { t, i18n } = useTranslation("config");
 	const { t: tObs } = useTranslation("observability");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig, isLoading: isConfigLoading, isError: isConfigError } = useGetCoreConfigQuery({ fromDB: true });
@@ -57,11 +58,20 @@ export default function LoggingView() {
 			localConfig.allow_per_request_content_storage_override !== config.allow_per_request_content_storage_override ||
 			localConfig.allow_per_request_raw_override !== config.allow_per_request_raw_override ||
 			localConfig.log_retention_days !== config.log_retention_days ||
+			(localConfig.vector_retention_days ?? 0) !== (config.vector_retention_days ?? 0) ||
 			localConfig.hide_deleted_virtual_keys_in_filters !== config.hide_deleted_virtual_keys_in_filters ||
 			JSON.stringify(localConfig.logging_headers || []) !== JSON.stringify(config.logging_headers || []) ||
 			!sameRequestTypes(localConfig.hidden_request_types, config.hidden_request_types)
 		);
 	}, [config, localConfig]);
+
+	// Shown under the field, and blocks the save: the server refuses a retention
+	// too long for it to hold. The message is resolved here, in the UI's
+	// language, so a language switch recomputes it.
+	const vectorRetentionError = useMemo(() => {
+		const result = vectorRetentionDaysSchema.safeParse(localConfig.vector_retention_days ?? 0);
+		return result.success ? null : (result.error.issues[0]?.message ?? null);
+	}, [localConfig.vector_retention_days, i18n.language]);
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean | number | string[]) => {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
@@ -88,6 +98,9 @@ export default function LoggingView() {
 			toast.error(t("logging.toastRetentionMin"));
 			return;
 		}
+		if (vectorRetentionError) {
+			return;
+		}
 
 		try {
 			await updateCoreConfig({ ...bifrostConfig, client_config: localConfig }).unwrap();
@@ -95,7 +108,7 @@ export default function LoggingView() {
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, localConfig, t, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, t, updateCoreConfig, vectorRetentionError]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0">
@@ -275,6 +288,35 @@ export default function LoggingView() {
 
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
+						<Label htmlFor="vector-retention-days" className="text-sm font-medium">
+							{t("logging.vectorRetentionDays")}
+						</Label>
+						<p className="text-muted-foreground text-sm">{t("logging.vectorRetentionDaysHelp")}</p>
+						{vectorRetentionError && (
+							<p className="text-destructive text-xs" role="alert" data-testid="workspace-vector-retention-days-error">
+								{vectorRetentionError}
+							</p>
+						)}
+					</div>
+					<Input
+						id="vector-retention-days"
+						data-testid="workspace-vector-retention-days-input"
+						type="number"
+						min="1"
+						placeholder={String(localConfig.log_retention_days)}
+						aria-invalid={vectorRetentionError ? true : undefined}
+						value={localConfig.vector_retention_days ? localConfig.vector_retention_days : ""}
+						onChange={(e) => {
+							// The whole value, not a leading integer: "1.5" is not a day count.
+							const value = Number(e.target.value);
+							handleConfigChange("vector_retention_days", Number.isSafeInteger(value) && value > 0 ? value : 0);
+						}}
+						className="w-24"
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
 						<label htmlFor="hide-deleted-virtual-keys-in-filters" className="text-sm font-medium">
 							{t("logging.hideDeletedVks")}
 						</label>
@@ -308,7 +350,7 @@ export default function LoggingView() {
 			</div>
 
 			<div className="bg-card sticky bottom-0 flex justify-end py-2">
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess || !!vectorRetentionError}>
 					{isLoading ? t("saving") : t("saveChanges")}
 				</Button>
 			</div>

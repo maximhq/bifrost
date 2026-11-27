@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
@@ -14,8 +15,8 @@ import (
 // deleted request keeps turning up in semantic search and in topic runs
 // with nothing behind its id. Two things delete logs: a person, through the
 // Logs API, which the logging plugin announces to ForgetLogs; and retention,
-// which is age, so the hourly upkeep sweeps vectors older than the logs'
-// retention on its own clock. The assignment and pool rows go with the log
+// which is age, so the hourly upkeep sweeps vectors older than the vector
+// retention (never longer than the logs') on its own clock. The assignment and pool rows go with the log
 // inside the log store itself (see deleteWarpTopicRowsForLogs).
 //
 // The vector store is not in the log store's transaction, so a vector delete
@@ -25,12 +26,13 @@ import (
 // keeps the deleted request's metadata - who sent it, its team, its cost - for
 // as long as the deployment runs.
 
-// SetLogRetention tells the service how long the deployment keeps logs, as
-// a function so a retention changed at runtime is read at each sweep. Zero
-// or no function means no sweep.
-func (s *Service) SetLogRetention(days func() int) {
+// SetVectorRetention tells the service how long the deployment keeps vectors,
+// as a function so a retention changed at runtime is read at each sweep. The
+// server passes the effective vector retention, which never exceeds the logs'.
+// Zero or no function means no sweep.
+func (s *Service) SetVectorRetention(days func() int) {
 	s.mu.Lock()
-	s.logRetention = days
+	s.vectorRetention = days
 	s.mu.Unlock()
 }
 
@@ -155,11 +157,20 @@ func (s *Service) retryVectorDeletes(ctx context.Context) (int, error) {
 	return len(done), nil
 }
 
-// sweepExpiredVectors deletes Warp's vectors for logs older than the logs'
+// retentionCutoff is now less a retention of days. A retention too long for a
+// time.Duration would wrap into a cutoff after now and sweep everything, so it
+// is held at the longest that fits, which keeps every vector a real
+// deployment has. Validation bounds vector_retention_days the same way; this
+// also covers a long log retention, which the effective retention follows.
+func retentionCutoff(now time.Time, days int) time.Time {
+	return now.Add(-time.Duration(min(days, configstore.MaxVectorRetentionDays)) * 24 * time.Hour)
+}
+
+// sweepExpiredVectors deletes Warp's vectors for logs older than the vector
 // retention, and reports how many went.
 func (s *Service) sweepExpiredVectors(ctx context.Context, now time.Time) (int, error) {
 	s.mu.RLock()
-	vectors, retention := s.vectorStore, s.logRetention
+	vectors, retention := s.vectorStore, s.vectorRetention
 	s.mu.RUnlock()
 	if vectors == nil || retention == nil {
 		return 0, nil
@@ -178,7 +189,7 @@ func (s *Service) sweepExpiredVectors(ctx context.Context, now time.Time) (int, 
 	if err != nil || view.EmbeddingModel == "" {
 		return 0, err
 	}
-	cutoff := now.Add(-time.Duration(days) * 24 * time.Hour)
+	cutoff := retentionCutoff(now, days)
 	deleted, err := vectors.DeleteAll(ctx, view.LogVectorStoreNamespace, []vectorstore.Query{
 		{Field: "warp_log", Operator: vectorstore.QueryOperatorEqual, Value: true},
 		{Field: "timestamp", Operator: vectorstore.QueryOperatorLessThan, Value: cutoff.Unix()},

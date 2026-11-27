@@ -353,6 +353,7 @@
 	"validation": {
 		"modeIsRequired": "Modus ist erforderlich",
 		"valueMustBeAPositiveWholeNumber": "Muss eine positive ganze Zahl sein",
+		"vectorRetentionDaysAtMost106751": "Die Vektoraufbewahrung darf höchstens 106751 Tage betragen.",
 		"mustBeAJsonObject": "Muss ein JSON-Objekt sein",
 		"providerCannotBePatched": "provider kann nicht gepatcht werden; er identifiziert den Eintrag",
 		"customProviderNameIsRequired": "Name des benutzerdefinierten Anbieters ist erforderlich",
