@@ -298,13 +298,11 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
 		}
-		detailsSent := false
 		if message.OpenAIChatAssistantMessage != nil {
 			reasoning := message.OpenAIChatAssistantMessage.Reasoning
 			if reasoning == nil {
 				reasoning = message.OpenAIChatAssistantMessage.ReasoningAlias
 			}
-			detailsSent = message.OpenAIChatAssistantMessage.ReasoningDetails != nil
 			bifrostMessages[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
 				Refusal:          message.OpenAIChatAssistantMessage.Refusal,
 				Reasoning:        reasoning,
@@ -313,7 +311,12 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
-		bifrostMessages[i].MoveThinkingBlocksToReasoningDetails(detailsSent)
+		bifrostMessages[i].MoveThinkingBlocksToReasoningDetails(func() []schemas.ChatReasoningDetails {
+			if message.OpenAIChatAssistantMessage == nil {
+				return nil
+			}
+			return message.OpenAIChatAssistantMessage.ReasoningDetails
+		})
 		bifrostMessages[i].AttachMessageCacheControl(message.CacheControl)
 		// Callers replay assistant reasoning under several keys and as thinking blocks.
 		// Normalize them onto Reasoning: DeepSeek in particular gates thinking on it.

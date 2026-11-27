@@ -1298,8 +1298,19 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
-	sentDetails := gjson.GetBytes(data, "reasoning_details")
-	cm.MoveThinkingBlocksToReasoningDetails(sentDetails.Exists() && sentDetails.Type != gjson.Null)
+	// The client's reasoning_details are reread raw: assistantMsg also holds the
+	// entry synthesized from reasoning text, which the client never sent.
+	cm.MoveThinkingBlocksToReasoningDetails(func() []ChatReasoningDetails {
+		raw := gjson.GetBytes(data, "reasoning_details")
+		if !raw.IsArray() {
+			return nil
+		}
+		var sent []ChatReasoningDetails
+		if err := Unmarshal([]byte(raw.Raw), &sent); err != nil {
+			return nil
+		}
+		return sent
+	})
 	cm.AttachMessageCacheControl(base.CacheControl)
 	return nil
 }
@@ -1347,16 +1358,22 @@ func (cm *ChatMessage) AttachMessageCacheControl(marker *CacheControl) {
 
 // MoveThinkingBlocksToReasoningDetails moves an assistant message's thinking and
 // redacted_thinking content blocks onto ReasoningDetails, which every provider
-// converter replays. When the client sent reasoning_details (detailsSent), those are
-// kept as sent and the blocks are dropped; otherwise the blocks replace any details
-// derived from reasoning text.
-func (cm *ChatMessage) MoveThinkingBlocksToReasoningDetails(detailsSent bool) {
+// converter replays. sentDetails returns the reasoning_details the client sent and
+// runs only when a thinking block is found. If any of them carries a payload they are
+// kept and the blocks are dropped; otherwise the blocks replace any details derived
+// from reasoning text.
+func (cm *ChatMessage) MoveThinkingBlocksToReasoningDetails(sentDetails func() []ChatReasoningDetails) {
 	if cm.Role != ChatMessageRoleAssistant || cm.Content == nil {
 		return
 	}
+	blocks := cm.Content.ContentBlocks
+	first := slices.IndexFunc(blocks, func(block ChatContentBlock) bool { return block.reasoning != nil })
+	if first < 0 {
+		return
+	}
 	var details []ChatReasoningDetails
-	kept := make([]ChatContentBlock, 0, len(cm.Content.ContentBlocks))
-	for _, block := range cm.Content.ContentBlocks {
+	kept := slices.Clone(blocks[:first])
+	for _, block := range blocks[first:] {
 		if block.reasoning == nil {
 			kept = append(kept, block)
 			continue
@@ -1365,15 +1382,12 @@ func (cm *ChatMessage) MoveThinkingBlocksToReasoningDetails(detailsSent bool) {
 		detail.Index = len(details)
 		details = append(details, detail)
 	}
-	if len(details) == 0 {
-		return
-	}
 	if len(kept) == 0 {
 		cm.Content = nil
 	} else {
 		cm.Content = &ChatMessageContent{ContentBlocks: kept}
 	}
-	if detailsSent {
+	if len(pruneEmptyReasoningDetails(sentDetails())) > 0 {
 		return
 	}
 	if cm.ChatAssistantMessage == nil {
@@ -1447,7 +1461,8 @@ const (
 	ChatContentBlockTypeFile       ChatContentBlockType = "file"
 	ChatContentBlockTypeRefusal    ChatContentBlockType = "refusal"
 
-	// Inbound only: MoveThinkingBlocksToReasoningDetails lifts these off assistant messages.
+	// JSON ingress only: MoveThinkingBlocksToReasoningDetails lifts these off assistant
+	// messages. A Go caller cannot build one; set ChatAssistantMessage.ReasoningDetails.
 	ChatContentBlockTypeThinking         ChatContentBlockType = "thinking"
 	ChatContentBlockTypeRedactedThinking ChatContentBlockType = "redacted_thinking"
 )

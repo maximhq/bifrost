@@ -2286,6 +2286,15 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, 
 				}
 				continue
 			}
+			if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted {
+				// Claude's redacted thinking must go back unaltered, as the blob it arrived in.
+				if schemas.IsAnthropicModel(model) && detail.Data != nil && isConverseBlob(*detail.Data) {
+					contentBlocks = append(contentBlocks, BedrockContentBlock{
+						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
+					})
+				}
+				continue
+			}
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
 				// Claude verifies the signature on every thinking block it is
 				// handed back and rejects an unsigned one in every serialisation

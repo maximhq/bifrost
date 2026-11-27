@@ -10085,7 +10085,7 @@ func TestChatThinkingContentBlockReplaysAsSignedReasoning(t *testing.T) {
 	var input []schemas.ChatMessage
 	require.NoError(t, schemas.Unmarshal([]byte(`[
 		{"role":"user","content":"compute"},
-		{"role":"assistant","content":[{"type":"thinking","thinking":"I multiply.","signature":"SIG1"}],
+		{"role":"assistant","content":[{"type":"thinking","thinking":"I multiply.","signature":"SIG1"},{"type":"redacted_thinking","data":"RU5DMQ=="}],
 		 "tool_calls":[{"id":"tooluse_1","type":"function","function":{"name":"submit","arguments":"{\"value\":1}"}}]},
 		{"role":"tool","tool_call_id":"tooluse_1","content":"accepted"}]`), &input))
 
@@ -10105,5 +10105,10 @@ func TestChatThinkingContentBlockReplaysAsSignedReasoning(t *testing.T) {
 	require.NotNil(t, reasoning.ReasoningText)
 	assert.Equal(t, "I multiply.", *reasoning.ReasoningText.Text)
 	assert.Equal(t, "SIG1", *reasoning.ReasoningText.Signature)
+	require.Greater(t, len(assistant.Content), 2)
+	redacted := assistant.Content[1].ReasoningContent
+	require.NotNil(t, redacted, "redacted thinking must replay as the second block")
+	require.NotNil(t, redacted.RedactedContent)
+	assert.Equal(t, "RU5DMQ==", *redacted.RedactedContent)
 	assert.NotNil(t, assistant.Content[len(assistant.Content)-1].ToolUse)
 }

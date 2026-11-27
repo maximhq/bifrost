@@ -655,20 +655,27 @@ func TestChatMessageThinkingContentBlocksBecomeReasoningDetails(t *testing.T) {
 		}
 	})
 
-	t.Run("an explicit empty reasoning_details array wins over thinking blocks", func(t *testing.T) {
-		var msg ChatMessage
-		err := Unmarshal([]byte(`{"role":"assistant","reasoning_details":[],
-			"content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"hi"}]}`), &msg)
-		if err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) != 0 {
-			t.Fatalf("the empty array should be kept as sent, got %+v", msg.ChatAssistantMessage.ReasoningDetails)
-		}
-		if len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].Type != ChatContentBlockTypeText {
-			t.Fatalf("thinking block should still leave content, got %+v", msg.Content)
-		}
-	})
+	for name, extra := range map[string]string{
+		"an empty reasoning_details list":                        `"reasoning_details":[]`,
+		"reasoning_details holding only empty entries":           `"reasoning_details":[{"type":"reasoning.text","text":""}]`,
+		"an empty list beside reasoning text to synthesize from": `"reasoning_details":[],"reasoning_content":"t"`,
+	} {
+		t.Run(name+" counts as not sent", func(t *testing.T) {
+			var msg ChatMessage
+			err := Unmarshal([]byte(`{"role":"assistant",`+extra+`,
+				"content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"hi"}]}`), &msg)
+			if err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			details := msg.ChatAssistantMessage.ReasoningDetails
+			if len(details) != 1 || details[0].Signature == nil || *details[0].Signature != "s" {
+				t.Fatalf("the signed thinking block should replay, got %+v", details)
+			}
+			if len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].Type != ChatContentBlockTypeText {
+				t.Fatalf("thinking block should still leave content, got %+v", msg.Content)
+			}
+		})
+	}
 
 	t.Run("signed thinking blocks win over details derived from reasoning_content", func(t *testing.T) {
 		var msg ChatMessage

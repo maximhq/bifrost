@@ -3896,17 +3896,22 @@ func TestConvertOpenAIMessagesToBifrostMessages_NullReasoningDetailsKeepThinking
 	require.Equal(t, "s", *converted[0].ChatAssistantMessage.ReasoningDetails[0].Signature)
 }
 
-func TestConvertOpenAIMessagesToBifrostMessages_EmptyReasoningDetailsWinOverThinkingBlocks(t *testing.T) {
-	var msg OpenAIMessage
-	require.NoError(t, sonic.Unmarshal([]byte(`{"role":"assistant","reasoning_details":[],
-		"content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"hi"}]}`), &msg))
+func TestConvertOpenAIMessagesToBifrostMessages_EmptyReasoningDetailsKeepThinkingBlocks(t *testing.T) {
+	for name, sent := range map[string]string{"empty list": `[]`, "only empty entries": `[{"type":"reasoning.text","text":""}]`} {
+		t.Run(name, func(t *testing.T) {
+			var msg OpenAIMessage
+			require.NoError(t, sonic.Unmarshal([]byte(`{"role":"assistant","reasoning_details":`+sent+`,
+				"content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"hi"}]}`), &msg))
 
-	converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
-	require.Len(t, converted, 1)
-	require.NotNil(t, converted[0].ChatAssistantMessage)
-	require.Empty(t, converted[0].ChatAssistantMessage.ReasoningDetails, "the empty array should be kept as sent")
-	require.Len(t, converted[0].Content.ContentBlocks, 1)
-	require.Equal(t, schemas.ChatContentBlockTypeText, converted[0].Content.ContentBlocks[0].Type)
+			converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
+			require.Len(t, converted, 1)
+			require.NotNil(t, converted[0].ChatAssistantMessage)
+			require.Len(t, converted[0].ChatAssistantMessage.ReasoningDetails, 1)
+			require.Equal(t, "s", *converted[0].ChatAssistantMessage.ReasoningDetails[0].Signature)
+			require.Len(t, converted[0].Content.ContentBlocks, 1)
+			require.Equal(t, schemas.ChatContentBlockTypeText, converted[0].Content.ContentBlocks[0].Type)
+		})
+	}
 }
 
 func zeroCostUpstream(t *testing.T) *httptest.Server {
