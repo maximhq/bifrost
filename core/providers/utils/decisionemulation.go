@@ -324,6 +324,10 @@ func BuildDecisionSchema(questions []schemas.DecisionQuestion, names []string) (
 				"required":             []string{"value", "confidence", "probabilities"},
 				"additionalProperties": false,
 			}
+		case schemas.DecisionTypeLocate:
+			// Span offsets must come from the model that read the exact input;
+			// an emulating chat model cannot be trusted to count characters.
+			return nil, fmt.Errorf("question %q is a locate question, which only Perplexity's v1.3 decider models serve (perplexity/pplx-decider-v1.3, perplexity/pplx-decider-flash-v1.3, or the -latest aliases); route the request there", name)
 		default:
 			return nil, fmt.Errorf("question %q has unsupported type %q", name, q.Type)
 		}

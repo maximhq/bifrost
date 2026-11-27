@@ -6,6 +6,8 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
+
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // Typesafe question types accepted by POST /v1/systemone.
@@ -15,6 +17,11 @@ const (
 	TypesafeQuestionTypeScore  = "score"
 	TypesafeQuestionTypeBox    = "box"
 )
+
+// TypesafeQuestionTypeLocate is the native locate question, which Typesafe
+// itself does not serve: only systemone-shaped endpoints that opt in (Perplexity's
+// v1.3 deciders) accept it, so it is kept apart from the types above.
+const TypesafeQuestionTypeLocate = "locate"
 
 // TypesafeQuestion is one named question in a systemone request.
 type TypesafeQuestion struct {
@@ -111,7 +118,7 @@ func (r *TypesafeDecisionRequest) GetExtraParams() map[string]interface{} {
 }
 
 // TypesafeAnswer is one answer in a systemone response. Exactly one of Noul,
-// Choice, Score, or Box is set, matching Type.
+// Choice, Score, Box, or Spans is set, matching Type.
 type TypesafeAnswer struct {
 	Type          string             `json:"type"`
 	Noul          *float64           `json:"noul,omitempty"`
@@ -123,6 +130,9 @@ type TypesafeAnswer struct {
 	Legend     map[string]any `json:"legend,omitempty"`
 	Confidence *float64       `json:"confidence,omitempty"`
 	Box        *TypesafeBox   `json:"box,omitempty"`
+	// Spans is a locate answer's matches; a pointer so "spans": [] (no match)
+	// stays distinct from an answer that carries no spans key at all.
+	Spans *[]TypesafeSpan `json:"spans,omitempty"`
 
 	// Laya-specific fields
 	AnswerConfidence    *float64        `json:"answer_confidence,omitempty"`
@@ -140,6 +150,11 @@ type TypesafeBox struct {
 	Left   float64 `json:"left"`
 	Right  float64 `json:"right"`
 }
+
+// TypesafeSpan is one match of a locate answer, in the normalized span shape:
+// text, start, end (Unicode character offsets into the state, end exclusive),
+// and score, passed through untouched.
+type TypesafeSpan = schemas.DecisionSpan
 
 // TypesafeUsage reports token consumption. Typesafe bills input tokens only.
 type TypesafeUsage struct {

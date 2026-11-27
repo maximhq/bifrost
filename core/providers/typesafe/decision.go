@@ -33,6 +33,21 @@ var typesafeQuestionTypes = map[schemas.DecisionType]string{
 	schemas.DecisionTypeBox:       TypesafeQuestionTypeBox,
 }
 
+// locateUnsupportedMessage explains why a locate question is refused by an
+// endpoint that does not serve it.
+const locateUnsupportedMessage = "question %q is a locate question, which only Perplexity's v1.3 decider models serve " +
+	"(perplexity/pplx-decider-v1.3, perplexity/pplx-decider-flash-v1.3, or the -latest aliases); route the request there"
+
+// typesafeAnswerType is the native answer type expected for a question of the
+// given normalized type: the question's own native type, or locate for a locate
+// question (which only endpoints that opt in are ever sent).
+func typesafeAnswerType(questionType schemas.DecisionType) string {
+	if questionType == schemas.DecisionTypeLocate {
+		return TypesafeQuestionTypeLocate
+	}
+	return typesafeQuestionTypes[questionType]
+}
+
 // validStructuredValue reports whether a state or instructions value
 // serializes to one of the documented JSON shapes: string, object, or array.
 // Marshaling the value answers that exactly: pointers dereference, typed
@@ -68,6 +83,18 @@ func validStructuredValue(value interface{}) bool {
 // is never stricter than the official SDKs' types: null state, null or absent
 // instructions, and null descriptions are forwarded for the endpoint to judge.
 func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error) {
+	return toTypesafeDecisionRequest(request, false)
+}
+
+// ToTypesafeDecisionRequestWithLocate is ToTypesafeDecisionRequest for a
+// systemone-shaped endpoint that also serves locate questions (Perplexity's
+// v1.3 deciders). A locate question is sent as {"type":"locate","instructions":...};
+// the caller enforces the endpoint's other locate rules (text-only state).
+func ToTypesafeDecisionRequestWithLocate(request *schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error) {
+	return toTypesafeDecisionRequest(request, true)
+}
+
+func toTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest, allowLocate bool) (*TypesafeDecisionRequest, error) {
 	if len(request.Questions) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("decision request requires at least one question")
 	}
@@ -89,7 +116,7 @@ func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*Typesa
 
 	questions := make(map[string]TypesafeQuestion, len(request.Questions))
 	for i, question := range request.Questions {
-		native, err := toTypesafeQuestion(names[i], question)
+		native, err := toTypesafeQuestion(names[i], question, allowLocate)
 		if err != nil {
 			return nil, err
 		}
@@ -200,7 +227,10 @@ func typesafeState(input schemas.DecisionInput) interface{} {
 
 // toTypesafeQuestion converts one normalized question to the native shape and
 // validates it.
-func toTypesafeQuestion(name string, question schemas.DecisionQuestion) (*TypesafeQuestion, error) {
+func toTypesafeQuestion(name string, question schemas.DecisionQuestion, allowLocate bool) (*TypesafeQuestion, error) {
+	if question.Type == schemas.DecisionTypeLocate {
+		return toTypesafeLocateQuestion(name, question, allowLocate)
+	}
 	nativeType, ok := typesafeQuestionTypes[question.Type]
 	if !ok {
 		return nil, providerUtils.InvalidRequestErrorf("question %q has unsupported type %q; expected predicate, choice, score, or box", name, question.Type)
@@ -270,6 +300,26 @@ func toTypesafeQuestion(name string, question schemas.DecisionQuestion) (*Typesa
 		native.Criteria = criteria
 	}
 
+	return &native, nil
+}
+
+// toTypesafeLocateQuestion converts a locate question: instructions only, sent
+// unchanged. Criteria, choices, and levels have no meaning for a locate
+// question, so a request carrying any is rejected rather than half-honored.
+func toTypesafeLocateQuestion(name string, question schemas.DecisionQuestion, allowLocate bool) (*TypesafeQuestion, error) {
+	if !allowLocate {
+		return nil, providerUtils.InvalidRequestErrorf(locateUnsupportedMessage, name)
+	}
+	if question.Criteria != nil || question.Choices != nil || question.Levels != nil {
+		return nil, providerUtils.InvalidRequestErrorf("question %q is a locate question, which takes only instructions (no criteria, choices, or levels)", name)
+	}
+	native := TypesafeQuestion{Type: TypesafeQuestionTypeLocate}
+	if instructions := question.Instructions.Value(); !isJSONNull(instructions) {
+		if !validStructuredValue(instructions) {
+			return nil, providerUtils.InvalidRequestErrorf("question %q instructions must be a string, object, or array", name)
+		}
+		native.Instructions = instructions
+	}
 	return &native, nil
 }
 
@@ -426,7 +476,7 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 		if !ok {
 			return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("typesafe returned no answer for question %q", name), nil)
 		}
-		if expected := typesafeQuestionTypes[question.Type]; native.Type != expected {
+		if expected := typesafeAnswerType(question.Type); native.Type != expected {
 			return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("typesafe answered question %q as %q; expected %q", name, native.Type, expected), nil)
 		}
 
@@ -467,6 +517,13 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 				return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("typesafe box answer for question %q carries no box", name), nil)
 			}
 			answer.Box = &schemas.DecisionBox{Top: native.Box.Top, Bottom: native.Box.Bottom, Left: native.Box.Left, Right: native.Box.Right}
+		case schemas.DecisionTypeLocate:
+			if native.Spans == nil {
+				return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("typesafe locate answer for question %q carries no spans", name), nil)
+			}
+			// Passed through as received: the offsets index the exact input sent.
+			spans := append(make([]schemas.DecisionSpan, 0, len(*native.Spans)), (*native.Spans)...)
+			answer.Spans = &spans
 		}
 		answers = append(answers, answer)
 	}
@@ -678,8 +735,12 @@ func ToBifrostDecisionQuestions(questions map[string]TypesafeQuestion) ([]schema
 		case TypesafeQuestionTypeBox:
 			// Box takes no criteria; Typesafe ignores any sent, so they are dropped.
 			converted.Type = schemas.DecisionTypeBox
+		case TypesafeQuestionTypeLocate:
+			// Locate takes no criteria; Perplexity ignores any sent, so they are
+			// dropped. Whether the chosen provider serves locate is its call.
+			converted.Type = schemas.DecisionTypeLocate
 		default:
-			return nil, providerUtils.InvalidRequestErrorf("question %q has unsupported kind %q; expected noul, choice, score, or box", name, question.Type)
+			return nil, providerUtils.InvalidRequestErrorf("question %q has unsupported kind %q; expected noul, choice, score, box, or locate", name, question.Type)
 		}
 		normalized = append(normalized, converted)
 	}
@@ -835,6 +896,12 @@ func ToTypesafeAnswers(answers []schemas.DecisionAnswer) map[string]TypesafeAnsw
 			converted.Type = TypesafeQuestionTypeBox
 			if answer.Box != nil {
 				converted.Box = &TypesafeBox{Top: answer.Box.Top, Bottom: answer.Box.Bottom, Left: answer.Box.Left, Right: answer.Box.Right}
+			}
+		case schemas.DecisionTypeLocate:
+			converted.Type = TypesafeQuestionTypeLocate
+			if answer.Spans != nil {
+				spans := append(make([]TypesafeSpan, 0, len(*answer.Spans)), (*answer.Spans)...)
+				converted.Spans = &spans
 			}
 		default:
 			converted.Type = string(answer.Type)
