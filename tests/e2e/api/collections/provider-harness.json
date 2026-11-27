@@ -38990,7 +38990,7 @@
     },
     {
       "name": "13. OpenRouter Prompt Caching (cache_control)",
-      "description": "Sends OpenAI-format chat requests through the OpenRouter provider with Anthropic-style cache_control breakpoints on content blocks and tools. OpenRouter forwards cache_control to Claude/Gemini (explicit caching) and harmlessly ignores it for implicit-caching models (OpenAI/DeepSeek) \u2014 these must NOT 400. Bifrost preserves cache_control only when the provider is OpenRouter (stripped for native OpenAI).",
+      "description": "Sends OpenAI-format chat requests through the OpenRouter provider with Anthropic-style cache_control breakpoints on content blocks and tools. OpenRouter forwards cache_control to Claude/Gemini (explicit caching) and harmlessly ignores it for implicit-caching models (OpenAI/DeepSeek) — these must NOT 400. Bifrost preserves cache_control only when the provider is OpenRouter (stripped for native OpenAI).",
       "item": [
         {
           "name": "OpenRouter Anthropic Claude: cache_control on system block",
@@ -45010,9 +45010,9 @@
                   "});",
                   "",
                   "// The row asks for raw_request capture, so an upstream rejection would carry the",
-              "// attempted payload here. Its absence is therefore evidence of a local refusal",
-              "// rather than an artefact of capture being switched off.",
-              "pm.test('nothing was sent upstream (no raw_request recorded for a pre-egress refusal)', function () {",
+                  "// attempted payload here. Its absence is therefore evidence of a local refusal",
+                  "// rather than an artefact of capture being switched off.",
+                  "pm.test('nothing was sent upstream (no raw_request recorded for a pre-egress refusal)', function () {",
                   "  var rr = (body.extra_fields || {}).raw_request;",
                   "  var shown = rr === undefined ? 'undefined' : JSON.stringify(rr).slice(0, 300);",
                   "  pm.expect(!rr, 'raw_request present, so the request reached DeepSeek: ' + shown).to.be.true;",
@@ -184743,8 +184743,7 @@
               ]
             }
           }
-        }
-,
+        },
         {
           "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages per-message effort on a text-bearing system item stays native - per-message-effort",
           "event": [
@@ -184896,8 +184895,7 @@
               ]
             }
           }
-        }
-,
+        },
         {
           "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort on the first member of a system group stays native - per-message-effort",
           "event": [
@@ -185048,8 +185046,7 @@
               ]
             }
           }
-        }
-,
+        },
         {
           "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort without a client anthropic-beta header (gateway injects the beta) - per-message-effort",
           "event": [
@@ -190039,26 +190036,30 @@
         {
           "name": "openai inference-auth-setup status exposes independent enforcement - PR #5767",
           "request": {
-            "auth": { "type": "noauth" },
+            "auth": {
+              "type": "noauth"
+            },
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/session/is-auth-enabled"
           },
-          "event": [{
-            "listen": "test",
-            "script": {
-              "type": "text/javascript",
-              "exec": [
-                "pm.test('inference-auth-setup reports independent auth states', function () {",
-                "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                "  var body = pm.response.json();",
-                "  pm.expect(body.is_auth_enabled).to.be.a('boolean');",
-                "  pm.expect(body.has_valid_token).to.be.a('boolean');",
-                "  pm.expect(body.inference_auth_enforced).to.be.a('boolean');",
-                "});"
-              ]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('inference-auth-setup reports independent auth states', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.is_auth_enabled).to.be.a('boolean');",
+                  "  pm.expect(body.has_valid_token).to.be.a('boolean');",
+                  "  pm.expect(body.inference_auth_enforced).to.be.a('boolean');",
+                  "});"
+                ]
+              }
             }
-          }]
+          ]
         }
       ]
     },
@@ -294309,8 +294310,7 @@
           }
         }
       ]
-    }
-,
+    },
     {
       "name": "285. Relays: access, governance and pricing against a local upstream (relays-e2e) [SERIAL]",
       "description": "End-to-end coverage for Relays (/relay/{name}/{path}), raw HTTP relays to non-LLM APIs. Every relay in the shared profile (tests/integrations/python/config.json, harness-relay-*) points at the local upstream fixture tests/e2e/api/runners/relay-upstream-fixture.mjs on 127.0.0.1:8783, which make run-provider-harness-test starts before the gateway. No third-party API is called, so the folder costs nothing to run. To run the fixture elsewhere, change the harness-relay-* base_url entries in that profile and pass the same address as --env-var relayUpstreamUrl=...; the variable alone only moves where the scripts read hit counts, not where the gateway sends traffic.\n\nEach relay request mints its own id in its pre-request script and sends it as x-request-id, which the Relay Logs row records as request_id (read back through GET /api/relay-logs?request_id=), and as ?tag=, which the fixture counts, so a refused call can be proven never to have reached the upstream.\n\nFixtures: harness-relay-pricing (bearer credential, $0.001 fee + usage.credits x $0.008, route overrides, header matchers on x-tier, a stream, a disabled route), harness-relay-alpha (header credential X-Upstream-Key, $0.002 fee), harness-relay-beta (query credential api_key, skip_route_check, $0.003 fee). Keys: vk-harness-relay-none (no relay access), vk-harness-relay-all (granted all three harness relays), vk-harness-relay-alpha (granted harness-relay-alpha only), vk-harness-relay-budget (granted harness-relay-pricing, one daily budget of $0.05). The rate-limit rows create and delete their own key, since a config-declared request window cannot be reset between runs; the budget rows reset the config key's budget usage first.\n\n[SERIAL]: the rows run in order (budget and rate-limit counters, log polling) and name no provider, so no provider fork would select them; the serial pass runs them alone against the gateway. Run with FEATURE=relays-e2e.",
@@ -307543,8 +307543,7 @@
           }
         }
       ]
-    }
-  ,
+    },
     {
       "name": "308. OpenAI zero-token-usage survives completion wire serialization (#8749 / PR #8763)",
       "description": "Local regression for #8749 using a Custom OpenAI-compatible provider. Eight zero-usage cases cover Chat/Text on /v1 and /openai/v1, both unary and SSE. Representative controls pin total-only usage, nonzero counts and absent usage; Embedding zero-count omission is a known follow-up and is not pinned here. The full missing/null/partial-zero matrix lives in Go tests. Async Chat/Text cases poll the persisted result; reasoning.mode cases cover Chat-to-Responses conversion on native and SDK routes. One folder-level script checks every response; no paid provider calls.\n\nStart the fixture in a fresh directory: node tests/e2e/api/runners/run-zero-token-usage-fixture.mjs /tmp/bifrost-zero-token-usage. In another terminal: make dev PORT=3022 APP_DIR=/tmp/bifrost-zero-token-usage. Verify port 3022 is free beforehand and wait for /health. Log in at POST /api/session/login with username usage-fixture and password fixture-only-password; export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\" for the management preflight. Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"zero-token-usage\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3022. Stop the gateway and fixture afterward. PREVIEW excludes these fixture cases from paid sweeps.",
@@ -338626,8 +338625,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                                    "// Anthropic-shaped SSE carries no raw_request echo, so this case cannot see the outgoing body. It pins that the stream is accepted, which needs the derived beta (the field 400s without it). Forwarding on the streaming builder is pinned by the /v1/chat/completions stream case below (raw_request on the final frame) and by the native-stream route in TestThinkingBlockBindingRequestBuilders.",
-"var txt = pm.response.text() || '';",
+                  "// Anthropic-shaped SSE carries no raw_request echo, so this case cannot see the outgoing body. It pins that the stream is accepted, which needs the derived beta (the field 400s without it). Forwarding on the streaming builder is pinned by the /v1/chat/completions stream case below (raw_request on the final frame) and by the native-stream route in TestThinkingBlockBindingRequestBuilders.",
+                  "var txt = pm.response.text() || '';",
                   "pm.test('anthropic/claude-sonnet-5-5 /anthropic/v1/messages stream thinking.block_binding completes - thinking block binding: no block_binding rejection', function () {",
                   "  pm.expect(txt, 'block_binding reached a host without its beta, or without the beta header: ' + txt.slice(0, 400)).to.not.match(/block_binding|thinking-binding-controls|Extra inputs are not permitted/);",
                   "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
@@ -345061,8 +345060,8 @@
               "    var e; try { e = JSON.parse(line.slice(5)); } catch (err) { if (line.slice(5).trim() !== '[DONE]') { errors.push(line); } return; }",
               "    if (e.type === 'error' || e.error) { errors.push(e); }",
               "    if (e.type === 'message_start' && e.message && typeof e.message === 'object') { started = true; }",
-                  "    if (e.type === 'content_block_start' && e.content_block && (e.content_block.type === 'tool_use' || (e.content_block.type === 'text' && e.content_block.text))) { hasOutput = true; }",
-                  "    if (e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta' && e.delta.text) { hasOutput = true; }",
+              "    if (e.type === 'content_block_start' && e.content_block && (e.content_block.type === 'tool_use' || (e.content_block.type === 'text' && e.content_block.text))) { hasOutput = true; }",
+              "    if (e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta' && e.delta.text) { hasOutput = true; }",
               "    if (e.type === 'message_delta' && started && !stopped && e.delta && e.delta.stop_reason) { stopReason = e.delta.stop_reason; }",
               "    var part = e.type === 'message_start' ? ((e.message || {}).usage || {}) : (e.type === 'message_delta' ? (e.usage || {}) : null);",
               "    if (part) { Object.keys(part).forEach(function (k) { if (typeof part[k] === 'number' && (u[k] === undefined || part[k] > u[k])) { u[k] = part[k]; } }); }",
@@ -345074,7 +345073,7 @@
               "    pm.expect(stopReason, 'no closing message_delta with a stop_reason before message_stop: ' + txt.slice(0, 1500)).to.be.a('string');",
               "    pm.expect(stopReason, 'the model refused the turn: ' + txt.slice(0, 1500)).to.not.eql('refusal');",
               "    pm.expect(stopped, 'no message_stop: ' + txt.slice(0, 1500)).to.eql(true);",
-                  "    pm.expect(hasOutput, 'the stream carried no text and no tool call (thinking only): ' + txt.slice(0, 1500)).to.eql(true);",
+              "    pm.expect(hasOutput, 'the stream carried no text and no tool call (thinking only): ' + txt.slice(0, 1500)).to.eql(true);",
               "  });",
               "  read = u.cache_read_input_tokens || 0; write = u.cache_creation_input_tokens || 0; prompt = read + write + (u.input_tokens || 0);",
               "} else {",
@@ -345098,10 +345097,10 @@
               "  } else if (route === 'responses') {",
               "    var out = Array.isArray(body.output) ? body.output : [];",
               "    var parts = [];",
-                  "    out.forEach(function (o) { if (o && o.type === 'message' && Array.isArray(o.content)) { parts = parts.concat(o.content); } });",
-                  "    var refused = parts.some(function (p) { return p && p.type === 'refusal'; });",
-                  "    var hasText = parts.some(function (p) { return p && p.type === 'output_text' && typeof p.text === 'string' && p.text.length > 0; });",
-                  "    ok = body.status === 'completed' && !refused && (hasText || out.some(function (o) { return o && o.type === 'function_call'; }));",
+              "    out.forEach(function (o) { if (o && o.type === 'message' && Array.isArray(o.content)) { parts = parts.concat(o.content); } });",
+              "    var refused = parts.some(function (p) { return p && p.type === 'refusal'; });",
+              "    var hasText = parts.some(function (p) { return p && p.type === 'output_text' && typeof p.text === 'string' && p.text.length > 0; });",
+              "    ok = body.status === 'completed' && !refused && (hasText || out.some(function (o) { return o && o.type === 'function_call'; }));",
               "    outcome = 'status=' + body.status + ' incomplete=' + JSON.stringify(body.incomplete_details || null) + ' output=' + JSON.stringify(out.map(function (o) { return o && o.type; })) + ' message parts=' + JSON.stringify(parts.map(function (p) { return p && p.type; }));",
               "  } else {",
               "    var ch = (body.choices || [])[0] || {}, msg = ch.message || {};",
@@ -352259,11 +352258,181 @@
       ]
     },
     {
-      "name": "392. FastAPI detail error message propagation (fastapi-detail-error) (#10182)",
+      "name": "392. Anthropic user message between parallel tool results (interleaved tool results) (PR #10579)",
+      "description": "Regression for PR #10579. A Responses input can carry a user message between the outputs of one assistant turn's parallel tool calls: a client that attaches the file the first call read sends call A, call B, output A, user attachment, output B. convertBifrostMessagesToAnthropicMessages wrote that in input order, so the user turn after the tool_use held only the first tool_result and Anthropic rejected the request with \"tool_use ids were found without tool_result blocks immediately after\". The converter now holds the user message until the turn's remaining outputs arrive, so both tool_result blocks lead the next message and the user content follows. Both cases read the outbound request through x-bf-send-back-raw-request. 392.1 pins the base shape. 392.2 uses call ids with a slash, which Bifrost rewrites to Anthropic-safe tool_use ids, and pins that the hold-back still matches the later output to its call. No streaming case: the request conversion is the same code for both. No reasoning case: a signed thinking block cannot be written by hand.",
+      "item": [
+        {
+          "name": "392.1 anthropic/claude-sonnet-4-5 /v1/responses interleaved tool results: user attachment between parallel function_call_outputs follows both tool_results - PR #10579",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 80,\n  \"tools\": [\n    { \"type\": \"function\", \"name\": \"read_file\", \"description\": \"Read a file.\", \"parameters\": { \"type\": \"object\", \"properties\": { \"file_path\": { \"type\": \"string\" } }, \"required\": [\"file_path\"] } }\n  ],\n  \"input\": [\n    { \"role\": \"user\", \"content\": \"Read a.pdf and notes.txt, then summarize both in one sentence.\" },\n    { \"type\": \"function_call\", \"call_id\": \"call_a_10579\", \"name\": \"read_file\", \"arguments\": \"{\\\"file_path\\\":\\\"a.pdf\\\"}\" },\n    { \"type\": \"function_call\", \"call_id\": \"call_b_10579\", \"name\": \"read_file\", \"arguments\": \"{\\\"file_path\\\":\\\"notes.txt\\\"}\" },\n    { \"type\": \"function_call_output\", \"call_id\": \"call_a_10579\", \"output\": \"Binary content provided (1 item(s)).\" },\n    { \"role\": \"user\", \"content\": [ { \"type\": \"input_text\", \"text\": \"ATTACHED-10579: a.pdf says the launch is on Friday.\" } ] },\n    { \"type\": \"function_call_output\", \"call_id\": \"call_b_10579\", \"output\": \"notes.txt says bring the demo laptop.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "// A client attached the file the first call read, so a user message sits between the two outputs of",
+                  "// one parallel tool turn. Written in input order, the first tool_result went out alone and Anthropic",
+                  "// 400'd: \"tool_use ids were found without tool_result blocks immediately after\".",
+                  "pm.test('anthropic interleaved tool results: 200', function () {",
+                  "  pm.expect(txt, 'tool_result ordering 400 resurfaced').to.not.include('without `tool_result` blocks immediately after');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic interleaved tool results: the turn after the tool_use opens with both tool_results', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var msgs = rr.messages || [];",
+                  "  var shape = JSON.stringify(msgs.map(function (m) {",
+                  "    var blocks = typeof m.content === 'string' ? [{ type: 'text' }] : (m.content || []);",
+                  "    return m.role + ':' + blocks.map(function (b) { return b.type; }).join('+');",
+                  "  }));",
+                  "  var useIdx = -1;",
+                  "  msgs.forEach(function (m, i) {",
+                  "    if (Array.isArray(m.content) && m.content.some(function (b) { return b.type === 'tool_use'; })) { useIdx = i; }",
+                  "  });",
+                  "  pm.expect(useIdx, 'no tool_use turn on the wire: ' + shape).to.be.at.least(0);",
+                  "  var next = msgs[useIdx + 1];",
+                  "  pm.expect(next && next.role, 'no user turn right after the tool_use: ' + shape).to.eql('user');",
+                  "  var blocks = Array.isArray(next.content) ? next.content : [];",
+                  "  pm.expect(blocks.length, 'message order: ' + shape).to.be.at.least(2);",
+                  "  pm.expect(blocks[0].type, 'message order: ' + shape).to.eql('tool_result');",
+                  "  pm.expect(blocks[1].type, 'message order: ' + shape).to.eql('tool_result');",
+                  "  pm.expect(String(blocks[0].tool_use_id), 'first result id: ' + shape).to.include('call_a_10579');",
+                  "  pm.expect(String(blocks[1].tool_use_id), 'second result id: ' + shape).to.include('call_b_10579');",
+                  "  var uses = msgs[useIdx].content.filter(function (b) { return b.type === 'tool_use'; }).map(function (b) { return b.id; });",
+                  "  pm.expect([blocks[0].tool_use_id, blocks[1].tool_use_id], 'results must answer the tool_use ids: ' + shape).to.eql(uses);",
+                  "});",
+                  "pm.test('anthropic interleaved tool results: the user content follows the results', function () {",
+                  "  var msgs = (rr && rr.messages) || [];",
+                  "  var flat = JSON.stringify(msgs);",
+                  "  pm.expect(flat, 'attached user text missing').to.include('ATTACHED-10579');",
+                  "  pm.expect(flat.indexOf('ATTACHED-10579'), 'user text must come after the last tool_result').to.be.above(flat.lastIndexOf('\"tool_result\"'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "392.2 anthropic/claude-sonnet-4-5 /v1/responses interleaved tool results: call ids rewritten for Anthropic still hold the user attachment - PR #10579",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 80,\n  \"tools\": [\n    { \"type\": \"function\", \"name\": \"read_file\", \"description\": \"Read a file.\", \"parameters\": { \"type\": \"object\", \"properties\": { \"file_path\": { \"type\": \"string\" } }, \"required\": [\"file_path\"] } }\n  ],\n  \"input\": [\n    { \"role\": \"user\", \"content\": \"Read a.pdf and notes.txt, then summarize both in one sentence.\" },\n    { \"type\": \"function_call\", \"call_id\": \"call/a-10579\", \"name\": \"read_file\", \"arguments\": \"{\\\"file_path\\\":\\\"a.pdf\\\"}\" },\n    { \"type\": \"function_call\", \"call_id\": \"call/b-10579\", \"name\": \"read_file\", \"arguments\": \"{\\\"file_path\\\":\\\"notes.txt\\\"}\" },\n    { \"type\": \"function_call_output\", \"call_id\": \"call/a-10579\", \"output\": \"Binary content provided (1 item(s)).\" },\n    { \"role\": \"user\", \"content\": [ { \"type\": \"input_text\", \"text\": \"ATTACHED-10579: a.pdf says the launch is on Friday.\" } ] },\n    { \"type\": \"function_call_output\", \"call_id\": \"call/b-10579\", \"output\": \"notes.txt says bring the demo laptop.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "// A client attached the file the first call read, so a user message sits between the two outputs of",
+                  "// one parallel tool turn. Written in input order, the first tool_result went out alone and Anthropic",
+                  "// 400'd: \"tool_use ids were found without tool_result blocks immediately after\".",
+                  "pm.test('anthropic interleaved tool results rewritten ids: 200', function () {",
+                  "  pm.expect(txt, 'tool_result ordering 400 resurfaced').to.not.include('without `tool_result` blocks immediately after');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic interleaved tool results rewritten ids: the turn after the tool_use opens with both tool_results', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var msgs = rr.messages || [];",
+                  "  var shape = JSON.stringify(msgs.map(function (m) {",
+                  "    var blocks = typeof m.content === 'string' ? [{ type: 'text' }] : (m.content || []);",
+                  "    return m.role + ':' + blocks.map(function (b) { return b.type; }).join('+');",
+                  "  }));",
+                  "  var useIdx = -1;",
+                  "  msgs.forEach(function (m, i) {",
+                  "    if (Array.isArray(m.content) && m.content.some(function (b) { return b.type === 'tool_use'; })) { useIdx = i; }",
+                  "  });",
+                  "  pm.expect(useIdx, 'no tool_use turn on the wire: ' + shape).to.be.at.least(0);",
+                  "  var next = msgs[useIdx + 1];",
+                  "  pm.expect(next && next.role, 'no user turn right after the tool_use: ' + shape).to.eql('user');",
+                  "  var blocks = Array.isArray(next.content) ? next.content : [];",
+                  "  pm.expect(blocks.length, 'message order: ' + shape).to.be.at.least(2);",
+                  "  pm.expect(blocks[0].type, 'message order: ' + shape).to.eql('tool_result');",
+                  "  pm.expect(blocks[1].type, 'message order: ' + shape).to.eql('tool_result');",
+                  "  pm.expect(String(blocks[0].tool_use_id), 'first result id: ' + shape).to.include('call_a-10579');",
+                  "  pm.expect(String(blocks[1].tool_use_id), 'second result id: ' + shape).to.include('call_b-10579');",
+                  "  var uses = msgs[useIdx].content.filter(function (b) { return b.type === 'tool_use'; }).map(function (b) { return b.id; });",
+                  "  pm.expect([blocks[0].tool_use_id, blocks[1].tool_use_id], 'results must answer the tool_use ids: ' + shape).to.eql(uses);",
+                  "});",
+                  "pm.test('anthropic interleaved tool results rewritten ids: the user content follows the results', function () {",
+                  "  var msgs = (rr && rr.messages) || [];",
+                  "  var flat = JSON.stringify(msgs);",
+                  "  pm.expect(flat, 'attached user text missing').to.include('ATTACHED-10579');",
+                  "  pm.expect(flat.indexOf('ATTACHED-10579'), 'user text must come after the last tool_result').to.be.above(flat.lastIndexOf('\"tool_result\"'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "393. FastAPI detail error message propagation (fastapi-detail-error) (#10182)",
       "description": "Local fixture regression, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. Sends chat completions requests targeting openai/upstream-400-detail, which answers HTTP 400 {\"detail\": \"...\"}, and asserts error.message preserves the FastAPI detail text.",
       "item": [
         {
-          "name": "[EXPECT-400] 392.1 openai/upstream-400-detail POST /v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
+          "name": "[EXPECT-400] 393.1 openai/upstream-400-detail POST /v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
           "event": [
             {
               "listen": "prerequest",
@@ -352317,7 +352486,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] 392.2 openai/upstream-400-detail POST /openai/v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
+          "name": "[EXPECT-400] 393.2 openai/upstream-400-detail POST /openai/v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
           "event": [
             {
               "listen": "prerequest",

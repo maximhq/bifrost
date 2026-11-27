@@ -58,8 +58,16 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error
 		anthropicTool.Description = tool.Function.Description
 	}
 
-	// Convert function parameters to input_schema
-	if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
+	// Convert function parameters to input_schema. Anthropic rejects a custom
+	// tool without input_schema, and requires `"type":"object"` at its root.
+	// Every schema is carried with every key it has, including a root without
+	// `type`: a root oneOf/anyOf/allOf is rewritten into an object schema by
+	// normalizeAnthropicToolInputSchema, and any other typeless root (a bare
+	// `properties`, `description` or `$ref` object, a raw `{}`) gets
+	// `"type":"object"` from withAnthropicObjectRootType. Neither step, nor
+	// Normalized, writes through its input, so the deep copy here is not what
+	// keeps the caller's parameters unmutated.
+	if tool.Function.Parameters != nil {
 		anthropicTool.InputSchema = schemas.DeepCopyToolFunctionParameters(tool.Function.Parameters)
 	}
 
@@ -69,7 +77,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error
 		if err != nil {
 			return AnthropicTool{}, err
 		}
-		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
+		anthropicTool.InputSchema = withAnthropicObjectRootType(anthropicTool.InputSchema).Normalized()
 	}
 
 	if tool.CacheControl != nil {
