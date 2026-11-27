@@ -8,11 +8,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -797,6 +800,83 @@ func TestHTTPMetricsExporterHonoursEndpointScheme(t *testing.T) {
 		}
 		if got := hits.Load(); got != 1 {
 			t.Errorf("plaintext receiver saw %d requests, want 1", got)
+		}
+	})
+}
+
+func TestMetricsExportRefusesRedirects(t *testing.T) {
+	for _, code := range redirectCodes {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			collectorURL, collectorHits, targetHits := redirectPair(t, code)
+
+			exp, err := createHTTPExporter(context.Background(), &MetricsConfig{Endpoint: collectorURL + "/v1/metrics", Insecure: true})
+			if err != nil {
+				t.Fatalf("createHTTPExporter: %v", err)
+			}
+			defer func() { _ = exp.Shutdown(context.Background()) }()
+
+			assertRedirectRefused(t, exp.Export(context.Background(), oneMetric()), code, collectorHits, targetHits)
+		})
+	}
+}
+
+// export_timeout bounded only trace export; the HTTP metrics client kept a fixed 10s.
+func TestHTTPMetricsExportTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{name: "unset keeps the 10s default", want: 10 * time.Second},
+		{name: "set is used as is", timeout: 7 * time.Second, want: 7 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, err := newMetricsHTTPClient(&MetricsConfig{Endpoint: "http://127.0.0.1:4318/v1/metrics", ExportTimeout: tc.timeout})
+			if err != nil {
+				t.Fatalf("newMetricsHTTPClient: %v", err)
+			}
+			if client.Timeout != tc.want {
+				t.Errorf("metrics client timeout = %v, want %v", client.Timeout, tc.want)
+			}
+		})
+	}
+
+	t.Run("profile export_timeout cuts a hung metrics export", func(t *testing.T) {
+		var hung atomic.Bool
+		attempt := make(chan time.Duration, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !hung.CompareAndSwap(false, true) {
+				return // later exports, including the one at shutdown, succeed at once
+			}
+			// The server only notices the client giving up once the body is read.
+			_, _ = io.Copy(io.Discard, r.Body)
+			start := time.Now()
+			<-r.Context().Done()
+			attempt <- time.Since(start)
+		}))
+		t.Cleanup(srv.Close)
+
+		raw := fmt.Sprintf(`{"profiles": [
+			{"traces_enabled": false, "protocol": "http", "metrics_enabled": true, "metrics_endpoint": %q, "export_timeout": 1}
+		]}`, srv.URL+"/v1/metrics")
+		var cfg Config
+		if err := sonic.Unmarshal([]byte(raw), &cfg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		plugin, err := Init(context.Background(), &cfg, testLogger{}, nil, "")
+		if err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		t.Cleanup(func() { _ = plugin.Cleanup() })
+
+		go func() { _ = plugin.GetMetricsExporter().provider.ForceFlush(context.Background()) }()
+		select {
+		case got := <-attempt:
+			if got > 3*time.Second {
+				t.Errorf("metrics export ran %v, want it cut near export_timeout (1s)", got)
+			}
+		case <-time.After(8 * time.Second):
+			t.Fatal("metrics export still running after 8s, want it cut at export_timeout (1s)")
 		}
 	})
 }

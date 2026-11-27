@@ -3,6 +3,7 @@ package otel
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,41 @@ import (
 	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
+
+// errRedirectRefused is wrapped with the status code and nothing else: the endpoint
+// controls the Location header and the redirect body, and net/http puts the Location URL
+// in the error it builds when CheckRedirect refuses, so neither may reach logs or error text.
+var errRedirectRefused = errors.New("otel export: redirect refused")
+
+// refuseRedirects fails any 3xx response before net/http can follow it, so the batch is
+// never resent to the redirect target.
+type refuseRedirects struct {
+	next http.RoundTripper
+}
+
+func (r refuseRedirects) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := r.next.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 == 3 {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("%w (%d); configure the final collector URL", errRedirectRefused, resp.StatusCode)
+	}
+	return resp, nil
+}
+
+// CloseIdleConnections lets http.Client.CloseIdleConnections reach the wrapped transport.
+func (r refuseRedirects) CloseIdleConnections() {
+	if c, ok := r.next.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
+// newExportClient returns an http.Client over transport that refuses redirects.
+func newExportClient(transport http.RoundTripper, timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: refuseRedirects{next: transport}}
+}
 
 // OtelClientHTTP is the implementation of the OpenTelemetry client for HTTP
 type OtelClientHTTP struct {
@@ -38,10 +74,7 @@ func NewOtelClientHTTP(endpoint string, headers map[string]string, tlsCACert str
 	}
 	transport.TLSClientConfig = tlsConfig
 
-	return &OtelClientHTTP{client: &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-	}, endpoint: endpoint, headers: headers}, nil
+	return &OtelClientHTTP{client: newExportClient(transport, timeout), endpoint: endpoint, headers: headers}, nil
 }
 
 // Emit sends a trace to the OpenTelemetry collector

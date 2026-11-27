@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"sync"
@@ -31,6 +32,9 @@ type MetricsConfig struct {
 	TLSCACert    string
 	Insecure     bool // Skip TLS when true; ignored if TLSCACert is set
 	PushInterval int  // in seconds
+	// ExportTimeout bounds a single HTTP export; zero means defaultMetricsExportTimeout.
+	// gRPC export ignores it.
+	ExportTimeout time.Duration
 }
 
 // MetricsExporter handles OTEL metrics export
@@ -283,28 +287,47 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 	return m, nil
 }
 
+// defaultMetricsExportTimeout bounds an HTTP metrics export when export_timeout is unset.
+// It matches the OTLP SDK default, which stops applying once WithHTTPClient supplies the client.
+const defaultMetricsExportTimeout = 10 * time.Second
+
 func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
-	opts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpointURL(config.Endpoint),
-		// The global proxy when it is enabled for API traffic, else the environment.
-		otlpmetrichttp.WithProxy(network.DefaultProxyFunc(network.ClientPurposeAPI)),
+	client, err := newMetricsHTTPClient(config)
+	if err != nil {
+		return nil, err
 	}
 
+	opts := []otlpmetrichttp.Option{
+		otlpmetrichttp.WithEndpointURL(config.Endpoint),
+		otlpmetrichttp.WithHTTPClient(client),
+	}
 	if len(config.Headers) > 0 {
 		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
 	}
 
+	return otlpmetrichttp.New(ctx, opts...)
+}
+
+func newMetricsHTTPClient(config *MetricsConfig) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// The global proxy when it is enabled for API traffic, else the environment.
+	transport.Proxy = network.DefaultProxyFunc(network.ClientPurposeAPI)
+
 	// The endpoint scheme decides the transport, so Insecure only relaxes certificate
-	// verification. The SDK rejects a TLS config on a plaintext endpoint.
+	// verification.
 	if u, err := url.Parse(config.Endpoint); err == nil && u.Scheme == "https" {
 		tlsConfig, err := buildTLSConfig(config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
-		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(tlsConfig))
+		transport.TLSClientConfig = tlsConfig
 	}
 
-	return otlpmetrichttp.New(ctx, opts...)
+	timeout := config.ExportTimeout
+	if timeout <= 0 {
+		timeout = defaultMetricsExportTimeout
+	}
+	return newExportClient(transport, timeout), nil
 }
 
 func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
