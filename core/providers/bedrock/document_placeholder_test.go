@@ -122,3 +122,40 @@ func TestToBedrockChatCompletionRequest_UserDocumentWithWhitespaceTextGetsPlaceh
 	require.NotEmpty(t, strings.TrimSpace(*blocks[0].Text))
 	require.NotNil(t, blocks[1].Document)
 }
+
+func TestToBedrockChatCompletionRequest_FileCacheControlAddsCachePoint(t *testing.T) {
+	ttl := "5m"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Summarize the attached PDF.")},
+				{
+					Type: schemas.ChatContentBlockTypeFile,
+					File: &schemas.ChatInputFile{
+						FileData: schemas.Ptr("JVBERi0xLjQ="),
+						Filename: schemas.Ptr("report.pdf"),
+						FileType: schemas.Ptr("application/pdf"),
+					},
+					CacheControl: &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  &ttl,
+					},
+				},
+			}},
+		}},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+
+	blocks := result.Messages[0].Content
+	require.Len(t, blocks, 3, "expected text, document, and cache point blocks")
+	require.NotNil(t, blocks[1].Document)
+	require.NotNil(t, blocks[2].CachePoint, "file cache_control must emit a trailing CachePoint")
+	require.NotNil(t, blocks[2].CachePoint.TTL)
+	require.Equal(t, ttl, *blocks[2].CachePoint.TTL)
+}
