@@ -3258,8 +3258,8 @@ func workloadIssuer(fields string) string {
 
 // TestSchemaSCIMSharedProvisioningFields pins the fields every identity provider inherits from
 // the enterprise mapping.ProvisioningConfig: Cross App Access (crossAppAccess), workload
-// identity (workloadIdentity), the token exchange host allowlist (tokenExchangeHosts) and
-// accessProfileResolutionStrategy. Each
+// identity (workloadIdentity), the token exchange host allowlist (tokenExchangeHosts),
+// accessProfileResolutionStrategy and the minimum session lifetime (minSessionDuration). Each
 // provider's config refuses unknown keys, so a provider missing one of them rejects a config
 // the loader accepts.
 func TestSchemaSCIMSharedProvisioningFields(t *testing.T) {
@@ -3283,7 +3283,8 @@ func TestSchemaSCIMSharedProvisioningFields(t *testing.T) {
 			extra := `,"crossAppAccess":{"enabled":true,"accessTokenTtl":3600,"provisionUsers":false},` +
 				`"workloadIdentity":{"additionalTrustedIssuers":[{"name":"AWS prod","kind":"aws","issuerUrl":"https://abc.tokens.sts.global.api.aws","audiences":["https://bifrost.example"]}]},` +
 				`"tokenExchangeHosts":["auth.example.com","login.example.com:8443"],` +
-				`"accessProfileResolutionStrategy":"order"`
+				`"accessProfileResolutionStrategy":"order",` +
+				`"minSessionDuration":"8h"`
 			if err := validateConfig(t, compiled, scimConfig(provider, extra)); err != nil {
 				t.Fatalf("expected config to validate, got: %v", err)
 			}
@@ -3323,6 +3324,11 @@ func TestSchemaSCIMSharedProvisioningFields(t *testing.T) {
 		{name: "tokenExchangeHosts rejects a URL", extra: `,"tokenExchangeHosts":["https://auth.example.com"]`, wantError: true},
 		{name: "tokenExchangeHosts rejects a path", extra: `,"tokenExchangeHosts":["auth.example.com/oauth2"]`, wantError: true},
 		{name: "accessProfileResolutionStrategy rejects unknown values", extra: `,"accessProfileResolutionStrategy":"first"`, wantError: true},
+		{name: "minSessionDuration accepts whole days", extra: `,"minSessionDuration":"1d"`},
+		{name: "minSessionDuration accepts compound h/m/s pairs", extra: `,"minSessionDuration":"1h30m"`},
+		{name: "minSessionDuration rejects a number", extra: `,"minSessionDuration":1800`, wantError: true},
+		{name: "minSessionDuration rejects free text", extra: `,"minSessionDuration":"soon"`, wantError: true},
+		{name: "minSessionDuration rejects a signed duration", extra: `,"minSessionDuration":"+1h"`, wantError: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

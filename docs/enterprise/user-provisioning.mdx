@@ -115,7 +115,7 @@ For the full picture of what each channel changes, and how removals work, see [H
 
 Bifrost's lifecycle model combines session refresh, background directory sync, and real-time SCIM push.
 
-- **Session refresh** - When a user's session expires, Bifrost refreshes it with the IdP and re-applies the fresh claims. If a refresh fails and the IdP reports the user inactive, Bifrost removes the user.
+- **Session refresh** - A sign-in session lasts the longer of the IdP token's lifetime and the **Minimum session lifetime** (`minSessionDuration`, default `30m`, from `5m` to `7d`). When it expires, Bifrost refreshes it with the IdP and re-applies the fresh claims. If a refresh fails and the IdP reports the user inactive, Bifrost removes the user. A longer lifetime means fewer IdP calls, but role changes and IdP-side disables take longer to reach a signed-in user. SCIM deprovisioning still signs the user out right away.
 - **Directory sync** - With directory API credentials configured, Bifrost re-reads users from the IdP every **Directory sync interval** (`bulkSyncInterval`, default `24h`, from `1h` to `30d`). It updates mapped roles, teams, business units, access profiles, and projects, and removes users that are disabled, unassigned, or no longer listed.
 - **SCIM push** - When SCIM Provisioning is on, your IdP pushes every change, including deactivations and deletes, in real time.
 
@@ -155,6 +155,7 @@ Shared fields across providers:
 | `attributeProjectMappings` | Optional | List of `{ attribute, value, project }` rules (all matches apply). |
 | `claimsSyncMode` | Optional | Only used when SCIM Provisioning is on. `both` (default): sign-in claims and SCIM both update users. `scim`: SCIM alone; sign-in claims are ignored and new users must be pushed over SCIM. See [Choosing a sync mode](/enterprise/how-identity-sync-works#choosing-a-sync-mode). |
 | `bulkSyncInterval` | Optional | How often directory sync runs, e.g. `12h` or `7d` (default `24h`, from `1h` to `30d`). Not used when SCIM Provisioning is on or without directory API credentials. |
+| `minSessionDuration` | Optional | Shortest lifetime of a sign-in session before Bifrost re-checks it with the IdP, e.g. `30m`, `8h` or `1d` (default `30m`, from `5m` to `7d`). A session lasts the longer of this and the IdP token's lifetime. Applies with SCIM Provisioning on or off. |
 | `claimScimAttributes` | Optional | Map of claim name -> `{ attributeType, attributeValue }`, defining per-claim SCIM interpretation. See [`claimScimAttributes`](#claimscimattributes-field). |
 
 Provider-specific fields (domain, tenant ID, server URL, service-account credentials) are documented in each IdP's setup guide.

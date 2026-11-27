@@ -303,7 +303,7 @@ Review your full configuration on the final screen - connection details and attr
 
 Bifrost uses the service account credentials from this setup to sync users in the background every **Directory sync interval** (default 24 hours). During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Zitadel. Background sync is turned off while SCIM Provisioning is on, because your IdP pushes changes instead.
 
-Bifrost also refreshes each OIDC session when it expires (sessions last at least 30 minutes). If a session cannot be refreshed, Bifrost checks with Zitadel whether the user is still active; if Zitadel reports the user as inactive, Bifrost decommissions that user locally.
+Bifrost also refreshes each OIDC session when it expires (sessions last at least the configured [minimum session lifetime](/enterprise/user-provisioning#background-lifecycle-reconciliation), 30 minutes by default). If a session cannot be refreshed, Bifrost checks with Zitadel whether the user is still active; if Zitadel reports the user as inactive, Bifrost decommissions that user locally.
 
 ---
 
