@@ -1294,28 +1294,35 @@ func TestAnthropicRoundTrip_PerMessageEffortOverrideForwarded(t *testing.T) {
 func TestToAnthropicResponsesRequest_PerMessageEffortFromNeutralInput(t *testing.T) {
 	t.Parallel()
 
-	var input []schemas.ResponsesMessage
-	if err := schemas.Unmarshal([]byte(`[
+	// Haiku 5.5 is in the same per-turn effort list as Opus 5.5, so the route must not
+	// depend on which of the two the caller picked.
+	for _, model := range []string{"claude-opus-5-5", "claude-haiku-5-5"} {
+		t.Run(model, func(t *testing.T) {
+			t.Parallel()
+			var input []schemas.ResponsesMessage
+			if err := schemas.Unmarshal([]byte(`[
 		{"type":"message","role":"user","content":"Say hello."},
 		{"type":"message","role":"system","content":[],"output_config":{"effort":"low"}}
 	]`), &input); err != nil {
-		t.Fatalf("decode neutral input: %v", err)
+				t.Fatalf("decode neutral input: %v", err)
+			}
+			ctx := effortTestCtx(t)
+			out, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+				Provider: schemas.Anthropic,
+				Model:    model,
+				Input:    input,
+				Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(128)},
+			})
+			if err != nil {
+				t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+			}
+			msgs, wire := jsonArrayOfObjects(t, out.Messages)
+			if len(msgs) != 2 {
+				t.Fatalf("forwarded messages = %d, want 2 (neutral per-message effort was dropped): %s", len(msgs), wire)
+			}
+			assertEffortOnlySystemMessage(t, msgs[1], "low", wire)
+		})
 	}
-	ctx := effortTestCtx(t)
-	out, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
-		Provider: schemas.Anthropic,
-		Model:    "claude-opus-5-5",
-		Input:    input,
-		Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(128)},
-	})
-	if err != nil {
-		t.Fatalf("ToAnthropicResponsesRequest: %v", err)
-	}
-	msgs, wire := jsonArrayOfObjects(t, out.Messages)
-	if len(msgs) != 2 {
-		t.Fatalf("forwarded messages = %d, want 2 (neutral per-message effort was dropped): %s", len(msgs), wire)
-	}
-	assertEffortOnlySystemMessage(t, msgs[1], "low", wire)
 }
 
 // TestToAnthropicResponsesRequest_PerMessageEffortSurvivesTextFallbacks: a system item that
