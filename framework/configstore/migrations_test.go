@@ -808,6 +808,31 @@ func TestMigrationAddEvalExecutionClaimColumns(t *testing.T) {
 	require.NoError(t, migrationAddEvalExecutionClaimColumns(ctx, db, testMigrationLogger), "a re-run is a no-op")
 }
 
+// score_number ships with the run tables themselves, in this unreleased version, so
+// there is no separate step whose rollback could rebuild the results table on SQLite and
+// lose its indexes.
+func TestEvalsRunResultScoreNumberShipsWithTheRunTables(t *testing.T) {
+	for _, step := range configstoreMigrationSteps {
+		assert.NotContains(t, step.IDs, "add_evals_run_result_score_number")
+	}
+	db := setupRDBTestStore(t).DB()
+	require.NoError(t, migrationAddEvalsRunTables(context.Background(), db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableEvalRunResult{}, "score_number"))
+}
+
+// generation and review_seq ship inside add_evals_run_tables too: the run tables are
+// unreleased, so no separate migration step adds them.
+func TestEvalsRunGenerationShipsWithTheRunTables(t *testing.T) {
+	for _, step := range configstoreMigrationSteps {
+		assert.NotContains(t, step.IDs, "add_eval_run_generation_column")
+		assert.NotContains(t, step.IDs, "add_eval_run_review_seq_column")
+	}
+	db := setupRDBTestStore(t).DB()
+	require.NoError(t, migrationAddEvalsRunTables(context.Background(), db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableEvalRun{}, "generation"))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableEvalRun{}, "review_seq"))
+}
+
 func TestMigrationAddVKRotationCooldownColumns_CreatesIndex(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()
@@ -6390,4 +6415,43 @@ func TestUsageResetEpochMigrationLeavesUnknown(t *testing.T) {
 	require.True(t, budget.LastReset.Equal(boundary))
 	require.True(t, rate.TokenLastReset.Equal(boundary))
 	require.True(t, rate.RequestLastReset.Equal(boundary.Add(-time.Hour)))
+}
+
+// legacyEvaluatorVersion is evals_evaluator_versions as it was before model_provider.
+type legacyEvaluatorVersion struct {
+	ID            string    `gorm:"type:varchar(36);primaryKey"`
+	EvaluatorID   string    `gorm:"type:varchar(36);not null;uniqueIndex:idx_evals_evaluator_version"`
+	Version       int       `gorm:"not null;uniqueIndex:idx_evals_evaluator_version"`
+	ConfigJSON    string    `gorm:"type:text;not null;column:config_json"`
+	CommitMessage string    `gorm:"type:text"`
+	CreatedBy     string    `gorm:"type:varchar(255)"`
+	CreatedAt     time.Time `gorm:"not null"`
+}
+
+func (legacyEvaluatorVersion) TableName() string { return "evals_evaluator_versions" }
+
+// A table built before model_provider existed gets the column and its index: adding a
+// column does not create the index its tag declares.
+func TestMigrationAddEvaluatorVersionModelProviderColumn_CreatesIndex(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&legacyEvaluatorVersion{}))
+	require.False(t, db.Migrator().HasColumn(&tables.TableEvaluatorVersion{}, "model_provider"))
+
+	require.NoError(t, migrationAddEvaluatorVersionModelProviderColumn(context.Background(), db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableEvaluatorVersion{}, "model_provider"))
+	assert.True(t, db.Migrator().HasIndex(&tables.TableEvaluatorVersion{}, "ModelProvider"), "the model_provider index exists")
+}
+
+// Rolling back drops model_provider without taking the table's other indexes with it:
+// SQLite rebuilds the table to drop a column, and the unique version index must survive.
+func TestMigrationAddEvaluatorVersionModelProviderColumn_RollbackKeepsTheVersionIndex(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&legacyEvaluatorVersion{}))
+	m := evaluatorVersionModelProviderMigration(ctx, testMigrationLogger)
+	require.NoError(t, m.Migrate(db))
+
+	require.NoError(t, m.Rollback(db))
+	assert.False(t, db.Migrator().HasColumn(&tables.TableEvaluatorVersion{}, "model_provider"), "the column is gone")
+	assert.True(t, db.Migrator().HasIndex(&tables.TableEvaluatorVersion{}, "idx_evals_evaluator_version"), "the unique version index survives")
 }

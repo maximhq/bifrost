@@ -377,8 +377,18 @@ func newRunnerHarness(t *testing.T, keys []EvalKey, hold time.Duration) *runnerH
 // newRunnerHarnessOn is newRunnerHarness over any JobStore. Its store field is nil.
 func newRunnerHarnessOn(t *testing.T, keys []EvalKey, hold time.Duration, store JobStore) *runnerHarness {
 	t.Helper()
-	q, err := queue.NewQueue(context.Background(), &queue.Config{Enabled: true, Type: queue.QueueTypeMemory}, queue.Dependencies{}, nil)
+	return newRunnerHarnessWith(t, keys, hold, store, nil)
+}
+
+// newRunnerHarnessWith is newRunnerHarnessOn with the runner's queue wrapped by wrap.
+func newRunnerHarnessWith(t *testing.T, keys []EvalKey, hold time.Duration, store JobStore, wrap func(queue.Queue) queue.Queue) *runnerHarness {
+	t.Helper()
+	inner, err := queue.NewQueue(context.Background(), &queue.Config{Enabled: true, Type: queue.QueueTypeMemory}, queue.Dependencies{}, nil)
 	require.NoError(t, err)
+	q := inner
+	if wrap != nil {
+		q = wrap(inner)
+	}
 
 	tracker := newKeyTracker()
 	gate := &atomic.Pointer[chan struct{}]{}
@@ -1658,6 +1668,38 @@ func TestRunner_SweepContinuesPastAFailedRecovery(t *testing.T) {
 	assert.Equal(t, "key-a", inner.routedTo("good"), "the other stranded job was moved anyway")
 }
 
+// partialStaleStore returns its stale page together with a listing error, as a store whose
+// later pass failed after the first one read its jobs.
+type partialStaleStore struct {
+	*memoryJobStore
+}
+
+func (s *partialStaleStore) StaleJobs(ctx context.Context, queuedBefore, routedBefore time.Time, skipKeys []string, after JobCursor, limit int) ([]*Job, JobCursor, error) {
+	jobs, _, err := s.memoryJobStore.StaleJobs(ctx, queuedBefore, routedBefore, skipKeys, after, limit)
+	if err != nil {
+		return nil, JobCursor{}, err
+	}
+	return jobs, JobCursor{ID: "retry-from-here"}, errors.New("the run pass failed")
+}
+
+// A stale page that comes with an error is still recovered, its cursor is kept, and the
+// error is reported.
+func TestRunner_SweepRecoversAPageThatCameWithAnError(t *testing.T) {
+	inner := newMemoryJobStore()
+	h := newRunnerHarnessOn(t, []EvalKey{{ID: "key-a", Provider: "openai", Concurrency: 1, Supports: anyModel}}, 0, &partialStaleStore{memoryJobStore: inner})
+	h.store = inner
+	inner.addStranded(aiJob("partial", "openai", "gpt-4o-mini"), "key-gone", time.Hour)
+
+	err := h.runner.Sweep(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the run pass failed")
+	assert.Equal(t, "key-a", inner.routedTo("partial"), "the page read before the failure is recovered")
+	h.runner.mu.Lock()
+	cursor := h.runner.sweepAfter
+	h.runner.mu.Unlock()
+	assert.Equal(t, JobCursor{ID: "retry-from-here"}, cursor, "the cursor that came with the page is kept")
+}
+
 // A job that started on a key which was then removed, on a queue that keeps its
 // messages, has nothing left to deliver it: no instance consumes the removed key's
 // topic, and a started job cannot move. Once its claim is long expired the sweep ends it
@@ -1676,19 +1718,32 @@ func TestRunner_SweepEndsAStartedJobOnARemovedKey(t *testing.T) {
 	assert.Contains(t, result.Reasoning, "no longer enabled for evaluations")
 }
 
-// A job on a removed key that started recently may still have a live owner, so the
-// sweep leaves it running.
-func TestRunner_SweepLeavesARecentlyStartedJobOnARemovedKey(t *testing.T) {
+// The sweep's claim of a lost job matches its exact start and leaves that start as it
+// was. When the completion after the claim fails on every try, the job is still listed as
+// lost by the next sweep, which ends it, instead of looking freshly started and waiting
+// out the whole lost-claim cutoff again.
+func TestRunner_SweepRetriesALostJobWhoseCompletionFailed(t *testing.T) {
 	h := newRunnerHarness(t, []EvalKey{{ID: "key-a", Provider: "openai", Concurrency: 1, Supports: anyModel}}, 0)
-	h.store.addStranded(aiJob("fresh", "openai", "gpt-4o-mini"), "key-gone", 2*time.Hour)
+	h.store.addStranded(aiJob("lost", "openai", "gpt-4o-mini"), "key-gone", 2*time.Hour)
+	startedAt := time.Now().Add(-2 * time.Hour)
 	h.store.mu.Lock()
-	h.store.started["fresh"], h.store.claims["fresh"], h.store.startedAt["fresh"] = "key-gone", "owner", time.Now()
+	h.store.started["lost"], h.store.claims["lost"], h.store.startedAt["lost"] = "key-gone", "dead-delivery", startedAt
+	h.store.failWrite["lost"] = len(completeWriteBackoff) + 1 // every try of the first sweep's write fails
 	h.store.mu.Unlock()
 
+	require.Error(t, h.runner.Sweep(context.Background()), "the failed completion is reported")
+	_, done := h.store.result("lost")
+	require.False(t, done)
+	h.store.mu.Lock()
+	kept := h.store.startedAt["lost"]
+	h.store.mu.Unlock()
+	assert.True(t, kept.Equal(startedAt), "the claim leaves the start it matched")
+
 	require.NoError(t, h.runner.Sweep(context.Background()))
-	_, done := h.store.result("fresh")
-	assert.False(t, done, "a job whose claim may still be live is not ended")
-	assert.Equal(t, "key-gone", h.store.routedTo("fresh"), "a started job is not moved")
+	result, done := h.store.result("lost")
+	require.True(t, done, "the next sweep ends the job")
+	assert.Equal(t, ScoreStatusError, result.Score.Status)
+	assert.Contains(t, result.Reasoning, "no longer enabled for evaluations")
 }
 
 // A job restarted since the sweep listed it belongs to the delivery that restarted it,
@@ -1813,7 +1868,7 @@ func TestRunner_SweepRetriesItsOwnClaimAfterAFailedWrite(t *testing.T) {
 	startedAt := time.Now().Add(-2 * time.Hour)
 	h.store.mu.Lock()
 	h.store.started["lost"], h.store.claims["lost"], h.store.startedAt["lost"] = "key-gone", "D", startedAt
-	h.store.failWrite["lost"] = 1
+	h.store.failWrite["lost"] = len(completeWriteBackoff) + 1 // every try of the first sweep's write fails
 	h.store.mu.Unlock()
 
 	require.Error(t, h.runner.Sweep(context.Background()), "the failed write is reported")
@@ -1838,7 +1893,7 @@ func TestRunner_SweepEndsItsOwnClaimOnAKeyEnabledAgain(t *testing.T) {
 	startedAt := time.Now().Add(-2 * time.Hour)
 	h.store.mu.Lock()
 	h.store.started["lost"], h.store.claims["lost"], h.store.startedAt["lost"] = "key-gone", "D", startedAt
-	h.store.failWrite["lost"] = 1
+	h.store.failWrite["lost"] = len(completeWriteBackoff) + 1 // every try of the first sweep's write fails
 	h.store.mu.Unlock()
 	require.Error(t, h.runner.Sweep(context.Background()), "the failed write is reported")
 
@@ -1851,6 +1906,53 @@ func TestRunner_SweepEndsItsOwnClaimOnAKeyEnabledAgain(t *testing.T) {
 	result, done := h.store.result("lost")
 	require.True(t, done, "the next sweep ends the job though its key is eligible again")
 	assert.Contains(t, result.Reasoning, "no longer enabled for evaluations")
+}
+
+// restartingStore restarts a job right after StaleJobs lists it, under the same delivery
+// with a later start time: the queue redelivered the message that started it.
+type restartingStore struct {
+	*memoryJobStore
+	id string
+}
+
+func (s *restartingStore) StaleJobs(ctx context.Context, queuedBefore, routedBefore time.Time, skipKeys []string, after JobCursor, limit int) ([]*Job, JobCursor, error) {
+	jobs, next, err := s.memoryJobStore.StaleJobs(ctx, queuedBefore, routedBefore, skipKeys, after, limit)
+	s.mu.Lock()
+	s.startedAt[s.id] = time.Now()
+	s.mu.Unlock()
+	return jobs, next, err
+}
+
+// A job the same delivery restarted after the sweep listed it is a new start: the sweep's
+// claim names the start it listed, so it fails, and the job is left to the redelivery.
+func TestRunner_SweepLeavesAJobTheSameDeliveryRestarted(t *testing.T) {
+	inner := newMemoryJobStore()
+	store := &restartingStore{memoryJobStore: inner, id: "redelivered"}
+	h := newRunnerHarnessOn(t, []EvalKey{{ID: "key-a", Provider: "openai", Concurrency: 1, Supports: anyModel}}, 0, store)
+	h.store = inner
+	inner.addStranded(aiJob("redelivered", "openai", "gpt-4o-mini"), "key-gone", 2*time.Hour)
+	inner.mu.Lock()
+	inner.started["redelivered"], inner.claims["redelivered"], inner.startedAt["redelivered"] = "key-gone", "same-delivery", time.Now().Add(-2*time.Hour)
+	inner.mu.Unlock()
+
+	require.NoError(t, h.runner.Sweep(context.Background()))
+	_, done := inner.result("redelivered")
+	assert.False(t, done, "the restarted job is left running")
+}
+
+// A job on a removed key that started recently may still have a live owner, so the
+// sweep leaves it running.
+func TestRunner_SweepLeavesARecentlyStartedJobOnARemovedKey(t *testing.T) {
+	h := newRunnerHarness(t, []EvalKey{{ID: "key-a", Provider: "openai", Concurrency: 1, Supports: anyModel}}, 0)
+	h.store.addStranded(aiJob("fresh", "openai", "gpt-4o-mini"), "key-gone", 2*time.Hour)
+	h.store.mu.Lock()
+	h.store.started["fresh"], h.store.claims["fresh"], h.store.startedAt["fresh"] = "key-gone", "owner", time.Now()
+	h.store.mu.Unlock()
+
+	require.NoError(t, h.runner.Sweep(context.Background()))
+	_, done := h.store.result("fresh")
+	assert.False(t, done, "a job whose claim may still be live is not ended")
+	assert.Equal(t, "key-gone", h.store.routedTo("fresh"), "a started job is not moved")
 }
 
 // A message for a job that already completed is acknowledged without running it again.
@@ -2068,7 +2170,7 @@ func TestRunner_RetriesAFailedResume(t *testing.T) {
 	store := newMemoryJobStore()
 	store.addStranded(aiJob("orphan", "openai", "gpt-4o-mini"), "key-gone", time.Hour)
 	store.markStarted("orphan", "key-gone")
-	store.failWrite["orphan"] = 1
+	store.failWrite["orphan"] = len(completeWriteBackoff) + 1 // every try of the one write
 	runner, _ := volatileRunner(t, store, []EvalKey{{ID: "key-a", Provider: "openai", Concurrency: 1, Supports: anyModel}})
 	_, done := store.result("orphan")
 	require.False(t, done, "the first write failed")
@@ -2399,7 +2501,7 @@ func TestRunner_DeadLetteredJobEndsWithAnError(t *testing.T) {
 	h := newRunnerHarness(t, nil, 0)
 	job := programmaticJob("dead")
 	h.store.mu.Lock()
-	h.store.failWrite["dead"] = defaultRunnerMaxAttempts
+	h.store.failWrite["dead"] = defaultRunnerMaxAttempts * (len(completeWriteBackoff) + 1) // every try of every attempt
 	h.store.mu.Unlock()
 	h.submit(t, job)
 	require.Eventually(t, func() bool { _, done := h.store.result("dead"); return done }, 30*time.Second, 20*time.Millisecond, "the job never ended")

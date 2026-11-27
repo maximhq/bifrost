@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"gorm.io/gorm/clause"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,7 +31,7 @@ const evalDatasetLive = "evals_datasets.deleted_at_unix_nano = 0"
 
 // evalDatasetBatch is how many rows or IDs one statement carries. It keeps bulk
 // writes and IN lists well under every supported database's parameter limit.
-const evalDatasetBatch = 500
+var evalDatasetBatch = 500
 
 // EvalDatasetListParams filters and pages a dataset listing.
 type EvalDatasetListParams struct {
@@ -559,6 +560,19 @@ func (s *RDBConfigStore) DeleteEvalDataset(ctx context.Context, id string) ([]st
 	}
 	var keys []string
 	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// The runs are counted under the dataset's row lock, which CreateEvalRun also
+		// takes, so a run created concurrently either commits first and is counted here,
+		// or waits and then finds the dataset deleted.
+		if err := lockEvalDataset(tx, id); err != nil {
+			return err
+		}
+		var runs int64
+		if err := tx.Model(&tables.TableEvalRun{}).Where("dataset_id = ?", id).Where(evalRunLive).Count(&runs).Error; err != nil {
+			return err
+		}
+		if runs > 0 {
+			return ErrEvalDatasetHasRuns
+		}
 		now := time.Now()
 		result := tx.Model(&tables.TableEvalDataset{}).
 			Where("id = ? AND deleted_at_unix_nano = 0", id).
@@ -1405,6 +1419,14 @@ func (w *evalDatasetTx) DeleteVersion(number int) error {
 	if number == w.dataset.HeadVersion {
 		return ErrEvalDatasetLatestVersion
 	}
+	// A version that a test run reads is that run's record of what it measured.
+	inUse, err := evalRunDatasetVersions(w.tx, w.dataset.ID)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(inUse, number) {
+		return ErrEvalDatasetVersionInUse
+	}
 	result := w.tx.Where("dataset_id = ? AND number = ?", w.dataset.ID, number).Delete(&tables.TableEvalDatasetVersion{})
 	if result.Error != nil {
 		return result.Error
@@ -1476,10 +1498,47 @@ func (w *evalDatasetTx) PruneVersions() error {
 	if excess <= 0 {
 		return nil
 	}
-	// Numbers ascend, so the oldest excess versions are the ones up to the last of them.
-	if err := w.tx.Where("dataset_id = ? AND number <= ?", w.dataset.ID, numbers[excess-1]).
-		Delete(&tables.TableEvalDatasetVersion{}).Error; err != nil {
+	// Versions that test runs read are stepped over: they stay until the runs go.
+	pinned, err := evalRunDatasetVersions(w.tx, w.dataset.ID)
+	if err != nil {
 		return err
+	}
+	inUse := make(map[int]struct{}, len(pinned))
+	for _, number := range pinned {
+		inUse[number] = struct{}{}
+	}
+	// Oldest first, stepping over pinned versions, until the count is down to the cap or
+	// only pinned versions are left. The latest version is never pruned.
+	prune := make([]int, 0, excess)
+	skipped := false
+	for _, number := range numbers[:len(numbers)-1] {
+		if len(prune) == excess {
+			break
+		}
+		if _, ok := inUse[number]; ok {
+			skipped = true
+			continue
+		}
+		prune = append(prune, number)
+	}
+	if len(prune) == 0 {
+		return nil
+	}
+	// Numbers ascend, so with nothing stepped over the pruned versions are the ones up to
+	// the last of them, which binds two parameters instead of the whole list. Otherwise the
+	// numbers go in chunks, so a long history stays under the database's bind limit.
+	if !skipped {
+		if err := w.tx.Where("dataset_id = ? AND number <= ?", w.dataset.ID, prune[len(prune)-1]).
+			Delete(&tables.TableEvalDatasetVersion{}).Error; err != nil {
+			return err
+		}
+		return w.collectRows()
+	}
+	for start := 0; start < len(prune); start += evalDatasetBatch {
+		if err := w.tx.Where("dataset_id = ? AND number IN ?", w.dataset.ID, prune[start:min(start+evalDatasetBatch, len(prune))]).
+			Delete(&tables.TableEvalDatasetVersion{}).Error; err != nil {
+			return err
+		}
 	}
 	return w.collectRows()
 }

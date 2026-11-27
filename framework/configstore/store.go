@@ -1176,6 +1176,59 @@ type ConfigStore interface {
 	// WithEvalDataset is the only way to change a dataset's rows, columns and versions.
 	WithEvalDataset(ctx context.Context, datasetID string, fn func(tx EvalDatasetTx) error) error
 
+	// Evals - Test runs
+	CreateEvalRun(ctx context.Context, run *tables.TableEvalRun) error
+	GetEvalRun(ctx context.Context, id string) (*tables.TableEvalRun, error)
+	GetEvalRunState(ctx context.Context, id string) (*EvalRunState, error)
+	ListEvalRuns(ctx context.Context, params EvalRunListParams) ([]tables.TableEvalRun, int64, error)
+	TransitionEvalRun(ctx context.Context, id string, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunAtGeneration(ctx context.Context, id string, from []string, generation int64, fields map[string]any) (bool, error)
+	TransitionEvalRunEntriesAtGeneration(ctx context.Context, runID string, generation int64, runFields map[string]any, from []string, entryFields map[string]any) (int64, error)
+	TransitionStoppedEvalRunEntries(ctx context.Context, runID string, generation int64, from []string, idleEvaluating bool, entryFields map[string]any) (int64, error)
+	TransitionEvalRunAtReview(ctx context.Context, id string, from []string, generation, reviewSeq int64, fields map[string]any) (bool, error)
+	CountEvalRunReview(ctx context.Context, id string) error
+	ClaimEvalRunWithEntries(ctx context.Context, id string, runFrom []string, generation int64, runFields map[string]any, entries *EvalRunEntryUpdate) (bool, error)
+	DeleteEvalRun(ctx context.Context, id string) error
+	CountEvalRunsOnDataset(ctx context.Context, datasetID string, version int) (int64, error)
+	CreateEvalRunEntries(ctx context.Context, entries []tables.TableEvalRunEntry) error
+	ListEvalRunEntries(ctx context.Context, params EvalRunEntryListParams) ([]tables.TableEvalRunEntry, int64, error)
+	ListEvalRunEntryRefs(ctx context.Context, params EvalRunEntryListParams) ([]EvalRunEntryRef, error)
+	HasOpenEvalRunEntries(ctx context.Context, runID string) (bool, error)
+	GetEvalRunEntry(ctx context.Context, id string) (*tables.TableEvalRunEntry, error)
+	TransitionEvalRunEntry(ctx context.Context, id string, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunEntries(ctx context.Context, runID string, from, ids []string, fields map[string]any) (int64, error)
+	RouteEvalRunEntry(ctx context.Context, id, fromKey, toKey string, routedAt time.Time) (bool, error)
+	RouteEvalRunResult(ctx context.Context, id, fromKey, toKey string, routedAt time.Time) (bool, error)
+	ClaimEvalRunEntry(ctx context.Context, id, keyID, claimID string, attempt int, startedBefore, recoverStartedAt time.Time) (bool, error)
+	ClaimEvalRunResult(ctx context.Context, id, keyID, claimID string, attempt int, startedBefore, recoverStartedAt time.Time) (bool, error)
+	ClaimQueuedEvalRunEntry(ctx context.Context, id, keyID, claimID string, attempt int) (bool, error)
+	ClaimQueuedEvalRunResult(ctx context.Context, id, keyID, claimID string, attempt int) (bool, error)
+	ReleaseQueuedEvalRunClaims(ctx context.Context, claimID string, startedBefore time.Time) (int64, error)
+	TransitionEvalRunEntryAttempt(ctx context.Context, id string, attempt int, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunEntryAtRun(ctx context.Context, runID, status string, generation int64, id string, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunEntriesAtRun(ctx context.Context, runID, status string, generation int64, from []string, fields map[string]any) (int64, error)
+	TransitionEvalRunEntryClaimed(ctx context.Context, id string, attempt int, claimID string, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunEntryAtReview(ctx context.Context, runID string, reviewSeq, generation int64, id string, attempt int, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunResultAttempt(ctx context.Context, id string, attempt int, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunResultUnstarted(ctx context.Context, id string, attempt int, fields map[string]any) (bool, error)
+	TransitionEvalRunResultRetry(ctx context.Context, id string, attempt int, fields map[string]any) (bool, error)
+	ResetEvalRunEntries(ctx context.Context, runID string, generation int64, ids []string, fields map[string]any) (int64, error)
+	GetEvalRunLastSeq(ctx context.Context, runID string) (int64, error)
+	ListEvalRunRowIDs(ctx context.Context, runIDs []string, offset, limit int) ([]string, int64, error)
+	CountEvalRunResultsByEvaluator(ctx context.Context, runID string) ([]EvalRunEvaluatorCount, error)
+	CountEvalRunEntries(ctx context.Context, runID string) (map[string]int64, error)
+	CountEvalRunEntriesPassed(ctx context.Context, runID string) (int64, error)
+	ListEvalRunTargetLatencies(ctx context.Context, runID string) ([]int64, error)
+	GetEvalRunTotals(ctx context.Context, runID string) (EvalRunTotals, error)
+	CreateEvalRunResults(ctx context.Context, results []tables.TableEvalRunResult, entryAttempt int) error
+	GetEvalRunResult(ctx context.Context, id string) (*tables.TableEvalRunResult, error)
+	ListEvalRunResults(ctx context.Context, params EvalRunResultListParams) ([]tables.TableEvalRunResult, error)
+	ListEvalRunResultRefs(ctx context.Context, params EvalRunResultListParams) ([]EvalRunResultRef, error)
+	TransitionEvalRunResult(ctx context.Context, id string, from []string, fields map[string]any) (bool, error)
+	CountEvalRunResults(ctx context.Context, entryID string) (map[string]int64, error)
+	CountEvalRunScoreChanges(ctx context.Context, baseRunID, runID string) ([]EvalRunScoreChange, error)
+	DeleteEvalRunResults(ctx context.Context, runID string, entryIDs []string, evaluatorID string) (int64, error)
+
 	// Sidekiq - generic durable background jobs
 	CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error
 	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)

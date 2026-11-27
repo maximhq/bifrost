@@ -1,0 +1,697 @@
+# Test runs: a target run on every row of a dataset version and scored by evaluators.
+runs:
+  get:
+    operationId: listEvalRuns
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List test runs
+    description: |
+      Returns test runs, newest first, each with its entry counts. A run that finished its entries carries its summary. A run that failed before its rows were planned has none; its `error` says why.
+    tags:
+    - Test Runs
+    parameters:
+    - name: search
+      in: query
+      required: false
+      description: Case-insensitive match on the run name
+      schema:
+        type: string
+    - name: status
+      in: query
+      required: false
+      description: "Only runs in this status: queued, running, completed, failed or stopped"
+      schema:
+        type: string
+    - name: dataset_id
+      in: query
+      required: false
+      description: Only runs on this dataset
+      schema:
+        type: string
+    - name: tag
+      in: query
+      required: false
+      description: Only runs with this tag
+      schema:
+        type: string
+    - name: limit
+      in: query
+      required: false
+      description: 'Page size. 0 or absent means 50; a value above 200 is read as 200'
+      schema:
+        type: integer
+        minimum: 0
+    - name: offset
+      in: query
+      required: false
+      description: Rows to skip
+      schema:
+        type: integer
+        minimum: 0
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunListResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  post:
+    operationId: createEvalRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Start a test run
+    description: |
+      Starts a run: one target, run on every row of one dataset version, or only on the rows of one split of it when `split_id` is set, and scored by the listed evaluators. When `dataset_version` is 0 or left out, the dataset's unsaved edits are saved as a version first and the run reads that version. A given `dataset_version` is read as it is, and the draft is left alone. The target and the evaluators are copied onto the run. The call returns at once; the entries are created in the background.
+    tags:
+    - Test Runs
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsruns.yaml#/RunCreateInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '422':
+        description: 'Test runs are not available on this gateway: it has no evaluation queue, or the evaluation runner failed to start. The gateway log has the reason.'
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/common.yaml#/ErrorResponse
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+runs-validate:
+  post:
+    operationId: validateEvalRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Check a test run
+    description: |
+      Checks a run's settings without starting it: a missing dataset or version, an evaluator that needs a variable the run does not provide, a provider with no eval key. The eval key check needs the gateway's evaluation queue. Without one, no key problem is reported, and starting the run fails.
+    tags:
+    - Test Runs
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsruns.yaml#/RunInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunCheck
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+runs-compare:
+  get:
+    operationId: compareEvalRuns
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Compare test runs
+    description: |
+      Puts two to five runs on the same dataset side by side: their summaries, and a page of dataset rows with each run's entry for the row. A row that only some of the runs have is listed with null for the others.
+    tags:
+    - Test Runs
+    parameters:
+    - name: ids
+      in: query
+      required: true
+      description: Two to five different run IDs, separated by commas. A repeated ID is compared once, at its first position.
+      schema:
+        type: string
+    - name: limit
+      in: query
+      required: false
+      description: 'Page size. 0 or absent means 100; a value above 200 is read as 200'
+      schema:
+        type: integer
+        minimum: 0
+    - name: offset
+      in: query
+      required: false
+      description: Rows to skip
+      schema:
+        type: integer
+        minimum: 0
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunComparison
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+run:
+  get:
+    operationId: getEvalRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a test run
+    description: |
+      Returns one run with its entry counts and summary. While the run is active the summary has pass rates and progress only; a finished run stores the full one.
+    tags:
+    - Test Runs
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The run ID
+      schema:
+        type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunResponse
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  put:
+    operationId: updateEvalRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a test run
+    description: |
+      Renames a run and replaces its tags.
+    tags:
+    - Test Runs
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The run ID
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsruns.yaml#/RunUpdateInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  delete:
+    operationId: deleteEvalRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a test run
+    description: |
+      Deletes a run that is not active, with its entries and results. The dataset version it read can be deleted once no other run reads it, unless it is the latest version.
+    tags:
+    - Test Runs
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The run ID
+      schema:
+        type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunDeletedResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+run-stop:
+  post:
+    operationId: stopEvalRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Stop a test run
+    description: |
+      Stops an active run. Entries that are waiting stop at once. An entry whose target is being called finishes that call and then stops.
+    tags:
+    - Test Runs
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The run ID
+      schema:
+        type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+run-rerun:
+  post:
+    operationId: rerunEvalRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Rerun entries
+    description: |
+      Runs entries of a finished run again: the failed and stopped ones, all of them, or the listed ones. The run keeps its dataset version, target and evaluators. A run that failed before its rows were planned cannot be rerun: start a new run. A run stopped while it was being planned can be rerun once its planning has ended.
+    tags:
+    - Test Runs
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The run ID
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsruns.yaml#/RunRerunRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '422':
+        description: 'Test runs are not available on this gateway: it has no evaluation queue, or the evaluation runner failed to start. The gateway log has the reason.'
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/common.yaml#/ErrorResponse
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+run-evaluators:
+  post:
+    operationId: addEvalRunEvaluators
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Add evaluators
+    description: |
+      Scores a finished run's stored outputs with more evaluators. The target is not called again. A run that failed before its rows were planned has no outputs to score: start a new run. A run stopped while it was being planned takes evaluators once its planning has ended.
+    tags:
+    - Test Runs
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The run ID
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsruns.yaml#/RunAddEvaluatorsRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '422':
+        description: 'Test runs are not available on this gateway: it has no evaluation queue, or the evaluation runner failed to start. The gateway log has the reason.'
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/common.yaml#/ErrorResponse
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+run-entries:
+  get:
+    operationId: listEvalRunEntries
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List entries
+    description: |
+      Returns a page of a run's entries with their results, by row position.
+    tags:
+    - Test Runs
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The run ID
+      schema:
+        type: string
+    - name: status
+      in: query
+      required: false
+      description: Only entries in these statuses, separated by commas
+      schema:
+        type: string
+    - name: passed
+      in: query
+      required: false
+      description: Only entries whose verdict is pass (true) or fail (false). Entries with no verdict (not finished, or whose evaluators have no pass rule) match neither.
+      schema:
+        type: boolean
+    - name: search
+      in: query
+      required: false
+      description: Case-insensitive match on the variables or the output
+      schema:
+        type: string
+    - name: baseline
+      in: query
+      required: false
+      description: ID of another run on the same dataset to read the entries against. An entry whose dataset row the baseline run also has then carries that run's entry in `baseline`; an entry without one has no `baseline`.
+      schema:
+        type: string
+    - name: change
+      in: query
+      required: false
+      description: 'With `baseline`, `better` keeps entries with a higher number on any evaluator both runs scored, `worse` a lower one. The comparison is numeric and ignores `reversed`: for a lower-is-better evaluator, `better` means a higher, so worse, score.'
+      schema:
+        type: string
+        enum: [worse, better]
+    - name: limit
+      in: query
+      required: false
+      description: 'Page size. 0 or absent means 100; a value above 200 is read as 200'
+      schema:
+        type: integer
+        minimum: 0
+    - name: offset
+      in: query
+      required: false
+      description: Rows to skip
+      schema:
+        type: integer
+        minimum: 0
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunEntriesPage
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+run-entry:
+  get:
+    operationId: getEvalRunEntry
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get an entry
+    description: |
+      Returns one entry with its results.
+    tags:
+    - Test Runs
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The run ID
+      schema:
+        type: string
+    - name: entryId
+      in: path
+      required: true
+      description: The entry ID
+      schema:
+        type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunEntryResponse
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+run-entry-result:
+  put:
+    operationId: reviewEvalRunResult
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Score a human evaluator
+    description: |
+      Records a reviewer's score for a human evaluator on one entry. The score is checked against the evaluator's type, and the run's summary follows it.
+    tags:
+    - Test Runs
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The run ID
+      schema:
+        type: string
+    - name: entryId
+      in: path
+      required: true
+      description: The entry ID
+      schema:
+        type: string
+    - name: evaluatorId
+      in: path
+      required: true
+      description: The evaluator ID
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsruns.yaml#/RunReviewRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsruns.yaml#/RunResultResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+run-export:
+  get:
+    operationId: exportEvalRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Export a test run
+    description: |
+      Returns the report as CSV: one line per entry, with the row's variables, the output, and each evaluator's score, verdict and reasoning.
+    tags:
+    - Test Runs
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The run ID
+      schema:
+        type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: The report as CSV
+        content:
+          text/csv:
+            schema:
+              type: string
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError

@@ -248,6 +248,21 @@ func TestServiceCreateAndEditRows(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, page.Rows, 3)
 	assert.Equal(t, "pasted one", page.Rows[0].Cells[input])
+
+	// A reader that only walks the rows, as run planning does, skips the count.
+	db := svc.store.(*configstore.RDBConfigStore).DB()
+	counts := 0
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register("count_row_counts", func(tx *gorm.DB) {
+		if tx.Statement.Table == "evals_dataset_rows" && strings.Contains(strings.ToLower(tx.Statement.SQL.String()), "count(") {
+			counts++
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Query().Remove("count_row_counts") })
+	walked, err := svc.Rows(ctx, view.ID, RowQuery{SkipTotal: true})
+	require.NoError(t, err)
+	require.Len(t, walked.Rows, 3)
+	assert.Zero(t, walked.Total)
+	assert.Zero(t, counts, "SkipTotal reads no count")
 }
 
 func TestServiceSaveRules(t *testing.T) {
@@ -323,6 +338,16 @@ func TestServiceImport(t *testing.T) {
 		{Index: 0, Name: "copy", Type: ColumnVariable},
 	}})
 	require.True(t, evals.IsInvalid(err), "a field mapped twice: %v", err)
+	// A position past the header, or past any CSV's field limit, is refused before a slice of
+	// that size is made.
+	_, err = svc.Import(ctx, view.ID, strings.NewReader(file), ImportOptions{HasHeader: true, Mapping: []ImportColumn{
+		{Index: 4, ColumnID: columnID(t, view, "input")},
+	}})
+	require.True(t, evals.IsInvalid(err), "a position past the header: %v", err)
+	_, err = svc.Import(ctx, view.ID, strings.NewReader("a\n"), ImportOptions{Mapping: []ImportColumn{
+		{Index: 1 << 20, ColumnID: columnID(t, view, "input")},
+	}})
+	require.True(t, evals.IsInvalid(err), "a position past the field limit: %v", err)
 	unchanged, err := svc.Get(ctx, view.ID)
 	require.NoError(t, err)
 	assert.Zero(t, unchanged.RowCount)
@@ -1119,6 +1144,35 @@ func TestServiceRestoreUnderTheVersionCap(t *testing.T) {
 	after, err := svc.Versions(ctx, view.ID)
 	require.NoError(t, err)
 	assert.Len(t, after, 2, "nothing new was saved")
+
+	// A version a run reads is stepped over, and the next oldest goes instead, so the
+	// count still comes down to the cap.
+	pinned, err := svc.Create(ctx, DatasetInput{Name: "pinned", Template: "qa"})
+	require.NoError(t, err)
+	row, err := svc.AddRows(ctx, pinned.ID, []map[string]string{{"input": "a"}}, "", "tester")
+	require.NoError(t, err)
+	for i, value := range []string{"", "b", "c"} {
+		if value != "" {
+			_, err = svc.UpdateRow(ctx, pinned.ID, row.Rows[0].RowID, map[string]string{"input": value}, "tester")
+			require.NoError(t, err)
+		}
+		_, err = svc.SaveVersion(ctx, pinned.ID, fmt.Sprintf("v%d", i+1), "", "tester")
+		require.NoError(t, err)
+	}
+	db := svc.store.(*configstore.RDBConfigStore).DB()
+	require.NoError(t, db.Create(&tables.TableEvalRun{
+		ID: "pinning-run", Name: "pins v1", Status: "completed", TargetType: "dataset",
+		DatasetID: pinned.ID, DatasetVersion: 1,
+	}).Error)
+	_, err = svc.Update(ctx, pinned.ID, DatasetInput{Name: "pinned", MaxVersions: new(2)})
+	require.NoError(t, err)
+	kept, err := svc.Versions(ctx, pinned.ID)
+	require.NoError(t, err)
+	numbers := make([]int, len(kept))
+	for i := range kept {
+		numbers[i] = kept[i].Number
+	}
+	assert.ElementsMatch(t, []int{1, 3}, numbers, "the pinned v1 stays and v2 goes in its place")
 }
 
 // The target is checked against the head before the waiting edits are saved. Saving

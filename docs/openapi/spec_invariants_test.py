@@ -721,6 +721,34 @@ def test_oss_bundle_is_the_full_bundle_without_enterprise_operations():
     assert not leaked, f"enterprise-only operations in openapi-oss.json: {leaked[:5]}"
 
 
+def test_evals_install_pass_criteria_replaces_the_whole_rule_set():
+    """InstallConfig replaces the built-in's pass rules with the override as a whole and validates
+    it without filling defaults, so an override that gives only entry_level answers 400. The schema
+    requires both levels whenever pass_criteria is given."""
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
+
+    entry = {"name": "score", "operator": ">=", "value": 0.5}
+    run = {"name": "mean_score", "operator": ">=", "value": 0.5}
+    cases = [
+        ("an entry-only override", {"pass_criteria": {"entry_level": entry}}, False),
+        ("a run-only override", {"pass_criteria": {"run_level": run}}, False),
+        ("both levels", {"pass_criteria": {"entry_level": entry, "run_level": run}}, True),
+        ("no override", {}, True),
+    ]
+    problems = []
+    for name in ("openapi.json", "openapi-oss.json"):
+        bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
+        schema = bundle["paths"]["/api/evals/catalog/{key}/install"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        validator = jsonschema.Draft202012Validator(schema)
+        for label, body, want in cases:
+            if validator.is_valid(body) != want:
+                problems.append(f"{name}: {label} is {'refused' if want else 'accepted'}, want {'accepted' if want else 'refused'}")
+    assert not problems, "InstallRequest.pass_criteria drift:\n    " + "\n    ".join(problems)
+
+
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
 check("every fragment openapi.yaml mounts exists", test_every_mounted_fragment_exists)
@@ -1126,6 +1154,9 @@ SERVICE_CLAMPED_LIST_OPERATIONS = {
     "listEvalDatasetRows": ("evalsdatasets.yaml", "datasets-rows", 100, 200),
     "listEvalDatasets": ("evalsdatasets.yaml", "datasets", 50, 200),
     "diffEvalDatasetVersions": ("evalsdatasets.yaml", "datasets-version-diff", 100, 200),
+    "listEvalRuns": ("evalsruns.yaml", "runs", 50, 200),
+    "listEvalRunEntries": ("evalsruns.yaml", "run-entries", 100, 200),
+    "compareEvalRuns": ("evalsruns.yaml", "runs-compare", 100, 200),
 }
 
 # Clamped handlers whose route has no operation in the spec yet. Listed so the gap stays visible.
@@ -1382,32 +1413,259 @@ def test_evals_validate_request_needs_type_or_evaluator_id():
     assert not problems, "ValidateRequest drift:\n    " + "\n    ".join(problems)
 
 
-def test_evals_install_pass_criteria_replaces_the_whole_rule_set():
-    """InstallConfig replaces the built-in's pass rules with the override as a whole and validates
-    it without filling defaults, so an override that gives only entry_level answers 400. The schema
-    requires both levels whenever pass_criteria is given."""
+def test_run_comparison_accepts_missing_entry():
+    """A compared row holds one entry per run, null for a run without the row. The bundles are
+    OpenAPI 3.1, where `nullable` is ignored, so the items schema must be an anyOf of the RunEntry
+    ref and a `type: null` branch."""
+    sources = {"evalsruns.yaml RunComparedRow": load(HERE / "schemas" / "management" / "evalsruns.yaml")["RunComparedRow"]["properties"]["entries"]["items"]}
+    for name in ("openapi.json", "openapi-oss.json"):
+        bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
+        schema = bundle["paths"]["/api/evals/runs/compare"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        sources[f"{name} compare rows"] = schema["properties"]["rows"]["items"]["properties"]["entries"]["items"]
+    problems = []
+    for where, items in sources.items():
+        branches = items.get("anyOf")
+        if not isinstance(branches, list):
+            problems.append(f"{where}: items has no anyOf: {items!r}")
+            continue
+        if not any(isinstance(b, dict) and str(b.get("$ref", "")).endswith("RunEntry") for b in branches):
+            problems.append(f"{where}: no RunEntry ref branch")
+        if not any(isinstance(b, dict) and b.get("type") == "null" for b in branches):
+            problems.append(f"{where}: no type null branch")
+        if "nullable" in items:
+            problems.append(f"{where}: carries nullable, which 3.1 ignores")
+    assert not problems, "RunComparedRow.entries drift:\n    " + "\n    ".join(problems)
+
+
+def test_bundled_internal_refs_point_into_components():
+    """Every internal $ref in a bundle names a registered component. A schema that refers to
+    itself by its fragment name (`#/RunEntry`) bundles to a pointer that resolves nowhere unless
+    the schema is registered under components."""
+
+    def walk(node, where, problems):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/") and not ref.startswith("#/components/"):
+                problems.append(f"{where}: {ref}")
+            for key, value in node.items():
+                walk(value, f"{where}/{key}", problems)
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                walk(value, f"{where}/{i}", problems)
+
+    problems = []
+    for name in ("openapi.json", "openapi-oss.json"):
+        walk(json.loads((HERE / name).read_text(encoding="utf-8")), name, problems)
+    assert not problems, "internal refs outside #/components/:\n    " + "\n    ".join(problems[:20])
+
+
+def _bundle_operations(bundle, wanted):
+    """The operations named in wanted, keyed by operationId, from a bundle's paths."""
+    found = {}
+    for item in bundle["paths"].values():
+        for op in item.values():
+            if isinstance(op, dict) and op.get("operationId") in wanted:
+                found[op["operationId"]] = op
+    return found
+
+
+def _evals_ops_sources(wanted):
+    """The named operations from the evals path sources and both bundles, keyed by where."""
+    sources = {}
+    for fname in ("evalsruns.yaml", "evalsdatasets.yaml"):
+        doc = load(HERE / "paths" / "management" / fname)
+        for item in doc.values():
+            if not isinstance(item, dict):
+                continue
+            for op in item.values():
+                if isinstance(op, dict) and op.get("operationId") in wanted:
+                    sources[f"{fname} {op['operationId']}"] = op
+    for name in ("openapi.json", "openapi-oss.json"):
+        bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
+        for op_id, op in _bundle_operations(bundle, wanted).items():
+            sources[f"{name} {op_id}"] = op
+    return sources
+
+
+def test_evals_operations_declare_their_error_statuses():
+    """deleteEvalDataset answers 409 for a dataset a test run reads (ErrEvalDatasetHasRuns).
+    createEvalRun, rerunEvalRun and addEvalRunEvaluators answer 422 when no runner is configured
+    (runs.ErrNoRunner), and createEvalRun answers 404 for a dataset deleted during the create."""
+    want = {
+        "deleteEvalDataset": {"409"},
+        "createEvalRun": {"404", "422"},
+        "rerunEvalRun": {"422"},
+        "addEvalRunEvaluators": {"422"},
+    }
+    sources = _evals_ops_sources(set(want))
+    problems = []
+    for op_id in want:
+        for where in ("openapi.json", "openapi-oss.json"):
+            if f"{where} {op_id}" not in sources:
+                problems.append(f"{where}: {op_id} missing")
+    for where, op in sources.items():
+        op_id = where.split(" ")[1]
+        missing = sorted(want[op_id] - set(op.get("responses") or {}))
+        if missing:
+            problems.append(f"{where}: does not declare {missing}")
+    assert not problems, "evals error status drift:\n    " + "\n    ".join(problems)
+
+
+def _create_run_target(schema):
+    """The target schema of the createEvalRun body's own (non-RunInput) branch, or None."""
+    for branch in schema.get("allOf") or []:
+        if not isinstance(branch, dict) or "$ref" in branch:
+            continue
+        target = (branch.get("properties") or {}).get("target")
+        if target and "type" not in target:
+            return target
+    return None
+
+
+def _target_requirements(target):
+    got = {}
+    for cond in (target or {}).get("allOf") or []:
+        kind = (((cond.get("if") or {}).get("properties") or {}).get("type") or {}).get("const")
+        got[kind] = sorted((cond.get("then") or {}).get("required") or [])
+    return got
+
+
+def test_create_run_body_requires_the_target_fields():
+    """resolveTarget refuses a model target without provider and model, a prompt target without
+    prompt_id, and an http target without http. createEvalRun's body says so; validateEvalRun keeps
+    taking an incomplete draft."""
+    want = {"model": ["model", "provider"], "prompt": ["prompt_id"], "http": ["http"]}
+    create = {"evalsruns.yaml RunCreateInput": load(HERE / "schemas" / "management" / "evalsruns.yaml")["RunCreateInput"]}
+    validate = {}
+    for name in ("openapi.json", "openapi-oss.json"):
+        bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
+        ops = _bundle_operations(bundle, {"createEvalRun", "validateEvalRun"})
+        create[name] = ops["createEvalRun"]["requestBody"]["content"]["application/json"]["schema"]
+        validate[name] = ops["validateEvalRun"]["requestBody"]["content"]["application/json"]["schema"]
+    problems = []
+    for where, schema in create.items():
+        got = _target_requirements(_create_run_target(schema))
+        for kind, fields in want.items():
+            if got.get(kind) != fields:
+                problems.append(f"{where}: a {kind} target requires {got.get(kind)!r}, want {fields!r}")
+    for where, schema in validate.items():
+        if "if" in json.dumps(schema):
+            problems.append(f"{where}: validateEvalRun body carries target conditionals")
+    # validateEvalRun reports each missing field as a problem in a 200 valid: false, so its
+    # body requires nothing; createEvalRun refuses a run without the four.
+    want_required = ["dataset_id", "evaluators", "name", "target"]
+    validate["evalsruns.yaml RunInput"] = load(HERE / "schemas" / "management" / "evalsruns.yaml")["RunInput"]
+    for where, schema in validate.items():
+        if schema.get("required"):
+            problems.append(f"{where}: validateEvalRun body requires {schema.get('required')!r}")
+    for where, schema in create.items():
+        required = set(schema.get("required") or [])
+        for branch in schema.get("allOf") or []:
+            if isinstance(branch, dict):
+                required |= set(branch.get("required") or [])
+        if sorted(required) != want_required:
+            problems.append(f"{where}: createEvalRun body requires {sorted(required)!r}, want {want_required!r}")
+    # A target without a type is a problem in validateEvalRun's 200 valid: false (resolveTarget),
+    # so RunTarget requires nothing and validateEvalRun accepts {"target":{}}; createEvalRun's
+    # target requires type next to its conditionals.
+    run_target = load(HERE / "schemas" / "management" / "evalsruns.yaml")["RunTarget"]
+    if run_target.get("required"):
+        problems.append(f"evalsruns.yaml RunTarget requires {run_target.get('required')!r}")
+    for where, schema in validate.items():
+        target = (schema.get("properties") or {}).get("target") or {}
+        if target.get("required"):
+            problems.append(f"{where}: validateEvalRun target requires {target.get('required')!r}")
+    for where, schema in create.items():
+        target = _create_run_target(schema) or {}
+        if sorted(target.get("required") or []) != ["type"]:
+            problems.append(f"{where}: createEvalRun target requires {target.get('required')!r}, want ['type']")
+    assert not problems, "createEvalRun target drift:\n    " + "\n    ".join(problems)
+
+
+def test_run_version_numbers_are_not_negative():
+    """The service refuses a negative prompt_version, evaluator version or dataset_version."""
+    doc = load(HERE / "schemas" / "management" / "evalsruns.yaml")
+    sources = {
+        "evalsruns.yaml RunTarget.prompt_version": doc["RunTarget"]["properties"]["prompt_version"],
+        "evalsruns.yaml RunEvaluatorRef.version": doc["RunEvaluatorRef"]["properties"]["version"],
+        "evalsruns.yaml RunInput.dataset_version": doc["RunInput"]["properties"]["dataset_version"],
+    }
+    for name in ("openapi.json", "openapi-oss.json"):
+        bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
+        body = _bundle_operations(bundle, {"createEvalRun"})["createEvalRun"]["requestBody"]["content"]["application/json"]["schema"]
+        run_input = next(b for b in body["allOf"] if "dataset_version" in (b.get("properties") or {}))
+        props = run_input["properties"]
+        sources[f"{name} prompt_version"] = props["target"]["properties"]["prompt_version"]
+        sources[f"{name} evaluator version"] = props["evaluators"]["items"]["properties"]["version"]
+        sources[f"{name} dataset_version"] = props["dataset_version"]
+    problems = [f"{where}: minimum is {s.get('minimum')!r}, want 0" for where, s in sources.items() if s.get("minimum") != 0]
+    assert not problems, "run version bounds drift:\n    " + "\n    ".join(problems)
+
+
+def test_rerun_requires_a_selector():
+    """Rerun answers 400 to a request with neither a scope nor a nonempty entry_ids list, so the
+    schema refuses {} and {"entry_ids": []}."""
     try:
         import jsonschema
     except ImportError as exc:
         raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
-
-    entry = {"name": "score", "operator": ">=", "value": 0.5}
-    run = {"name": "mean_score", "operator": ">=", "value": 0.5}
-    cases = [
-        ("an entry-only override", {"pass_criteria": {"entry_level": entry}}, False),
-        ("a run-only override", {"pass_criteria": {"run_level": run}}, False),
-        ("both levels", {"pass_criteria": {"entry_level": entry, "run_level": run}}, True),
-        ("no override", {}, True),
-    ]
-    problems = []
+    sources = {"evalsruns.yaml RunRerunRequest": load(HERE / "schemas" / "management" / "evalsruns.yaml")["RunRerunRequest"]}
     for name in ("openapi.json", "openapi-oss.json"):
         bundle = json.loads((HERE / name).read_text(encoding="utf-8"))
-        schema = bundle["paths"]["/api/evals/catalog/{key}/install"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        op = _bundle_operations(bundle, {"rerunEvalRun"})["rerunEvalRun"]
+        sources[name] = op["requestBody"]["content"]["application/json"]["schema"]
+    cases = [
+        ({}, False),
+        ({"entry_ids": []}, False),
+        ({"scope": "failed"}, True),
+        ({"entry_ids": ["e1"]}, True),
+        ({"scope": "all", "entry_ids": ["e1"]}, True),
+    ]
+    problems = []
+    for where, schema in sources.items():
         validator = jsonschema.Draft202012Validator(schema)
-        for label, body, want in cases:
+        for body, want in cases:
             if validator.is_valid(body) != want:
-                problems.append(f"{name}: {label} is {'refused' if want else 'accepted'}, want {'accepted' if want else 'refused'}")
-    assert not problems, "InstallRequest.pass_criteria drift:\n    " + "\n    ".join(problems)
+                problems.append(f"{where}: {body!r} {'refused' if want else 'accepted'}, want {'accepted' if want else 'refused'}")
+    assert not problems, "RunRerunRequest drift:\n    " + "\n    ".join(problems)
+
+
+def test_evals_operation_tags_are_declared():
+    """Every tag an /api/evals operation uses is declared in the root tags list, in the source and
+    both bundles. Older tags elsewhere in the spec predate this check and are not covered."""
+    def used_tags(document_paths, resolve):
+        tags = set()
+        for path, item in (document_paths or {}).items():
+            if not path.startswith("/api/evals"):
+                continue
+            item = resolve(item)
+            if not isinstance(item, dict):
+                continue
+            for op in item.values():
+                if isinstance(op, dict):
+                    tags.update(op.get("tags") or [])
+        return tags
+
+    def resolve_source(item):
+        ref = item.get("$ref") if isinstance(item, dict) else None
+        if not ref:
+            return item
+        match = REF_RE.fullmatch(ref.strip())
+        if not match:
+            return item
+        doc = load(PATHS_DIR / f"{match.group(1)}.yaml")
+        return resolve_pointer(doc, pointer_tokens(match.group(2)))
+
+    sources = {"openapi.yaml": (spec, resolve_source)}
+    for name in ("openapi.json", "openapi-oss.json"):
+        sources[name] = (json.loads((HERE / name).read_text(encoding="utf-8")), lambda item: item)
+    problems = []
+    for where, (document, resolve) in sources.items():
+        declared = {t.get("name") for t in document.get("tags") or []}
+        missing = sorted(used_tags(document.get("paths"), resolve) - declared)
+        if missing:
+            problems.append(f"{where}: undeclared tags {missing!r}")
+    assert not problems, "tag drift:\n    " + "\n    ".join(problems)
 
 
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
@@ -1440,6 +1698,13 @@ check("evals Criterion name enum and per-operator value types match validateCrit
 check("evals create requires config and update does not", test_evals_create_requires_config_and_update_does_not)
 check("CommitSessionRequest refuses an empty commit_message and an empty message_indices", test_commit_session_request_refuses_empty_values)
 check("evals ValidateRequest requires type or evaluator_id", test_evals_validate_request_needs_type_or_evaluator_id)
+check("bundled internal refs point into #/components/", test_bundled_internal_refs_point_into_components)
+check("RunComparedRow entries accept a missing entry as null in 3.1 form", test_run_comparison_accepts_missing_entry)
+check("evals operations declare 409, 422 and 404 where the server answers them", test_evals_operations_declare_their_error_statuses)
+check("createEvalRun body requires each target type's fields and name, target, dataset_id and evaluators; validateEvalRun requires none", test_create_run_body_requires_the_target_fields)
+check("run prompt, evaluator and dataset versions have minimum 0", test_run_version_numbers_are_not_negative)
+check("RunRerunRequest refuses a body with neither scope nor a nonempty entry_ids", test_rerun_requires_a_selector)
+check("every tag an /api/evals operation uses is declared in the root tags", test_evals_operation_tags_are_declared)
 check("evals InstallRequest pass_criteria requires both levels", test_evals_install_pass_criteria_replaces_the_whole_rule_set)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

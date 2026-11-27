@@ -150,6 +150,8 @@ tags:
     description: Evaluator definitions, versions, the built-in catalog and evaluator runs. The /api/evals routes exist only when Bifrost runs with a config store. Running an evaluator also needs the evaluation queue; when the queue cannot be created, runs fail while the other routes keep working.
   - name: Datasets
     description: Evaluation datasets, their columns, rows, versions, splits, files, CSV import, CSV and JSONL export, and rows added from logs and sessions. The /api/evals/datasets routes exist only when Bifrost runs with a config store; without one none of them are registered. They do not need the evaluation queue. Adding rows from logs or sessions also needs a log store.
+  - name: Test Runs
+    description: "Test runs score a dataset version against a target and evaluators, with reruns, added evaluators, reviews and run comparison. The /api/evals/runs routes exist only when Bifrost runs with a config store. Starting a run, rerunning entries and adding evaluators also need the evaluation runner: without the evaluation queue, or when the runner fails to start, those calls answer 422 while the read routes keep working."
   - name: Routing
     description: Routing rules and complexity analyzer configuration
   - name: Logging
@@ -1406,6 +1408,28 @@ paths:
     $ref: "./paths/management/evals.yaml#/keys"
 
   # Datasets
+  /api/evals/runs:
+    $ref: "./paths/management/evalsruns.yaml#/runs"
+  /api/evals/runs/validate:
+    $ref: "./paths/management/evalsruns.yaml#/runs-validate"
+  /api/evals/runs/compare:
+    $ref: "./paths/management/evalsruns.yaml#/runs-compare"
+  /api/evals/runs/{id}:
+    $ref: "./paths/management/evalsruns.yaml#/run"
+  /api/evals/runs/{id}/stop:
+    $ref: "./paths/management/evalsruns.yaml#/run-stop"
+  /api/evals/runs/{id}/rerun:
+    $ref: "./paths/management/evalsruns.yaml#/run-rerun"
+  /api/evals/runs/{id}/evaluators:
+    $ref: "./paths/management/evalsruns.yaml#/run-evaluators"
+  /api/evals/runs/{id}/entries:
+    $ref: "./paths/management/evalsruns.yaml#/run-entries"
+  /api/evals/runs/{id}/entries/{entryId}:
+    $ref: "./paths/management/evalsruns.yaml#/run-entry"
+  /api/evals/runs/{id}/entries/{entryId}/results/{evaluatorId}:
+    $ref: "./paths/management/evalsruns.yaml#/run-entry-result"
+  /api/evals/runs/{id}/export:
+    $ref: "./paths/management/evalsruns.yaml#/run-export"
   /api/evals/datasets:
     $ref: "./paths/management/evalsdatasets.yaml#/datasets"
   /api/evals/datasets/{id}:
@@ -2770,6 +2794,10 @@ components:
       $ref: "./schemas/management/warp.yaml#/WarpStoredToolCall"
     WarpStoredQuestion:
       $ref: "./schemas/management/warp.yaml#/WarpStoredQuestion"
+
+    # Evals
+    RunEntry:
+      $ref: "./schemas/management/evalsruns.yaml#/RunEntry"
 
     # Relays
     RelayAuthConfig:

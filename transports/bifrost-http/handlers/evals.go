@@ -11,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/evals"
 	"github.com/maximhq/bifrost/framework/evals/datasets"
+	"github.com/maximhq/bifrost/framework/evals/runs"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -80,10 +81,12 @@ func sendEvalsError(ctx *fasthttp.RequestCtx, err error) {
 		errors.Is(err, configstore.ErrEvalDatasetNoChanges),
 		errors.Is(err, configstore.ErrEvalDatasetLatestVersion),
 		errors.Is(err, configstore.ErrEvalDatasetDraftNotSaved),
-		errors.Is(err, datasets.ErrEvalDatasetChangedDuringCopy):
+		errors.Is(err, datasets.ErrEvalDatasetChangedDuringCopy),
+		errors.Is(err, configstore.ErrEvalDatasetVersionInUse),
+		errors.Is(err, configstore.ErrEvalDatasetHasRuns):
 		// The request is well formed but does not fit the dataset's current state.
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
-	case errors.Is(err, evals.ErrNoEvalKey):
+	case errors.Is(err, evals.ErrNoEvalKey), errors.Is(err, runs.ErrNoRunner):
 		// The request is well formed; the gateway is not set up to serve it yet.
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, err.Error())
 	default:

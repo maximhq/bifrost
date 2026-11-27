@@ -352257,6 +352257,117 @@
           }
         }
       ]
+    },
+    {
+      "name": "392. Test runs API: draft check, listing and a missing dataset (evals test runs)",
+      "description": "The test runs management API (/api/evals/runs) had no harness case. These cases need no provider spend and no evaluation queue: the draft check answers 200 with valid false and each missing field as a problem (its body requires nothing), the run list answers 200 with its page fields, and starting a run on a dataset that does not exist is refused with 400 before the runner is consulted.",
+      "item": [
+        {
+          "name": "openai evals test runs: POST /api/evals/runs/validate with an empty draft answers valid false with problems",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// validateEvalRun reports each missing field as a problem in a 200, it does not refuse the draft.",
+                  "pm.test('evals test runs: an empty draft is checked, not refused', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.valid, 'valid: ' + pm.response.text()).to.equal(false);",
+                  "  pm.expect(body.problems, 'problems: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.problems.join('; '), 'the missing dataset is a problem: ' + pm.response.text()).to.include('the dataset does not exist');",
+                  "  pm.expect(body.variables, 'variables: ' + pm.response.text()).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/api/evals/runs/validate"
+          }
+        },
+        {
+          "name": "openai evals test runs: GET /api/evals/runs answers its page fields",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// listEvalRuns: limit 0 or absent means 50, and the page carries runs, total, limit and offset.",
+                  "pm.test('evals test runs: the run list is a page', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.runs, 'runs: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(body.total, 'total: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(body.limit, 'limit: ' + pm.response.text()).to.equal(50);",
+                  "  pm.expect(body.offset, 'offset: ' + pm.response.text()).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/evals/runs"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai evals test runs: POST /api/evals/runs on a dataset that does not exist is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// createEvalRun refuses a run whose settings have problems with 400, before it needs a runner.",
+                  "pm.test('evals test runs: a run on a missing dataset is refused', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'the reason names the dataset').to.include('the dataset does not exist');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\"name\":\"harness missing dataset\",\"target\":{\"type\":\"dataset\"},\"dataset_id\":\"harness-no-such-dataset\",\"evaluators\":[{\"id\":\"harness-no-such-evaluator\"}]}"
+            },
+            "url": "{{baseUrl}}/api/evals/runs"
+          }
+        }
+      ]
     }
   ]
 }
