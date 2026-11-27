@@ -1,4 +1,0 @@
-- feat: access check for the MCP session connect endpoint
-- fix: a budget or rate-limit charge that lands during a virtual key, team, customer, model config or provider refresh is no longer lost, and a refresh cannot move a reset boundary backward
-- fix: budget and rate-limit resets, baseline installs and dumps update usage and its persisted baseline together
-- chore: upgraded core to v1.17.0 and framework to v1.14.0
