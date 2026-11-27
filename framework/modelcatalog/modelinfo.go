@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -195,6 +196,74 @@ func (mc *ModelCatalog) CalculateRequestCostBreakdown(ctx *schemas.BifrostContex
 		return nil
 	}
 	return mc.CalculateCostBreakdown(resp, requestPricingScopes(ctx, resp)).DeepCopy()
+}
+
+var _ schemas.ErrorCostProvider = (*ModelCatalog)(nil)
+
+// CalculateErrorCostBreakdown prices a failed request the way the logging
+// plugin prices its error row (applyErrorBillingFromBilledUsage plus
+// applyInternalCallCosts): the error's billed usage at its provider and
+// resolved model, plus the semantic-cache embedding, guardrail judge and
+// budget-counted routing calls recorded on ctx.
+//
+// Routing is read ungated, unlike the logging row, which charges it only to
+// the first attempt: the error this prices is the request's final outcome,
+// returned after any fallbacks have run, so the routing call belongs to it.
+// A later turn of an MCP agent loop is the exception: it shares the first
+// turn's context, and the loop sums its turns, so the first turn carries it.
+//
+// Returns nil when nothing is billable. Must be called while ctx is live.
+func (mc *ModelCatalog) CalculateErrorCostBreakdown(ctx *schemas.BifrostContext, err *schemas.BifrostError) *schemas.BifrostCost {
+	if mc == nil || err == nil {
+		return nil
+	}
+	// The same accessor the logging plugin builds the error row from.
+	requestType, provider, requestedModel, resolvedModel := bifrost.GetResponseFields(nil, err)
+	scopes := PricingLookupScopesFromContext(ctx, string(provider))
+
+	var cost *schemas.BifrostCost
+	if billedUsage := err.ExtraFields.BilledUsage; billedUsage != nil {
+		model := resolvedModel
+		if model == "" {
+			model = requestedModel
+		}
+		// The datasheet can return the provider's own usage.Cost pointer.
+		billed := mc.CalculateCostBreakdownForUsage(billedUsage, provider, model, requestType, scopes)
+		if billed != nil && billed.TotalCost > 0 {
+			cost = billed.DeepCopy()
+		}
+	}
+
+	var cacheCost, guardrailCost, routingCost float64
+	if cacheMetadata, ok := schemas.CacheMetadataFromContext(ctx); ok {
+		cacheCost = mc.CalculateCacheEmbeddingCost(cacheMetadata, scopes)
+	}
+	if guardrailMetadata, ok := schemas.GuardrailMetadataFromContext(ctx); ok {
+		guardrailCost = mc.CalculateGuardrailCost(guardrailMetadata, scopes)
+	}
+	_, agentTurn := ctx.Value(schemas.BifrostContextKeyMCPAgentServedRoute).(*schemas.RoutingInfo)
+	if routingMetadata, ok := schemas.RoutingMetadataFromContext(ctx); ok && !agentTurn {
+		for _, call := range routingMetadata.Calls {
+			if call.CountTowardBudgets {
+				routingCost += mc.CalculateRoutingCallCost(call, scopes)
+			}
+		}
+	}
+	if sideCost := cacheCost + guardrailCost + routingCost; sideCost > 0 {
+		cost = cost.Add(&schemas.BifrostCost{
+			AdditionalCost: sideCost,
+			AdditionalCostDetails: &schemas.AdditionalCostDetails{
+				SemanticCacheCost: cacheCost,
+				GuardrailCost:     guardrailCost,
+				RoutingCost:       routingCost,
+			},
+			TotalCost: sideCost,
+		})
+	}
+	if cost == nil || cost.TotalCost <= 0 {
+		return nil
+	}
+	return cost
 }
 
 // requestPricingScopes resolves the pricing lookup scopes for a completed

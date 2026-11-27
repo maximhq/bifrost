@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -757,6 +758,187 @@ func TestParallelToolCallsHaveUniqueMCPLogIDs(t *testing.T) {
 			"expected %d unique MCP log IDs (one per parallel tool call), got %d",
 			numTools, len(uniqueIDs),
 		)
+	}
+}
+
+// costedChatTurn is an agent turn's response: one auto-executable tool call, or a
+// final answer when toolCall is false, carrying the send-back cost core attached
+// to it (nil when the turn was not priced).
+func costedChatTurn(toolCall bool, cost *schemas.BifrostCost) *schemas.BifrostChatResponse {
+	message := &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant}
+	finishReason := "stop"
+	if toolCall {
+		finishReason = "tool_calls"
+		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+			ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				ID:       schemas.Ptr("call_1"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("is_prime"), Arguments: `{"n": 2}`},
+			}},
+		}
+	} else {
+		message.Content = &schemas.ChatMessageContent{ContentStr: schemas.Ptr("2 is prime.")}
+	}
+	return &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{
+			FinishReason:                &finishReason,
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: message},
+		}},
+		ExtraFields: schemas.BifrostResponseExtraFields{Cost: cost},
+	}
+}
+
+func runCostedChatAgent(t *testing.T, initial *schemas.BifrostChatResponse, turns []*schemas.BifrostChatResponse, turnErr *schemas.BifrostError) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	t.Helper()
+	makeReq := func(*schemas.BifrostContext, *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		if len(turns) == 0 {
+			return nil, turnErr
+		}
+		next := turns[0]
+		turns = turns[1:]
+		return next, nil
+	}
+	executeTool := func(_ *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		return &schemas.BifrostMCPResponse{ChatMessage: &schemas.ChatMessage{
+			Role:            schemas.ChatMessageRoleTool,
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: req.ID},
+			Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("true")},
+		}}, nil
+	}
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("is 2 prime?")}}},
+	}
+	executor := &AgentModeExecutor{logger: &MockLogger{}}
+	return executor.ExecuteAgentForChatRequest(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), 10, req, initial, makeReq, nil, executeTool, &MockAutoClientManager{},
+	)
+}
+
+// Each agent turn is a separate request that core priced on its own; the final
+// response carries the sum of all of them, set on a copy of the last turn.
+func TestExecuteAgentSumsTurnCosts(t *testing.T) {
+	last := costedChatTurn(false, &schemas.BifrostCost{OutputCost: 0.3, TotalCost: 0.3})
+	resp, bifrostErr := runCostedChatAgent(t,
+		costedChatTurn(true, &schemas.BifrostCost{InputCost: 0.1, TotalCost: 0.1}),
+		[]*schemas.BifrostChatResponse{costedChatTurn(true, &schemas.BifrostCost{InputCost: 0.2, TotalCost: 0.2}), last},
+		nil)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+
+	cost := resp.ExtraFields.Cost
+	if cost == nil || math.Abs(cost.TotalCost-0.6) > 1e-12 || math.Abs(cost.InputCost-0.3) > 1e-12 || math.Abs(cost.OutputCost-0.3) > 1e-12 {
+		t.Fatalf("cost = %+v, want input 0.3 + output 0.3 = 0.6", cost)
+	}
+	if last.ExtraFields.Cost.TotalCost != 0.3 {
+		t.Fatalf("the last turn's own response was changed to %+v; the sum belongs on a copy", last.ExtraFields.Cost)
+	}
+}
+
+// A turn that fails still returns what the caller paid for: the turns that
+// succeeded plus the failed one, on a copy of the error the turn returned.
+func TestExecuteAgentErrorCarriesTurnCosts(t *testing.T) {
+	turnErr := &schemas.BifrostError{
+		Error:       &schemas.ErrorField{Message: "turn failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{Cost: &schemas.BifrostCost{InputCost: 0.05, TotalCost: 0.05}},
+	}
+	_, bifrostErr := runCostedChatAgent(t, costedChatTurn(true, &schemas.BifrostCost{InputCost: 0.1, TotalCost: 0.1}), nil, turnErr)
+	if bifrostErr == nil {
+		t.Fatal("agent succeeded, want the failing turn's error")
+	}
+	if cost := bifrostErr.ExtraFields.Cost; cost == nil || math.Abs(cost.TotalCost-0.15) > 1e-12 {
+		t.Fatalf("error cost = %+v, want 0.1 + 0.05 = 0.15", cost)
+	}
+	if bifrostErr == turnErr || turnErr.ExtraFields.Cost.TotalCost != 0.05 {
+		t.Fatal("the turn's own error was changed; the total belongs on a copy")
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != "turn failed" {
+		t.Fatalf("copy lost the error body: %+v", bifrostErr.Error)
+	}
+}
+
+// With the setting off no turn carries a cost, and the agent adds none.
+func TestExecuteAgentLeavesUnpricedTurnsUnpriced(t *testing.T) {
+	resp, bifrostErr := runCostedChatAgent(t, costedChatTurn(true, nil), []*schemas.BifrostChatResponse{costedChatTurn(false, nil)}, nil)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if resp.ExtraFields.Cost != nil {
+		t.Fatalf("cost = %+v, want none when no turn was priced", resp.ExtraFields.Cost)
+	}
+
+	turnErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "turn failed"}}
+	if _, bifrostErr := runCostedChatAgent(t, costedChatTurn(true, nil), nil, turnErr); bifrostErr != turnErr {
+		t.Fatal("an unpriced error was copied; it should come back as the turn returned it")
+	}
+}
+
+// mixedAutoClientManager auto-executes every tool except ask_user, which the
+// client has to run itself.
+type mixedAutoClientManager struct{ MockAutoClientManager }
+
+func (m *mixedAutoClientManager) GetClientForTool(ctx context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
+	if toolName == "ask_user" {
+		return nil, nil
+	}
+	return m.MockAutoClientManager.GetClientForTool(ctx, toolName)
+}
+
+// When a later turn asks for a tool the client must run, the loop returns a
+// synthesized response built from that turn; it carries the sum too.
+func TestExecuteAgentSumsTurnCostsWhenReturningNonAutoTools(t *testing.T) {
+	stop := costedChatTurn(true, &schemas.BifrostCost{InputCost: 0.2, TotalCost: 0.2})
+	stop.Choices[0].Message.ToolCalls[0].Function.Name = schemas.Ptr("ask_user")
+	turns := []*schemas.BifrostChatResponse{stop}
+
+	makeReq := func(*schemas.BifrostContext, *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		next := turns[0]
+		turns = turns[1:]
+		return next, nil
+	}
+	executeTool := func(_ *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		return &schemas.BifrostMCPResponse{ChatMessage: &schemas.ChatMessage{
+			Role:            schemas.ChatMessageRoleTool,
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: req.ID},
+			Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("true")},
+		}}, nil
+	}
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("is 2 prime?")}}},
+	}
+	executor := &AgentModeExecutor{logger: &MockLogger{}}
+	resp, bifrostErr := executor.ExecuteAgentForChatRequest(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), 10, req,
+		costedChatTurn(true, &schemas.BifrostCost{InputCost: 0.1, TotalCost: 0.1}), makeReq, nil, executeTool, &mixedAutoClientManager{},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if cost := resp.ExtraFields.Cost; cost == nil || math.Abs(cost.TotalCost-0.3) > 1e-12 {
+		t.Fatalf("cost = %+v, want 0.1 + 0.2 = 0.3", cost)
+	}
+	if stop.ExtraFields.Cost.TotalCost != 0.2 {
+		t.Fatalf("the turn's own response was changed to %+v; the sum belongs on a copy", stop.ExtraFields.Cost)
+	}
+}
+
+func TestResponsesAdapterApplyCostReturnsCopy(t *testing.T) {
+	adapter := &responsesAPIAdapter{}
+	original := &schemas.BifrostResponsesResponse{ExtraFields: schemas.BifrostResponseExtraFields{Cost: &schemas.BifrostCost{TotalCost: 0.1}}}
+	sum := &schemas.BifrostCost{TotalCost: 0.4}
+
+	got := adapter.applyCost(original, sum).(*schemas.BifrostResponsesResponse)
+	if got == original || got.ExtraFields.Cost != sum || original.ExtraFields.Cost.TotalCost != 0.1 {
+		t.Fatalf("applyCost = %+v, want a copy carrying the sum with the original unchanged", got.ExtraFields.Cost)
+	}
+	if adapter.extractCost(original).TotalCost != 0.1 {
+		t.Fatal("extractCost did not read the response's cost")
+	}
+	if adapter.applyCost(original, nil) != original {
+		t.Fatal("applyCost with no cost must return the response itself")
 	}
 }
 

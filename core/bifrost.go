@@ -164,6 +164,7 @@ type Bifrost struct {
 	mcpFactoryMu               sync.Mutex                            // Orders factory registration against lazy MCP manager creation
 	mcpDiscoveryChangeCallback mcpDiscoveryChangeFunc                // Installed on a lazily created or injected manager; guarded by mcpFactoryMu
 	dropExcessRequests         atomic.Bool                           // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	sendBackCost               atomic.Bool                           // If true, responses and errors carry Bifrost's computed cost (see responsecost.go)
 	keySelector                schemas.KeySelector                   // Custom key selector function
 	keyPoolFilter              schemas.KeyPoolFilter                 // optional hook to veto keys before selection (nil = all eligible)
 	sessionAffinity            schemas.SessionAffinity               // decides which route and key a session stays on; nil when none is configured
@@ -348,6 +349,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	bifrost.providers.Store(&[]schemas.Provider{})
 
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	bifrost.sendBackCost.Store(config.SendBackCost)
 	bifrost.configureUsageEstimationTokenizers(config.UsageEstimationTokenizers)
 
 	if bifrost.keySelector == nil {
@@ -525,6 +527,7 @@ func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	bifrost.sendBackCost.Store(config.SendBackCost)
 	bifrost.configureUsageEstimationTokenizers(config.UsageEstimationTokenizers)
 	return nil
 }
@@ -4576,6 +4579,18 @@ func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
 	bifrost.logger.Info("drop_excess_requests updated to: %v", value)
 }
 
+// GetSendBackCost returns the current value of SendBackCost
+func (bifrost *Bifrost) GetSendBackCost() bool {
+	return bifrost.sendBackCost.Load()
+}
+
+// UpdateSendBackCost updates the SendBackCost setting at runtime.
+// This allows for hot-reloading of this configuration value.
+func (bifrost *Bifrost) UpdateSendBackCost(value bool) {
+	bifrost.sendBackCost.Store(value)
+	bifrost.logger.Info("send_back_cost updated to: %v", value)
+}
+
 // UpdateUsageEstimationTokenizers sets, at runtime, the embedded tokenizer
 // vocabularies a cancelled stream's usage is estimated with.
 func (bifrost *Bifrost) UpdateUsageEstimationTokenizers(families []string) {
@@ -6114,6 +6129,12 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		// tryRequest can stamp the response before post-hooks, where logging reads it.
 		ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
 	}
+	// Send back cost on the returned result. Registered before the latency backstop
+	// so it runs after it, once every post-hook and fallback has finished.
+	defer func() {
+		resp = bifrost.withResponseCost(ctx, resp)
+		bifrostErr = bifrost.withErrorCost(ctx, bifrostErr)
+	}()
 	// Backstop for the returned body if a post-hook replaced the response.
 	defer func() {
 		ctx.StampUpstreamLatency()

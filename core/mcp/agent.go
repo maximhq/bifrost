@@ -159,6 +159,8 @@ func (a *AgentModeExecutor) executeAgent(
 
 	// Accumulate token usage across all LLM calls in the agent loop
 	accumulatedUsage := adapter.extractUsage(currentResponse)
+	// Same for the send-back cost core attached to each turn; nil when the setting is off.
+	accumulatedCost := adapter.extractCost(currentResponse)
 
 	originalRequestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 	if ok {
@@ -357,6 +359,7 @@ func (a *AgentModeExecutor) executeAgent(
 					},
 					ExtraFields: schemas.BifrostErrorExtraFields{
 						MCPAuthRequired: authRequiredErr,
+						Cost:            accumulatedCost, // the turns that already ran
 					},
 				}
 			}
@@ -382,8 +385,9 @@ func (a *AgentModeExecutor) executeAgent(
 			if depth == 1 && len(allExecutedToolResults) == 0 {
 				return currentResponse, nil
 			}
-			// Apply accumulated usage before building the final response
+			// Apply accumulated usage and cost before building the final response
 			adapter.applyUsage(currentResponse, accumulatedUsage)
+			currentResponse = adapter.applyCost(currentResponse, accumulatedCost)
 			// The synthesized response replaces this turn too, so its text and reasoning are carried.
 			adapter.carryForward(currentResponse, autoExecutableTools)
 			// Create response with all executed tool results from all iterations, and non-auto-executable tool calls
@@ -409,14 +413,20 @@ func (a *AgentModeExecutor) executeAgent(
 		response, err := adapter.makeLLMCall(ctx, newReq)
 		if err != nil {
 			a.logger.Error("Agent mode: LLM request failed: %v", err)
+			// The caller pays for the turns that succeeded too, not only the failed one.
+			if accumulatedCost != nil {
+				return nil, err.WithCost(accumulatedCost.Add(err.ExtraFields.Cost))
+			}
 			return nil, err
 		}
 
 		currentResponse = response
 		accumulatedUsage = schemas.MergeBifrostLLMUsage(accumulatedUsage, adapter.extractUsage(currentResponse))
+		accumulatedCost = accumulatedCost.Add(adapter.extractCost(currentResponse))
 	}
 
 	adapter.applyUsage(currentResponse, accumulatedUsage)
+	currentResponse = adapter.applyCost(currentResponse, accumulatedCost)
 	// Usage covers every turn, so the content must too: earlier turns' text and reasoning
 	// come first, ahead of the last turn's own.
 	adapter.applyCarriedContent(currentResponse)

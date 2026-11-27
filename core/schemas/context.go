@@ -1098,6 +1098,20 @@ func (bc *BifrostContext) CalculateCostBreakdown(resp *BifrostResponse) *Bifrost
 	return catalog.CalculateRequestCostBreakdown(bc, resp)
 }
 
+// CalculateErrorCostBreakdown returns the cost breakdown of a failed request,
+// matching what the logging plugin records on the error's log row. Returns nil
+// when no catalog is wired, the catalog cannot price errors (it does not
+// implement ErrorCostProvider), or nothing is billable.
+//
+// PLUGIN AUTHORS: call this synchronously, for the same reason as CalculateCost.
+func (bc *BifrostContext) CalculateErrorCostBreakdown(err *BifrostError) *BifrostCost {
+	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ErrorCostProvider)
+	if catalog == nil || err == nil {
+		return nil
+	}
+	return catalog.CalculateErrorCostBreakdown(bc, err)
+}
+
 // AppendRoutingEngineLog appends a routing engine log entry to the context.
 // Parameters:
 //   - ctx: The Bifrost context
