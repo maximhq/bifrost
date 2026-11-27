@@ -1377,7 +1377,22 @@
 		"leavesGoverningOwnerUnassigned": "Configúrala abajo o rechazará las solicitudes cuando se desasigne.",
 		"ownerProfileNoticeUnnamed": "Este {{owner}} rige la clave mediante su perfil de acceso. Sus presupuestos, límites de solicitudes y proveedores se aplican a esta clave.",
 		"managedByProfileToggleHint": "Esta clave virtual la gestiona un perfil de acceso. Actívala o desactívala desde el perfil.",
-		"noUpdatePermission": "No tienes permiso para actualizar claves virtuales."
+		"noUpdatePermission": "No tienes permiso para actualizar claves virtuales.",
+		"copyNameAria": "Copiar el nombre de {{name}}",
+		"nameCopied": "Nombre de la clave copiado",
+		"secretKey": {
+			"title": "Esta es una clave secreta",
+			"warning": "Cualquiera con esta clave puede enviar solicitudes con cargo a su presupuesto.",
+			"shareName": "Para referirte a esta clave, comparte su nombre:",
+			"confirmCopy": "Copiar clave",
+			"confirmReveal": "Mostrar clave",
+			"cancel": "Cancelar",
+			"copyAria": "Copiar clave secreta",
+			"revealAria": "Mostrar clave secreta",
+			"hideAria": "Ocultar clave secreta",
+			"auditFailedReveal": "No se pudo mostrar la clave. Inténtalo de nuevo.",
+			"auditFailedCopy": "No se pudo copiar la clave. Inténtalo de nuevo."
+		}
 	},
 	"modelLimits": {
 		"title": "Presupuestos y límites",

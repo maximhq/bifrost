@@ -1,6 +1,6 @@
 export type VirtualKeyAccessKind = "reveal" | "copy";
 
-// OSS stub: virtual key access auditing is enterprise-only.
-export function useVirtualKeyAccessAudit(): (vkId: string, kind: VirtualKeyAccessKind) => void {
-	return () => {};
+// OSS stub: there is no audit log to wait on, so every access is allowed.
+export function useVirtualKeyAccessAudit(): (vkId: string, kind: VirtualKeyAccessKind) => Promise<boolean> {
+	return () => Promise.resolve(true);
 }

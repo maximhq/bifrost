@@ -1377,7 +1377,22 @@
 		"leavesGoverningOwnerUnassigned": "以下で設定してください。割り当てを解除すると、リクエストは拒否されます。",
 		"ownerProfileNoticeUnnamed": "この{{owner}}のアクセスプロファイルによって管理されています。その予算、レート制限、プロバイダーがこのキーに適用されます。",
 		"managedByProfileToggleHint": "この仮想キーはアクセスプロファイルで管理されています。プロファイルから有効化または無効化してください。",
-		"noUpdatePermission": "仮想キーを更新する権限がありません。"
+		"noUpdatePermission": "仮想キーを更新する権限がありません。",
+		"copyNameAria": "{{name}} の名前をコピー",
+		"nameCopied": "キー名をコピーしました",
+		"secretKey": {
+			"title": "これはシークレットキーです",
+			"warning": "このキーを持つ人は誰でも、その予算でリクエストを送信できます。",
+			"shareName": "このキーを指す場合は、名前を共有してください:",
+			"confirmCopy": "キーをコピー",
+			"confirmReveal": "キーを表示",
+			"cancel": "キャンセル",
+			"copyAria": "シークレットキーをコピー",
+			"revealAria": "シークレットキーを表示",
+			"hideAria": "シークレットキーを隠す",
+			"auditFailedReveal": "キーを表示できませんでした。もう一度お試しください。",
+			"auditFailedCopy": "キーをコピーできませんでした。もう一度お試しください。"
+		}
 	},
 	"modelLimits": {
 		"title": "予算と制限",
