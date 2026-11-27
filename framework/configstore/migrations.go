@@ -615,6 +615,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
 	{IDs: []string{"add_model_router_modes"}, run: migrationAddModelRouterModes},
+	{IDs: []string{"add_model_router_meta_column"}, run: migrationAddModelRouterMetaColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -14067,6 +14068,39 @@ func migrationAddModelRouterModes(ctx context.Context, db *gorm.DB, logger schem
 	return nil
 }
 
+// migrationAddModelRouterMetaColumn adds the meta column, where the upgrade from
+// routing rules records the rules each router was made from. Routers that were
+// not made from rules leave it NULL.
+func migrationAddModelRouterMetaColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_router_meta_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelRouter{}, "Meta"); err != nil {
+				return fmt.Errorf("add meta column to model_routers: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelRouter{}, "Meta"); err != nil {
+				return fmt.Errorf("drop meta column from model_routers: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
 // migrationAddMCPClientMetadataURLColumns adds the hosted Client ID Metadata Document URL setting and
 // the marker for oauth configs whose client_id is Bifrost's own document. Existing configs stay unmarked
 // and are recognised by the document's path under their callback base.
@@ -18027,4 +18061,132 @@ func migrationAddGovernanceUsageResetEpochs(ctx context.Context, db *gorm.DB, lo
 		},
 	}})
 	return migration.Migrate()
+}
+
+// storedComplexityRouterSettings reads the Complexity Router settings as the gateway served them
+// to routing rules: nil when none are saved, and nil with a warning when the saved ones cannot be
+// read, since the gateway then classified with defaults that know no tier.
+func storedComplexityRouterSettings(tx *gorm.DB, logger schemas.Logger, migrationName string) (*ComplexityAnalyzerConfig, error) {
+	analyzerRaw, err := readComplexityConfigRow(tx, tables.ConfigComplexityAnalyzerConfigKey)
+	if err != nil || analyzerRaw == "" {
+		return nil, err
+	}
+	semanticRaw, err := readComplexityConfigRow(tx, tables.ConfigComplexitySemanticConfigKey)
+	if err != nil {
+		return nil, err
+	}
+	analyzer, err := DecodeComplexityAnalyzerConfig([]byte(analyzerRaw))
+	var semantic *complexitySemanticConfigRecord
+	if err == nil {
+		semantic, err = decodeComplexitySemanticConfigRow([]byte(semanticRaw))
+	}
+	if err != nil {
+		logger.Warn("[configstore] %s: the saved Complexity Router settings cannot be read, so routers made from tier rules get the default phrases and no classifier: %v", migrationName, err)
+		return nil, nil
+	}
+	combined := applyComplexitySemanticConfigRow(analyzer, semantic)
+	if combined == nil {
+		return nil, nil
+	}
+	normalized := combined.Normalized()
+	if err := normalized.Validate(); err != nil {
+		logger.Warn("[configstore] %s: the saved Complexity Router settings are not valid, so routers made from tier rules get the default phrases and no classifier: %v", migrationName, err)
+		return nil, nil
+	}
+	return &normalized, nil
+}
+
+// migrationRoutingRulesToModelRouters copies every routing rule into the model routers that route
+// as it does (see ModelRoutersFromRoutingRules), in one transaction. The rules and their targets
+// are left as they are, so an installation that goes back to a release with routing rules finds
+// them. It writes nothing when there are no rules.
+//
+// It is not in configstoreMigrationSteps yet: routing rules still run on every request, and a rule
+// copied while they do would route the request twice. It joins the steps with the change that
+// takes rules off the request path.
+//
+// There is no rollback: the routers it made cannot be told from ones saved since.
+func migrationRoutingRulesToModelRouters(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	const migrationName = "routing_rules_to_model_routers"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableRoutingRule{}) || !mg.HasTable(&tables.TableModelRouter{}) {
+				return nil
+			}
+			var rules []tables.TableRoutingRule
+			if err := tx.Preload("Targets").Order("id").Find(&rules).Error; err != nil {
+				return fmt.Errorf("read routing rules: %w", err)
+			}
+			if len(rules) == 0 {
+				return nil
+			}
+			settings, err := storedComplexityRouterSettings(tx, logger, migrationName)
+			if err != nil {
+				return fmt.Errorf("read the Complexity Router settings: %w", err)
+			}
+			existing, unreadable, err := ReadModelRouters(ctx, tx, func(query *gorm.DB) *gorm.DB { return query.Order("id") })
+			if err != nil {
+				return fmt.Errorf("read model routers: %w", err)
+			}
+			// A router this version cannot read still holds its id.
+			for id := range unreadable {
+				existing = append(existing, ModelRouter{ID: id})
+			}
+			migration, err := ModelRoutersFromRoutingRules(rules, settings, existing)
+			if err != nil {
+				return err
+			}
+			made := 0
+			for i := range migration.Routers {
+				// A router that cannot be saved is left out with a warning: failing here
+				// would stop this migration and every migration queued behind it.
+				router, err := prepareModelRouter(&migration.Routers[i])
+				if err == nil {
+					err = ValidateModelRouterRouting(router.Routing)
+				}
+				if err != nil {
+					logger.Warn("[configstore] %s: model router %q cannot be saved and is left out: %v", migrationName, migration.Routers[i].ID, err)
+					continue
+				}
+				row, err := modelRouterToTable(&router)
+				if err != nil {
+					return fmt.Errorf("model router %q: %w", router.ID, err)
+				}
+				if err := tx.Create(row).Error; err != nil {
+					return fmt.Errorf("create model router %q: %w", router.ID, err)
+				}
+				if err := writeModelRouterTargets(ctx, tx, router.ID, router.Targets); err != nil {
+					return fmt.Errorf("write the targets of model router %q: %w", router.ID, err)
+				}
+				made++
+			}
+			for _, moved := range migration.Moved {
+				if err := tx.Model(&tables.TableModelRouter{}).Where("id = ?", moved.RouterID).Update("priority", moved.Routing.Priority).Error; err != nil {
+					return fmt.Errorf("move model router %q: %w", moved.RouterID, err)
+				}
+			}
+			for _, note := range migration.Notes {
+				for _, adjusted := range note.Adjusted {
+					logger.Info("[configstore] %s: routing rule %q (%s): %s", migrationName, note.RuleName, note.RuleID, adjusted)
+				}
+				for _, flagged := range note.Flagged {
+					logger.Warn("[configstore] %s: routing rule %q (%s): %s", migrationName, note.RuleName, note.RuleID, flagged)
+				}
+			}
+			logger.Info("[configstore] %s: %d routing rule(s) became %d model router(s); %d existing router(s) moved after them", migrationName, len(rules), made, len(migration.Moved))
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("%s cannot be rolled back: the routers it made cannot be told from ones saved since", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }

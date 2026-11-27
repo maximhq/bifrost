@@ -511,6 +511,49 @@ func TestModelRoutersWithTheSameClassifierSettingsShareClassifiers(t *testing.T)
 	require.Len(t, p.allClassifiers(), 4, "the Complexity Router page's, then one for each set")
 }
 
+// TestRoutersMadeFromTierRulesShareOneClassifier pins what a gateway with
+// routing rules on complexity_tier runs once those rules are model routers.
+// The rules all classified with one classifier, the Complexity Router's. Each
+// router made from them is given those settings without a suggestions block,
+// so however many routers the rules become, they still classify with one: the
+// phrases are embedded once, and session memory stays each router's own.
+func TestRoutersMadeFromTierRulesShareOneClassifier(t *testing.T) {
+	p, embedded := sharedClassifierTestPlugin(t)
+	const phrase = "a casual greeting"
+	settings := semanticRouterConfig(phrase)
+	settings.Session = &configstore.ComplexitySessionConfig{Enabled: true}
+	// A suggestions block, on or off, stops a router sharing its classifiers.
+	settings.Suggestions = &configstore.ComplexitySuggestionsConfig{Enabled: false}
+	rule := func(id, condition string, priority int) configstoreTables.TableRoutingRule {
+		return configstoreTables.TableRoutingRule{
+			ID: id, Name: id, CelExpression: condition, Enabled: bifrost.Ptr(true), Scope: "global", Priority: priority,
+			Targets: []configstoreTables.TableRoutingTarget{{Model: bifrost.Ptr("model-" + id), Weight: 1}},
+		}
+	}
+	// Three rules that cannot become one router: their conditions differ.
+	migration, err := configstore.ModelRoutersFromRoutingRules([]configstoreTables.TableRoutingRule{
+		rule("simple-gpt", `model == "gpt-4o" && complexity_tier == "SIMPLE"`, 0),
+		rule("complex", `complexity_tier == "COMPLEX"`, 1),
+		rule("pro", `headers["x-plan"] == "pro" || complexity_tier == "MEDIUM"`, 2),
+	}, &settings, nil)
+	require.NoError(t, err)
+
+	var runtimes []*modelRouterRuntime
+	for _, router := range migration.Routers {
+		if router.Mode == configstoreTables.ModelRouterModeClassifier {
+			runtimes = append(runtimes, serveReadyRouter(t, p, router.ID, router.ComplexityAnalyzerConfig))
+		}
+	}
+	require.Len(t, runtimes, 3)
+	require.NotEmpty(t, runtimes[0].classifierKey(), "a router made from a tier rule can share its classifiers")
+	for _, rt := range runtimes {
+		require.Same(t, runtimes[0].semantic, rt.semantic, "router %s", rt.id)
+		require.Equal(t, runtimes[0].classifierKey(), rt.classifierKey(), "router %s", rt.id)
+		require.True(t, rt.sessionEnabled.Load(), "router %s keeps the session setting", rt.id)
+	}
+	require.Equal(t, 1, embedded.count(phrase), "the phrases are embedded once for every router the rules became")
+}
+
 // TestModelRouterMovesToOtherClassifiersOnlyWhenItMust walks the edits that
 // change which classifiers a router uses. A router that shares with no one
 // keeps its classifiers through every edit, as it did before routers shared,

@@ -33,16 +33,18 @@ const (
 // Routers are separate from the Complexity Router page's config, which stays
 // in governance_config and is the one routing rules read complexity_tier from.
 //
-// Mode is set when the router is created and kept by every later save. Targets and Routing are read with the router but written on
+// Mode and Meta are set when the router is created and kept by every later
+// save. Targets and Routing are read with the router but written on
 // their own, so saving a classifier never changes where requests go: update
 // and reset leave both alone, and create stores only Routing, or the default
 // routing when it is nil (see defaultModelRouterRouting). A config.json entry
 // that omits either leaves the stored one as it is.
 type ModelRouter struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Mode        string `json:"mode,omitempty"` // "classifier" (the default) or "conditional"
+	ID          string                  `json:"id"`
+	Name        string                  `json:"name"`
+	Description string                  `json:"description,omitempty"`
+	Mode        string                  `json:"mode,omitempty"` // "classifier" (the default) or "conditional"
+	Meta        *tables.ModelRouterMeta `json:"-"`              // set by the upgrade from routing rules; see tables.ModelRouterMeta
 	ComplexityAnalyzerConfig
 	Targets    []tables.TableModelRouterTarget `json:"targets,omitempty"` // a classifier router's model per tier, or a conditional router's targets; written by SetModelRouterTargets
 	Routing    *ModelRouterRouting             `json:"routing,omitempty"` // which requests it takes; written by SetModelRouterRouting
@@ -148,6 +150,7 @@ func modelRouterToTable(r *ModelRouter) (*tables.TableModelRouter, error) {
 		Name:                  r.Name,
 		Description:           r.Description,
 		Mode:                  tables.NormalizeModelRouterMode(r.Mode),
+		Meta:                  r.Meta,
 		Classifier:            cfg.Classifier,
 		SimpleMediumBoundary:  cfg.TierBoundaries.SimpleMedium,
 		MediumComplexBoundary: cfg.TierBoundaries.MediumComplex,
@@ -255,6 +258,7 @@ func modelRouterFromTable(row *tables.TableModelRouter) (*ModelRouter, error) {
 		Name:        row.Name,
 		Description: row.Description,
 		Mode:        tables.NormalizeModelRouterMode(row.Mode),
+		Meta:        row.Meta,
 		Routing:     modelRouterRoutingFromRow(row),
 		ConfigHash:  row.ConfigHash,
 	}
@@ -782,8 +786,8 @@ func (s *RDBConfigStore) lockModelRouterRow(ctx context.Context, txDB *gorm.DB, 
 // stored bookkeeping this version cannot decode must not stop a valid save.
 //
 // keepIdentity keeps the stored name and description, for saves that only
-// carry a config. The stored mode is always kept, since it is set when the
-// router is created, and so is the stored routing: it is written
+// carry a config. The stored mode and meta are always kept, since both are set
+// when the router is created, and so is the stored routing: it is written
 // only by SetModelRouterRouting. r's config must already be normalized and
 // validated, and txDB must be a transaction.
 func (s *RDBConfigStore) saveModelRouterWithTx(ctx context.Context, txDB *gorm.DB, r ModelRouter, keepIdentity bool) (*ModelRouter, error) {
@@ -802,7 +806,7 @@ func (s *RDBConfigStore) saveModelRouterWithTx(ctx context.Context, txDB *gorm.D
 	} else if r.ConfigHash == "" {
 		r.ConfigHash = existing.ConfigHash
 	}
-	r.Mode = tables.NormalizeModelRouterMode(existing.Mode)
+	r.Mode, r.Meta = tables.NormalizeModelRouterMode(existing.Mode), existing.Meta
 	r.Routing = modelRouterRoutingFromRow(existing)
 	row, err := modelRouterToTable(&r)
 	if err != nil {

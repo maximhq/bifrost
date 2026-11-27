@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -619,6 +620,31 @@ func TestModelRouterModeIsSetOnCreate(t *testing.T) {
 	got, err := store.GetModelRouter(ctx, "support")
 	require.NoError(t, err)
 	assert.Equal(t, tables.ModelRouterModeClassifier, got.Mode, "a router created without a mode is a classifier")
+
+	t.Run("meta is set once and kept by every later save", func(t *testing.T) {
+		fromRule := testModelRouter("from-rule", "From a rule")
+		fromRule.Meta = &tables.ModelRouterMeta{RoutingRuleIDs: []string{"rule-7", "rule-8"}}
+		require.NoError(t, store.CreateModelRouter(ctx, fromRule))
+		want := []string{"rule-7", "rule-8"}
+
+		update := testModelRouter("from-rule", "From a rule, renamed")
+		require.NoError(t, store.UpdateModelRouter(ctx, update), "an update carries no meta")
+		_, err := store.EditModelRouter(ctx, "from-rule", func(r *ModelRouter) (bool, error) {
+			r.Description, r.Meta = "edited", nil
+			return true, nil
+		})
+		require.NoError(t, err)
+		_, err = store.ResetModelRouter(ctx, "from-rule", testComplexityAnalyzerConfig())
+		require.NoError(t, err)
+
+		got, err := store.GetModelRouter(ctx, "from-rule")
+		require.NoError(t, err)
+		require.NotNil(t, got.Meta)
+		assert.Equal(t, want, got.Meta.RoutingRuleIDs)
+		raw, err := json.Marshal(got)
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), "routing_rule_ids", "meta is internal, never in the API")
+	})
 
 	t.Run("a router stored before modes existed reads as a classifier", func(t *testing.T) {
 		require.NoError(t, store.DB().Model(&tables.TableModelRouter{}).Where("id = ?", "support").UpdateColumn("mode", "").Error)
