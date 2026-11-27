@@ -458,11 +458,12 @@ func TestClientCredentialsAccepts2xxTokenResponses(t *testing.T) {
 	assert.Equal(t, 3, calls)
 
 	// A 201 carrying an RFC/alias error without an access_token must still be
-	// classified as a permanent client refusal rather than retried.
+	// classified as a permanent client refusal rather than retried, even when an
+	// unrelated field fails token-response struct decoding and percent-decoding.
 	status = http.StatusCreated
-	body = `{"error":"invalid_client","error_description":"bad secret"}`
+	body = `{"error":"invalid_client","error_description":"100% invalid","expires_in":"0"}`
 	calls = 0
 	_, err = p.ResolveClientCredentials(context.Background(), upstream.URL+"/mcp", false, cfg)
-	require.ErrorContains(t, err, "the token endpoint refused the client credentials: invalid_client: bad secret")
+	require.ErrorContains(t, err, "the token endpoint refused the client credentials: invalid_client: 100% invalid")
 	assert.Equal(t, 1, calls)
 }
