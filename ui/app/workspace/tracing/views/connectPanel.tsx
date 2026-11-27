@@ -96,6 +96,7 @@ export function ConnectPanel({
 	const [projectName, setProjectName] = useState("");
 	const [canCreateProjects, setCanCreateProjects] = useState(true);
 	const [logContent, setLogContent] = useState(true);
+	const [canReadPrompts, setCanReadPrompts] = useState(false);
 	const [newKeyValue, setNewKeyValue] = useState<string | null>(null);
 
 	const keys = keysData?.keys ?? [];
@@ -125,6 +126,7 @@ export function ConnectPanel({
 				default_project_id: defaultProjectId,
 				can_create_projects: canCreateProjects,
 				log_content: logContent,
+				can_read_prompts: canReadPrompts,
 			}).unwrap();
 			setNewKeyValue(result.value);
 			setKeyName("");
@@ -145,6 +147,7 @@ export function ConnectPanel({
 					virtual_key_ids: key.virtual_key_ids,
 					log_content: key.log_content,
 					can_create_projects: key.can_create_projects,
+					can_read_prompts: key.can_read_prompts,
 					enabled: !key.enabled,
 				},
 			}).unwrap();
@@ -249,6 +252,10 @@ export function ConnectPanel({
 							<label className="flex items-center gap-2 text-sm">
 								<Switch checked={logContent} onCheckedChange={setLogContent} data-testid="tracing-key-log-content-switch" />
 								{t("tracing.connect.logContent")}
+							</label>
+							<label className="flex items-center gap-2 text-sm md:col-span-2">
+								<Switch checked={canReadPrompts} onCheckedChange={setCanReadPrompts} data-testid="tracing-key-read-prompts-switch" />
+								{t("tracing.connect.canReadPrompts")}
 							</label>
 							<div className="md:col-span-2">
 								<Button

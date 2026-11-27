@@ -385,3 +385,195 @@ func TestTraceProjectSettingsForwardAndDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, parts, "the received parts go with the trace")
 }
+
+// TestSDKPromptFetchesAreServedFromThePromptRepository pins prompt fetches: a key reads prompts only
+// when it was given that permission, Langfuse's get_prompt and Braintrust's load_prompt both get
+// the prompt repository's messages and model settings, a version can be pinned, and a tracing key
+// never creates a prompt.
+func TestSDKPromptFetchesAreServedFromThePromptRepository(t *testing.T) {
+	ctx := context.Background()
+	env := newTracesAPITestEnv(t)
+	env.ingest.SetPromptStore(env.config)
+
+	prompt := &tables.TablePrompt{ID: "prompt-1", Name: "Support Reply"}
+	require.NoError(t, env.config.CreatePrompt(ctx, prompt))
+	message := func(role, content string) tables.TablePromptVersionMessage {
+		raw, err := schemas.MarshalSorted(map[string]any{"id": role, "index": 0, "originalType": "completion_request", "currentType": "completion_request", "payload": map[string]any{"role": role, "content": content}})
+		require.NoError(t, err)
+		return tables.TablePromptVersionMessage{Message: raw}
+	}
+	require.NoError(t, env.config.CreatePromptVersion(ctx, &tables.TablePromptVersion{PromptID: prompt.ID, CommitMessage: "first", Model: "gpt-4o", Provider: "openai",
+		Messages: []tables.TablePromptVersionMessage{message("system", "Be brief."), message("user", "{{question}}")}}))
+	require.NoError(t, env.config.CreatePromptVersion(ctx, &tables.TablePromptVersion{PromptID: prompt.ID, CommitMessage: "second", Model: "gpt-4o-mini", Provider: "openai",
+		ModelParams: tables.ModelParams{"temperature": 0.2}, Messages: []tables.TablePromptVersionMessage{message("system", "Be kind."), message("user", "{{question}}")}}))
+
+	var project struct {
+		Project tables.TableTraceProject `json:"project"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "agent"}, &project))
+	newKey := func(canRead bool) map[string]string {
+		var key struct {
+			Value string `json:"value"`
+		}
+		require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "k", "project_ids": []string{project.Project.ID}, "can_read_prompts": canRead}, &key))
+		return map[string]string{"Authorization": "Bearer " + key.Value}
+	}
+	get := func(uri string, headers map[string]string) (int, map[string]any) {
+		reqCtx := &fasthttp.RequestCtx{}
+		reqCtx.Request.Header.SetMethod(fasthttp.MethodGet)
+		reqCtx.Request.SetRequestURI(uri)
+		for name, value := range headers {
+			reqCtx.Request.Header.Set(name, value)
+		}
+		env.router.Handler(reqCtx)
+		var body map[string]any
+		_ = sonic.Unmarshal(reqCtx.Response.Body(), &body)
+		return reqCtx.Response.StatusCode(), body
+	}
+
+	status, _ := get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply", newKey(false))
+	assert.Equal(t, fasthttp.StatusForbidden, status, "a tracing key reads prompts only when given that permission")
+	status, _ = get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply", nil)
+	assert.Equal(t, fasthttp.StatusUnauthorized, status)
+
+	reader := newKey(true)
+	status, latest := get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, "chat", latest["type"])
+	assert.EqualValues(t, 2, latest["version"])
+	assert.Equal(t, []any{"production", "latest"}, latest["labels"], "the newest version is what a fetch with no label gets")
+	assert.Equal(t, []any{
+		map[string]any{"type": "chatmessage", "role": "system", "content": "Be kind."},
+		map[string]any{"type": "chatmessage", "role": "user", "content": "{{question}}"},
+	}, latest["prompt"])
+	assert.Equal(t, map[string]any{"model": "gpt-4o-mini", "provider": "openai", "temperature": 0.2}, latest["config"])
+	for _, required := range []string{"name", "version", "config", "labels", "tags", "prompt", "type"} {
+		assert.Contains(t, latest, required)
+	}
+	status, pinned := get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply?version=1", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, []any{}, pinned["labels"])
+	assert.Equal(t, "Be brief.", pinned["prompt"].([]any)[0].(map[string]any)["content"])
+	status, _ = get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply?version=9", reader)
+	assert.Equal(t, fasthttp.StatusNotFound, status)
+	status, _ = get("/tracing/langfuse/api/public/v2/prompts/absent", reader)
+	assert.Equal(t, fasthttp.StatusNotFound, status)
+	status, list := get("/tracing/langfuse/api/public/v2/prompts", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	require.Len(t, list["data"].([]any), 1)
+	assert.Equal(t, []any{2.0, 1.0}, list["data"].([]any)[0].(map[string]any)["versions"])
+
+	status, loaded := get("/tracing/braintrust/v1/prompt?project_name=agent&slug=support-reply", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	objects := loaded["objects"].([]any)
+	require.Len(t, objects, 1)
+	object := objects[0].(map[string]any)
+	assert.Equal(t, "support-reply", object["slug"])
+	assert.Equal(t, "2", object["_xact_id"])
+	data := object["prompt_data"].(map[string]any)
+	assert.Equal(t, "gpt-4o-mini", data["options"].(map[string]any)["model"])
+	assert.Equal(t, map[string]any{"role": "system", "content": "Be kind."}, data["prompt"].(map[string]any)["messages"].([]any)[0])
+	status, none := get("/tracing/braintrust/v1/prompt?project_name=agent&slug=absent", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Empty(t, none["objects"], "an unknown slug is an empty list, which the SDK reports as not found")
+
+	write := &fasthttp.RequestCtx{}
+	write.Request.Header.SetMethod(fasthttp.MethodPost)
+	write.Request.SetRequestURI("/tracing/langfuse/api/public/v2/prompts")
+	write.Request.Header.Set("Authorization", reader["Authorization"])
+	write.Request.SetBody([]byte(`{"name":"x","prompt":"y"}`))
+	env.router.Handler(write)
+	assert.Equal(t, fasthttp.StatusForbidden, write.Response.StatusCode(), "a tracing key never writes a prompt, even one that may read them")
+}
+
+// sdkPromptReader returns the headers of a caller allowed to read prompts through the SDK routes.
+func sdkPromptReader(t *testing.T, env *tracesAPITestEnv) map[string]string {
+	var project struct {
+		Project tables.TableTraceProject `json:"project"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "prompt-readers"}, &project))
+	var key struct {
+		Value string `json:"value"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "reader", "project_ids": []string{project.Project.ID}, "can_read_prompts": true}, &key))
+	return map[string]string{"Authorization": "Bearer " + key.Value}
+}
+
+// sdkPromptGet calls an SDK prompt route and decodes the JSON answer.
+func sdkPromptGet(env *tracesAPITestEnv, uri string, headers map[string]string) (int, map[string]any) {
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Request.Header.SetMethod(fasthttp.MethodGet)
+	reqCtx.Request.SetRequestURI(uri)
+	for name, value := range headers {
+		reqCtx.Request.Header.Set(name, value)
+	}
+	env.router.Handler(reqCtx)
+	var body map[string]any
+	_ = sonic.Unmarshal(reqCtx.Response.Body(), &body)
+	return reqCtx.Response.StatusCode(), body
+}
+
+// storedPromptMessage is a prompt message in the dashboard's serialized form.
+func storedPromptMessage(t *testing.T, role string, content any) tables.TablePromptVersionMessage {
+	raw, err := schemas.MarshalSorted(map[string]any{"id": role, "index": 0, "originalType": "completion_request", "currentType": "completion_request", "payload": map[string]any{"role": role, "content": content}})
+	require.NoError(t, err)
+	return tables.TablePromptVersionMessage{Message: raw}
+}
+
+// countingPromptStore counts the whole-repository reads a prompt fetch must not need.
+type countingPromptStore struct {
+	*configstore.RDBConfigStore
+	allPrompts, allVersions int
+}
+
+func (c *countingPromptStore) GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error) {
+	c.allPrompts++
+	return c.RDBConfigStore.GetPrompts(ctx, folderID)
+}
+
+func (c *countingPromptStore) GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error) {
+	c.allVersions++
+	return c.RDBConfigStore.GetPromptVersions(ctx, promptID)
+}
+
+// An exact name wins over a slug alias, an alias two prompts share is refused, image parts are
+// kept or refused (never dropped), and a fetch reads one version instead of the whole repository.
+func TestSDKPromptLookupNamesImagesAndBoundedReads(t *testing.T) {
+	ctx := context.Background()
+	env := newTracesAPITestEnv(t)
+	counting := &countingPromptStore{RDBConfigStore: env.config.(*configstore.RDBConfigStore)}
+	env.ingest.SetPromptStore(counting)
+	reader := sdkPromptReader(t, env)
+
+	exact := &tables.TablePrompt{ID: "exact", Name: "Support Reply"}
+	require.NoError(t, env.config.CreatePrompt(ctx, exact))
+	require.NoError(t, env.config.CreatePromptVersion(ctx, &tables.TablePromptVersion{PromptID: exact.ID, Model: "gpt-4o", Messages: []tables.TablePromptVersionMessage{storedPromptMessage(t, "system", "exact one")}}))
+	// Created later, so it is listed first; its slug is the same.
+	alias := &tables.TablePrompt{ID: "alias", Name: "Support-Reply"}
+	require.NoError(t, env.config.CreatePrompt(ctx, alias))
+	require.NoError(t, env.config.CreatePromptVersion(ctx, &tables.TablePromptVersion{PromptID: alias.ID, Model: "gpt-4o", Messages: []tables.TablePromptVersionMessage{storedPromptMessage(t, "system", "alias one")}}))
+
+	status, got := sdkPromptGet(env, "/tracing/langfuse/api/public/v2/prompts/Support%20Reply", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, "exact one", got["prompt"].([]any)[0].(map[string]any)["content"], "the exact name wins over a slug alias")
+	status, _ = sdkPromptGet(env, "/tracing/braintrust/v1/prompt?slug=support-reply", reader)
+	assert.Equal(t, fasthttp.StatusConflict, status, "a slug two prompts share is ambiguous")
+	assert.Zero(t, counting.allPrompts, "a fetch does not load every prompt's latest version")
+	assert.Zero(t, counting.allVersions, "a fetch does not load every version's messages")
+
+	status, list := sdkPromptGet(env, "/tracing/langfuse/api/public/v2/prompts", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Len(t, list["data"].([]any), 2)
+	assert.Zero(t, counting.allPrompts+counting.allVersions, "the list reads metadata only")
+
+	image := &tables.TablePrompt{ID: "image", Name: "Describe"}
+	require.NoError(t, env.config.CreatePrompt(ctx, image))
+	parts := []any{map[string]any{"type": "text", "text": "What is this?"}, map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.test/a.png"}}}
+	require.NoError(t, env.config.CreatePromptVersion(ctx, &tables.TablePromptVersion{PromptID: image.ID, Model: "gpt-4o", Messages: []tables.TablePromptVersionMessage{storedPromptMessage(t, "user", parts)}}))
+	status, _ = sdkPromptGet(env, "/tracing/langfuse/api/public/v2/prompts/Describe", reader)
+	assert.Equal(t, fasthttp.StatusUnprocessableEntity, status, "a Langfuse chat message holds text only, so an image prompt is refused, not flattened")
+	status, loaded := sdkPromptGet(env, "/tracing/braintrust/v1/prompt?slug=describe", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	messages := loaded["objects"].([]any)[0].(map[string]any)["prompt_data"].(map[string]any)["prompt"].(map[string]any)["messages"].([]any)
+	assert.Equal(t, parts, messages[0].(map[string]any)["content"], "Braintrust gets the content parts, image included")
+}
