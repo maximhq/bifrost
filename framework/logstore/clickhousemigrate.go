@@ -67,6 +67,16 @@ func clickhouseModelColumnOverride(model any, column string) (string, bool) {
 	if _, ok := model.(*AgentLog); ok && column == "created_at" {
 		return "`created_at` DateTime64(3) DEFAULT now64(3)", true
 	}
+	// A dirty mark's time is its row version and the value ClearTraceDirty compares: at
+	// millisecond precision two marks in one millisecond tie, and a clear takes the newer one.
+	if _, ok := model.(*TraceDirtyMark); ok && column == "marked_at" {
+		return "`marked_at` DateTime64(9)", true
+	}
+	// Parts are folded in receive order: at millisecond precision two parts received in one
+	// millisecond tie and fall back to id order, so the fold would merge them out of order.
+	if _, ok := model.(*TraceSpanPart); ok && column == "received_at" {
+		return "`received_at` DateTime64(9)", true
+	}
 	override, ok := chColumnOverrides[column]
 	return override, ok
 }
@@ -106,7 +116,12 @@ type chTableOpts struct {
 	orderBy     string   // e.g. "(timestamp, id)"
 	ttl         string   // empty = no TTL
 	skipIndexes []string // full "INDEX ..." clauses
+	version     string   // the `ver` column definition; empty = the latest insert wins
 }
+
+// chLatestInsertVersion is the default version: every insert gets the current time, so the
+// latest write of a key wins.
+const chLatestInsertVersion = "`ver` DateTime64(9) DEFAULT now64(9)"
 
 type clickHouseSchemaStore interface {
 	EnsureClickHouseTable(ctx context.Context, model any, table, partitionBy, orderBy, ttl string, skipIndexes []string) error
@@ -126,7 +141,11 @@ func clickhouseCreateTable(ctx context.Context, db *gorm.DB, model any, opts chT
 	// Nanosecond precision: with now64()'s default millisecond resolution, a
 	// create + immediate update landing in the same millisecond would tie on
 	// `ver` and leave the winner to merge order instead of latest-write-wins.
-	cols = append(cols, "`ver` DateTime64(9) DEFAULT now64(9)")
+	version := opts.version
+	if version == "" {
+		version = chLatestInsertVersion
+	}
+	cols = append(cols, version)
 	cols = append(cols, opts.skipIndexes...)
 
 	engine := "ReplacingMergeTree(ver)"
@@ -718,6 +737,49 @@ func migrationClickHouseWarpVectorDeletesTable(ctx context.Context, db *gorm.DB,
 	return clickhouseReconcileColumns(ctx, db, &WarpVectorDelete{}, "warp_vector_deletes", cluster, logger)
 }
 
+// chTraceRowTTL expires a trace row at its own expires_at. Trace retention is set per project, so
+// the expiry is a column, not a table-wide interval. A row with no expiry is kept.
+const chTraceRowTTL = "toDateTime(ifNull(expires_at, toDateTime64('2100-01-01 00:00:00', 3)))"
+
+// migrationClickHouseTraceTables creates the Tracing tables. Each is ordered by the row's identity,
+// so a rewrite of a span, rollup, score or mark replaces the stored row, and one trace's rows are
+// read with the sort key. Spans and rollups are not partitioned by time: a refold can move a span's
+// start time, and ReplacingMergeTree only replaces a row inside its own partition. No table has a
+// bloom filter index, since every read runs under FINAL on rows that are rewritten.
+func migrationClickHouseTraceTables(ctx context.Context, db *gorm.DB, cluster string, _ int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating trace tables")
+	for _, table := range []struct {
+		model any
+		opts  chTableOpts
+	}{
+		// A resent part has the same id as the first copy. The version counts down with insert
+		// time, so the first copy, and the receive time the fold orders merges by, wins. No
+		// partition on receive time: a retry in a later month would land in another partition
+		// and never replace the first copy.
+		{&TraceSpanPart{}, chTableOpts{table: "trace_span_parts", orderBy: "(project_id, trace_id, span_id, id)", ttl: chTraceRowTTL, version: "`ver` UInt64 DEFAULT 18446744073709551615 - toUnixTimestamp64Nano(now64(9))"}},
+		{&TraceSpan{}, chTableOpts{table: "trace_spans", orderBy: "(project_id, trace_id, span_id)", ttl: chTraceRowTTL}},
+		{&TraceSpanLink{}, chTableOpts{table: "trace_span_links", orderBy: "(project_id, trace_id, span_id, log_kind, log_id)", ttl: chTraceRowTTL}},
+		{&Trace{}, chTableOpts{table: "traces", orderBy: "(project_id, trace_id)", ttl: chTraceRowTTL}},
+		// An id is unique within its project: a client-chosen id from another project is another row.
+		{&TraceScore{}, chTableOpts{table: "trace_scores", orderBy: "(project_id, id)", ttl: chTraceRowTTL}},
+		{&TraceComment{}, chTableOpts{table: "trace_comments", orderBy: "(project_id, id)", ttl: chTraceRowTTL}},
+		{&TraceUpload{}, chTableOpts{table: "trace_uploads", orderBy: "id", ttl: chTraceRowTTL}},
+		// A mark is versioned by its own time. The clean row ClearTraceDirty writes carries the
+		// time of the mark it read, so it replaces that mark and loses to any newer one. A clean
+		// mark expires after a week, since ClickHouse has no empty-trace cleanup to remove it; a
+		// pending mark never expires.
+		{&TraceDirtyMark{}, chTableOpts{table: "trace_dirty_marks", orderBy: "(project_id, trace_id)", ttl: "toDateTime(marked_at) + INTERVAL 7 DAY DELETE WHERE dirty = 0", version: "`ver` DateTime64(9) DEFAULT marked_at"}},
+	} {
+		if err := clickhouseCreateTable(ctx, db, table.model, table.opts, cluster); err != nil {
+			return fmt.Errorf("clickhouse: create %s table: %w", table.opts.table, err)
+		}
+		if err := clickhouseReconcileColumns(ctx, db, table.model, table.opts.table, cluster, logger); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // clickhouseMigrationSteps lists the per-table migrations in execution order,
 // mirroring logstoreMigrationSteps for the SQL stores.
 var clickhouseMigrationSteps = []clickhouseMigrationStep{
@@ -732,6 +794,7 @@ var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseWarpVectorDeletesTable,
 	migrationClickHouseRelayLogsTable,
 	migrationClickHouseComplexitySuggestionTables,
+	migrationClickHouseTraceTables,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations
