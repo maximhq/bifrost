@@ -55,6 +55,9 @@ type EvaluationRequest struct {
 	ModelUnseen bool `json:"model_unseen,omitempty"`
 	// LiteralModel marks a model checked as written, never widened by a key alias.
 	LiteralModel bool `json:"literal_model,omitempty"`
+	// SkipBudgetCheck leaves budgets out of the limit check for a call that will be charged nothing;
+	// rate and request limits still apply.
+	SkipBudgetCheck bool `json:"skip_budget_check,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
@@ -246,10 +249,12 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 		}
 	}
 
-	if decision, err := r.store.CheckBudgets(ctx, budgets, nil); err != nil || isBudgetViolation(decision) {
-		return &EvaluationResult{
-			Decision: decision,
-			Reason:   fmt.Sprintf("Budget exceeded: %s", reasonFromErr(err, decision)),
+	if !evaluationRequest.SkipBudgetCheck {
+		if decision, err := r.store.CheckBudgets(ctx, budgets, nil); err != nil || isBudgetViolation(decision) {
+			return &EvaluationResult{
+				Decision: decision,
+				Reason:   fmt.Sprintf("Budget exceeded: %s", reasonFromErr(err, decision)),
+			}
 		}
 	}
 
