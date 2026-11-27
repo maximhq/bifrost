@@ -3,13 +3,17 @@ import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetVirtualMCPsQuery } from "@/lib/store";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import VirtualMCPSheet, { VirtualMCPSheetTarget } from "./views/virtualMcpSheet";
 import VirtualMCPWizard from "./views/virtualMcpWizard";
 import VirtualMCPsTable from "./views/virtualMcpsTable";
+import { useActionParam } from "@/hooks/useActionParam";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 
 const PAGE_SIZE = 25;
 
 export default function VirtualMCPsPage() {
+	const { t } = useTranslation("mcp");
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			q: parseAsString.withDefault(""),
@@ -20,6 +24,8 @@ export default function VirtualMCPsPage() {
 
 	const [sheetTarget, setSheetTarget] = useState<VirtualMCPSheetTarget | null>(null);
 	const [creating, setCreating] = useState(false);
+	const canCreate = useRbac(RbacResource.VirtualMCPs, RbacOperation.Create);
+	useActionParam("create", () => setCreating(true), { isOpen: creating, enabled: canCreate });
 
 	const debouncedSearch = useDebouncedValue(urlState.q, 300);
 
@@ -52,9 +58,9 @@ export default function VirtualMCPsPage() {
 
 	if (isError) {
 		return (
-			<div className="mx-auto w-full max-w-7xl px-4 md:px-0">
+			<div className="no-padding-parent mx-auto w-full px-4 md:px-0">
 				<div className="border-destructive bg-destructive/10 text-destructive rounded-lg border p-6 text-sm">
-					Failed to load Virtual MCPs: {getErrorMessage(error)}
+					{t("virtualMcps.loadFailed", { message: getErrorMessage(error) })}
 				</div>
 			</div>
 		);
@@ -70,7 +76,7 @@ export default function VirtualMCPsPage() {
 	};
 
 	return (
-		<div className="mx-auto w-full max-w-7xl px-4 md:px-0">
+		<div className="no-padding-parent mx-auto w-full p-4">
 			<VirtualMCPsTable
 				virtualMcps={data?.virtual_mcps ?? []}
 				totalCount={totalCount}

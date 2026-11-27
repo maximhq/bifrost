@@ -6,16 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 type mockRoutingManager struct {
@@ -184,6 +187,40 @@ func TestRetryComplexitySemanticWarmup(t *testing.T) {
 	})
 }
 
+// Phrase suggestions are a model router's. A suggestions block stored on the
+// complexity config before they moved to routers is not served, so a client
+// that saves back what it read is not refused; one sent is refused, and
+// nothing is saved or reloaded.
+func TestComplexityAnalyzerConfigSuggestionsAreRoutersOnly(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	stored := complexity.DefaultAnalyzerConfig()
+	stored.Semantic = &complexity.SemanticConfig{Provider: "openai", EmbeddingModel: "text-embedding-3-small"}
+	stored.Suggestions = &configstore.ComplexitySuggestionsConfig{Enabled: true, Provider: "openai", Model: "gpt-5"}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(context.Background(), &stored))
+
+	get := newTestRequestCtx("")
+	handler.getComplexityAnalyzerConfig(get)
+	require.Equal(t, fasthttp.StatusOK, get.Response.StatusCode(), string(get.Response.Body()))
+	var served map[string]any
+	require.NoError(t, json.Unmarshal(get.Response.Body(), &served))
+	assert.NotContains(t, served, "suggestions")
+	assert.Contains(t, served, "semantic", "the rest of the stored config is served")
+
+	for _, suggestions := range []*configstore.ComplexitySuggestionsConfig{{Enabled: true, Provider: "openai", Model: "gpt-5"}, {Enabled: false}} {
+		body := stored
+		body.Suggestions = suggestions
+		put := newTestRequestCtx(testComplexityAnalyzerPayload(t, body))
+		handler.updateComplexityAnalyzerConfig(put)
+		assert.Equal(t, fasthttp.StatusBadRequest, put.Response.StatusCode(), string(put.Response.Body()))
+		assert.Contains(t, string(put.Response.Body()), "per model router")
+	}
+	assert.Zero(t, manager.reloadCalls, "a refused save reloads nothing")
+}
+
 func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)
@@ -232,17 +269,17 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	}
 }
 
-// TestComplexityAnalyzerConfigPutPersistsJev verifies the API accepts and stores the Jev classifier payload.
-func TestComplexityAnalyzerConfigPutPersistsJev(t *testing.T) {
+// TestComplexityAnalyzerConfigPutPersistsDecision verifies the API accepts and stores the decision-model classifier payload.
+func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)
 	manager := &mockRoutingManager{}
 	handler := &RoutingHandler{configStore: store, routingManager: manager}
 
 	cfg := complexity.DefaultAnalyzerConfig()
-	cfg.Classifier = complexity.ClassifierJev
+	cfg.Classifier = complexity.ClassifierDecision
 	count := 1
-	cfg.Jev = &complexity.JevConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond}
+	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond, MinConfidence: 0.7}
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
 	handler.updateComplexityAnalyzerConfig(ctx)
 
@@ -250,11 +287,12 @@ func TestComplexityAnalyzerConfigPutPersistsJev(t *testing.T) {
 	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	require.Equal(t, complexity.ClassifierJev, stored.Classifier)
-	require.NotNil(t, stored.Jev)
-	require.NotNil(t, stored.Jev.PreviousMessageCount)
-	require.Equal(t, 1, *stored.Jev.PreviousMessageCount)
-	require.Equal(t, 400*time.Millisecond, stored.Jev.Timeout)
+	require.Equal(t, complexity.ClassifierDecision, stored.Classifier)
+	require.NotNil(t, stored.Decision)
+	require.NotNil(t, stored.Decision.PreviousMessageCount)
+	require.Equal(t, 1, *stored.Decision.PreviousMessageCount)
+	require.Equal(t, 400*time.Millisecond, stored.Decision.Timeout)
+	require.Equal(t, 0.7, stored.Decision.MinConfidence)
 	require.Equal(t, 1, manager.reloadCalls)
 }
 
@@ -294,6 +332,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
 		{name: "too many semantic phrases", body: testComplexityAnalyzerPayload(t, tooManyPhrases), want: "contains 751 phrases"},
+		{name: "decision min_confidence out of range", body: `{"classifier":"decision","keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]},"decision":{"min_confidence":1.5}}`, want: "decision min_confidence must be between 0 and 1"},
 	}
 
 	for _, tt := range tests {
@@ -638,6 +677,81 @@ func TestCreateRoutingRuleRejectsInvalidFallbacks(t *testing.T) {
 	require.Empty(t, manager.reloaded)
 }
 
+// TestRoutingRuleDuplicatePriorityIsAConflict pins that a create or update colliding with another
+// rule's priority in the same scope answers 409 naming the priority, not a 500, and changes nothing.
+func TestRoutingRuleDuplicatePriorityIsAConflict(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &reloadRecordingRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	create := func(t *testing.T, name string, priority int) *fasthttp.RequestCtx {
+		t.Helper()
+		ctx := newTestRequestCtx(fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":[{"provider":"openai","weight":1}],"priority":%d}`, name, priority))
+		handler.createRoutingRule(ctx)
+		return ctx
+	}
+	ruleID := func(t *testing.T, ctx *fasthttp.RequestCtx) string {
+		t.Helper()
+		var resp struct {
+			Rule tables.TableRoutingRule `json:"rule"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		require.NotEmpty(t, resp.Rule.ID)
+		return resp.Rule.ID
+	}
+
+	first := create(t, "first", 3)
+	require.Equal(t, fasthttp.StatusOK, first.Response.StatusCode(), string(first.Response.Body()))
+
+	dup := create(t, "duplicate", 3)
+	require.Equal(t, fasthttp.StatusConflict, dup.Response.StatusCode(), string(dup.Response.Body()))
+	require.Contains(t, string(dup.Response.Body()), "priority 3 already exists")
+
+	other := create(t, "other", 4)
+	require.Equal(t, fasthttp.StatusOK, other.Response.StatusCode(), string(other.Response.Body()))
+	otherID := ruleID(t, other)
+
+	put := newTestRequestCtx(`{"priority":3}`)
+	put.SetUserValue("rule_id", otherID)
+	handler.updateRoutingRule(put)
+	require.Equal(t, fasthttp.StatusConflict, put.Response.StatusCode(), string(put.Response.Body()))
+	require.Contains(t, string(put.Response.Body()), "priority 3 already exists")
+
+	rules, err := store.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	require.Len(t, rules, 2, "a conflicting create must not store a rule")
+	for _, r := range rules {
+		if r.ID == otherID {
+			require.Equal(t, 4, r.Priority, "a conflicting update must not change the stored priority")
+		}
+	}
+	require.Equal(t, []string{ruleID(t, first), otherID}, manager.reloaded, "only accepted writes reload the rule")
+
+	// A scoped rule reusing another's name in the same scope conflicts on the name, not the
+	// priority: still a 409, but advice to change the priority could not resolve it.
+	require.NoError(t, store.CreateTeam(context.Background(), &tables.TableTeam{ID: "team-1", Name: "Team 1"}))
+	scoped := func(t *testing.T, name string, priority int) *fasthttp.RequestCtx {
+		t.Helper()
+		ctx := newTestRequestCtx(fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":[{"provider":"openai","weight":1}],"priority":%d,"scope":"team","scope_id":"team-1"}`, name, priority))
+		handler.createRoutingRule(ctx)
+		return ctx
+	}
+	named := scoped(t, "team rule", 10)
+	require.Equal(t, fasthttp.StatusOK, named.Response.StatusCode(), string(named.Response.Body()))
+	sameName := scoped(t, "team rule", 11)
+	require.Equal(t, fasthttp.StatusConflict, sameName.Response.StatusCode(), string(sameName.Response.Body()))
+	require.NotContains(t, string(sameName.Response.Body()), "priority", "a name conflict must not be blamed on the priority")
+
+	renamed := scoped(t, "another team rule", 12)
+	require.Equal(t, fasthttp.StatusOK, renamed.Response.StatusCode(), string(renamed.Response.Body()))
+	rename := newTestRequestCtx(`{"name":"team rule"}`)
+	rename.SetUserValue("rule_id", ruleID(t, renamed))
+	handler.updateRoutingRule(rename)
+	require.Equal(t, fasthttp.StatusConflict, rename.Response.StatusCode(), string(rename.Response.Body()))
+	require.NotContains(t, string(rename.Response.Body()), "priority", "a name conflict must not be blamed on the priority")
+}
+
 // TestRoutingTargetTTFTTimeoutValidation pins a target's ttft_timeout_ms on
 // create and update: 1..300000 is stored, 0 means "off", targets are replaced
 // wholesale on update so omitting it there clears it, and anything else is a 400.
@@ -700,4 +814,156 @@ func TestRoutingTargetTTFTTimeoutValidation(t *testing.T) {
 
 	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":0`)+`}`))
 	require.Nil(t, stored(t, id), "0 on update must clear the deadline")
+}
+
+// scopeRefusingStore is the real store with routing writes that refuse the user scope "hidden-user"
+// with ErrNotFound and save nothing, the way a store that holds users refuses one the caller cannot
+// see. A routing save on the router "vanishing" deletes it first and answers ErrNotFound, as a save
+// landing after a concurrent delete does. A routing save on the router "unreadable" answers
+// ErrNotFound and fails every later read of that router with a database error.
+type scopeRefusingStore struct {
+	configstore.ConfigStore
+	// unreadable is set once a routing save on the router "unreadable" was refused.
+	unreadable *atomic.Bool
+}
+
+// refusedScope returns the error a scopeRefusingStore answers for a write to scope, or nil when it
+// saves the write.
+func refusedScope(scope string, scopeID *string) error {
+	if scope == "user" && scopeID != nil && *scopeID == "hidden-user" {
+		return fmt.Errorf("user %s: %w", *scopeID, configstore.ErrNotFound)
+	}
+	return nil
+}
+
+// CreateRoutingRule refuses a rule on the hidden user and saves any other.
+func (s scopeRefusingStore) CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error {
+	if err := refusedScope(rule.Scope, rule.ScopeID); err != nil {
+		return err
+	}
+	return s.ConfigStore.CreateRoutingRule(ctx, rule, tx...)
+}
+
+// UpdateRoutingRule refuses a rule moved to the hidden user and saves any other.
+func (s scopeRefusingStore) UpdateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error {
+	if err := refusedScope(rule.Scope, rule.ScopeID); err != nil {
+		return err
+	}
+	return s.ConfigStore.UpdateRoutingRule(ctx, rule, tx...)
+}
+
+// CreateModelRouter refuses a router routed to the hidden user and saves any other.
+func (s scopeRefusingStore) CreateModelRouter(ctx context.Context, modelRouter *configstore.ModelRouter, tx ...*gorm.DB) error {
+	if modelRouter.Routing != nil {
+		if err := refusedScope(modelRouter.Routing.Scope, modelRouter.Routing.ScopeID); err != nil {
+			return err
+		}
+	}
+	return s.ConfigStore.CreateModelRouter(ctx, modelRouter, tx...)
+}
+
+// GetModelRouter fails with a database error for the router "unreadable" once its routing save was
+// refused, and reads any other router from the store.
+func (s scopeRefusingStore) GetModelRouter(ctx context.Context, id string) (*configstore.ModelRouter, error) {
+	if id == "unreadable" && s.unreadable.Load() {
+		return nil, errors.New("database is locked")
+	}
+	return s.ConfigStore.GetModelRouter(ctx, id)
+}
+
+// SetModelRouterRouting refuses routing to the hidden user, deletes the router "vanishing" and
+// answers ErrNotFound, refuses the router "unreadable" with ErrNotFound and makes it unreadable,
+// and saves any other routing.
+func (s scopeRefusingStore) SetModelRouterRouting(ctx context.Context, routerID string, routing configstore.ModelRouterRouting, tx ...*gorm.DB) error {
+	if routerID == "unreadable" {
+		s.unreadable.Store(true)
+		return configstore.ErrNotFound
+	}
+	if routerID == "vanishing" {
+		if err := s.ConfigStore.DeleteModelRouter(ctx, routerID); err != nil {
+			return err
+		}
+		return configstore.ErrNotFound
+	}
+	if err := refusedScope(routing.Scope, routing.ScopeID); err != nil {
+		return err
+	}
+	return s.ConfigStore.SetModelRouterRouting(ctx, routerID, routing, tx...)
+}
+
+// TestRoutingWritesAnswer400WhenTheStoreRefusesTheScope checks that a routing rule or model router
+// write the store refuses with ErrNotFound is answered 400 with the store's message, on create and on
+// update, with nothing saved or reloaded; that a scope the store accepts is saved; that a routing
+// save on a router deleted before it lands is still 404; that one whose router can no longer be read
+// is 500, not 400; and that the store alone, which holds no users, accepts any user id.
+func TestRoutingWritesAnswer400WhenTheStoreRefusesTheScope(t *testing.T) {
+	SetLogger(&mockLogger{})
+	base := setupPricingOverrideHandlerStore(t)
+	store := scopeRefusingStore{ConfigStore: base, unreadable: &atomic.Bool{}}
+	rules := &reloadRecordingRoutingManager{}
+	ruleHandler := &RoutingHandler{configStore: store, routingManager: rules}
+	routers := &modelRouterManagerFake{}
+	routerHandler := &RoutingHandler{configStore: store, routingManager: routers}
+	ruleBody := func(name, userID string) string {
+		return fmt.Sprintf(`{"name":%q,"cel_expression":"model == \"gpt-4o\"","scope":"user","scope_id":%q,"targets":[{"provider":"openai","weight":1}]}`, name, userID)
+	}
+	userRouting := func(userID string) string {
+		return `"routing":{"enabled":true,"scope":"user","scope_id":"` + userID + `"}`
+	}
+
+	status, body := call(t, ruleHandler.createRoutingRule, ruleBody("on-hidden-user", "hidden-user"), nil)
+	require.Equal(t, fasthttp.StatusBadRequest, status, "%v", body)
+	require.Equal(t, "user hidden-user: not found", modelRouterErrorMessage(body), "the answer is the store's message")
+	saved, err := base.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, saved, "a refused rule create saves nothing")
+	require.Empty(t, rules.reloaded, "and reloads nothing")
+
+	status, body = call(t, ruleHandler.createRoutingRule, ruleBody("on-visible-user", "visible-user"), nil)
+	require.Equal(t, fasthttp.StatusOK, status, "%v", body)
+	rule, _ := body["rule"].(map[string]any)
+	ruleID, _ := rule["id"].(string)
+	require.Equal(t, []string{ruleID}, rules.reloaded)
+
+	status, body = call(t, ruleHandler.updateRoutingRule, `{"scope_id":"hidden-user"}`, map[string]string{"rule_id": ruleID})
+	require.Equal(t, fasthttp.StatusBadRequest, status, "%v", body)
+	require.Equal(t, "user hidden-user: not found", modelRouterErrorMessage(body))
+	stored, err := base.GetRoutingRule(context.Background(), ruleID)
+	require.NoError(t, err)
+	require.Equal(t, "visible-user", *stored.ScopeID, "a refused rule update leaves the rule on its user")
+	require.Equal(t, []string{ruleID}, rules.reloaded, "and reloads nothing")
+
+	status, body = call(t, routerHandler.createModelRouter, modelRouterBody("on-hidden-user", "On hidden user", userRouting("hidden-user")), nil)
+	require.Equal(t, fasthttp.StatusBadRequest, status, "%v", body)
+	require.Equal(t, "user hidden-user: not found", modelRouterErrorMessage(body))
+	_, err = base.GetModelRouter(context.Background(), "on-hidden-user")
+	require.ErrorIs(t, err, configstore.ErrNotFound, "a refused router create saves nothing")
+	require.Empty(t, routers.reloadedRouters, "and reloads nothing")
+
+	modelRouterOK(t, routerHandler.createModelRouter, modelRouterBody("on-visible-user", "On visible user", userRouting("visible-user")), nil)
+	require.Equal(t, []string{"on-visible-user"}, routers.reloadedRouters)
+
+	status, body = call(t, routerHandler.setModelRouterRouting, `{"scope_id":"hidden-user"}`, modelRouterPath("on-visible-user"))
+	require.Equal(t, fasthttp.StatusBadRequest, status, "%v", body)
+	require.Equal(t, "user hidden-user: not found", modelRouterErrorMessage(body))
+	storedRouter, err := base.GetModelRouter(context.Background(), "on-visible-user")
+	require.NoError(t, err)
+	require.Equal(t, "visible-user", *storedRouter.Routing.ScopeID, "a refused routing update leaves the router on its user")
+	require.Empty(t, routers.reloadedRouting, "and reloads nothing")
+
+	modelRouterOK(t, routerHandler.createModelRouter, routerBody("vanishing", "Vanishing"), nil)
+	status, body = call(t, routerHandler.setModelRouterRouting, `{"enabled":true}`, modelRouterPath("vanishing"))
+	require.Equal(t, fasthttp.StatusNotFound, status, "a router deleted before its routing save is still not found: %v", body)
+
+	modelRouterOK(t, routerHandler.createModelRouter, routerBody("unreadable", "Unreadable"), nil)
+	status, body = call(t, routerHandler.setModelRouterRouting, `{"enabled":true}`, modelRouterPath("unreadable"))
+	require.Equal(t, fasthttp.StatusInternalServerError, status, "a refused routing save whose router cannot be read again is a server failure: %v", body)
+	require.Equal(t, "failed to get model router: database is locked", modelRouterErrorMessage(body))
+	require.Empty(t, routers.reloadedRouting, "and reloads nothing")
+
+	plainRules := &RoutingHandler{configStore: base, routingManager: &reloadRecordingRoutingManager{}}
+	status, body = call(t, plainRules.createRoutingRule, ruleBody("plain-store", "hidden-user"), nil)
+	require.Equal(t, fasthttp.StatusOK, status, "a store that holds no users accepts any user id: %v", body)
+	plainRouters := &RoutingHandler{configStore: base, routingManager: &modelRouterManagerFake{}}
+	modelRouterOK(t, plainRouters.createModelRouter, modelRouterBody("plain-store", "Plain store", userRouting("hidden-user")), nil)
 }

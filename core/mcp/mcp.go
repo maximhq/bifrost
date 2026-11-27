@@ -3,11 +3,13 @@ package mcp
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -37,18 +39,24 @@ const (
 // It provides a bridge between Bifrost and various MCP servers, supporting
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
-	ctx                 context.Context
-	logger              schemas.Logger                     // Logger instance for this manager
-	credStore           schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
-	toolsManager        *ToolsManager                      // Handler for MCP tools
-	server              *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
-	clientMap           map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
-	mu                  sync.RWMutex                       // Read-write mutex for thread-safe operations
-	serverRunning       bool                               // Track whether local MCP server is running
-	checkerManager      *ConnectionCheckerManager          // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
-	reconnectingClients sync.Map                           // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
-	bootClientConfigs   []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
-	connectOnce         sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
+	ctx                    context.Context
+	logger                 schemas.Logger                 // Logger instance for this manager
+	credStore              schemas.MCPCredentialStore     // Resolves credentials per-call for MCP tool execution
+	toolsManager           *ToolsManager                  // Handler for MCP tools
+	server                 *server.MCPServer              // Local MCP server instance for hosting tools (STDIO-based)
+	account                schemas.Account                // Serves every client's configuration; nil serves none
+	clientMap              map[string]*clientConn         // Each client's connection and connection state, by client ID
+	discoveryStore         schemas.MCPDiscoveryStore      // Discoveries (tools, instructions, resources, prompts); the single owner of that data, which client state never carries
+	mu                     sync.RWMutex                   // Read-write mutex for thread-safe operations
+	serverRunning          bool                           // Track whether local MCP server is running
+	checkerManager         *ConnectionCheckerManager      // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
+	reconnectingClients    sync.Map                       // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
+	connectOnce            sync.Once                      // Ensures ConnectConfiguredClients dials the configured clients exactly once
+	inProcessServerFactory schemas.InProcessServerFactory // Builds synthesized servers (openapi clients); nil = unsupported
+	perCallConns           sync.Map                       // Client ID → *perCallConn, shared by that client's per-call connections
+	perCallConnsMu         sync.Mutex                     // Serializes building a perCallConn on a miss
+	maxProtocolVersion     atomic.Value                   // Global max protocol version (string); see ResolveMaxProtocolVersion
+	pendingRenegotiation   sync.Map                       // client ID -> struct{}: a protocol version change not yet applied to its connection
 
 	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
 	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the
@@ -80,22 +88,11 @@ type MCPManager struct {
 	// (the only kind of consumer this exists for today) is unaffected.
 	stateChangeCallback func(clientID, name string, oldState, newState schemas.MCPConnectionState)
 
-	// toolsChangeCallback, if set, is invoked whenever a client's tool
-	// map/name mapping is freshly (re)discovered — connectToMCPClient's
-	// initial dial or reconnect, SetClientTools (per-call clients' own
-	// discovery, called both internally and by admin-verify HTTP handlers),
-	// and the periodic connection checker's writeBackTools (both the sticky
-	// and per-call variants). Deliberately NOT fired when AddClient restores
-	// an already-known tool set from a config that was just read back out of
-	// the DB (clientmanager.go's per-call restore branch) — nothing changed
-	// in that case, so there is nothing new to persist.
-	//
-	// core/mcp has no DB access of its own; this is the seam a caller (the
-	// transport layer) uses to persist the fresh result, mirroring
-	// stateChangeCallback's own role for state transitions. Fired outside
-	// m.mu for the same reason: a registered callback may do arbitrary work,
-	// including I/O.
-	toolsChangeCallback func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)
+	// discoveryChangeCallback, if set, runs when a fresh discovery of a client differs from the installed one:
+	// connect/reconnect, SetClientDiscovery and the connection checker. Not on a restore from config
+	// (nothing changed). It lets the transport react (it re-syncs its hosted /mcp); persisting the
+	// discovery is the discovery store's job. Fired outside m.mu since it may do I/O.
+	discoveryChangeCallback func(clientID, name string, discovery *schemas.MCPDiscovery)
 }
 
 // SetStateChangeCallback registers cb to be invoked on every reactive
@@ -109,39 +106,137 @@ func (m *MCPManager) SetStateChangeCallback(cb func(clientID, name string, oldSt
 	m.stateChangeCallback = cb
 }
 
-// SetToolsChangeCallback registers cb to be invoked whenever a client's tool
-// map is freshly (re)discovered — see the toolsChangeCallback field doc for
-// exactly which paths that covers. Pass nil to clear a previously registered
-// callback. Safe to call at any time; takes effect on the next discovery.
-func (m *MCPManager) SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)) {
+// SetDiscoveryChangeCallback registers cb to run when a client's discovery changes (see
+// discoveryChangeCallback for the paths). nil clears it.
+func (m *MCPManager) SetDiscoveryChangeCallback(cb func(clientID, name string, discovery *schemas.MCPDiscovery)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.toolsChangeCallback = cb
+	m.discoveryChangeCallback = cb
 }
 
-// toolsChangedCallback compares tools/toolNameMapping's content hash against
-// clientState.LastToolsHash — gating the funnel to genuine changes only, so
-// a rediscovery that returns byte-identical tools (the common case on most
-// periodic ticks and reconnects) doesn't re-trigger a registered callback's
-// work (DB persist, external MCP server resync). On a genuine change,
-// updates the stored hash and returns a closure that invokes the callback;
-// returns nil if nothing changed or no callback is registered.
-//
-// Must be called with m.mu (or the checker's c.manager.mu — the same
-// mutex) already held; the returned closure must be invoked AFTER releasing
-// the lock, per toolsChangeCallback's own field doc.
-func (m *MCPManager) toolsChangedCallback(clientState *schemas.MCPClientState, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) func() {
-	hash := computeToolsHash(tools, toolNameMapping, instructions)
-	if clientState.LastToolsHash == hash {
+// discoveryChanged updates LastDiscoveryHash from clientID's installed discovery and, on a change,
+// returns a closure that runs the callback with the discovery installed when it fires; nil when
+// nothing changed or no callback is set. Call with m.mu held and run the closure after releasing it.
+func (m *MCPManager) discoveryChanged(clientState *clientConn, clientID string) func() {
+	hash := computeDiscoveryHash(m.installedDiscovery(m.config(clientID)))
+	if clientState.LastDiscoveryHash == hash {
 		return nil
 	}
-	clientState.LastToolsHash = hash
-	cb := m.toolsChangeCallback
+	clientState.LastDiscoveryHash = hash
+	cb := m.discoveryChangeCallback
 	if cb == nil {
 		return nil
 	}
-	name := clientState.Name
-	return func() { cb(clientID, name, tools, toolNameMapping, instructions) }
+	// Read again when it fires: callbacks run unlocked and can fire out of order, so a late one must
+	// deliver the discovery installed now, not the one it was created with.
+	return func() {
+		m.mu.RLock()
+		current, name := m.installedDiscovery(m.config(clientID)), clientState.Name
+		m.mu.RUnlock()
+		cb(clientID, name, current)
+	}
+}
+
+// installedDiscovery is config's discovery in the store as the manager itself sees it (no caller,
+// so a client with per_user_discovery on has none), or an empty one when it has none. Safe under
+// m.mu: the store answers the manager's own ctx without I/O.
+func (m *MCPManager) installedDiscovery(config *schemas.MCPClientConfig) *schemas.MCPDiscovery {
+	if config == nil {
+		return &schemas.MCPDiscovery{}
+	}
+	if discovery := m.discoveryStore.GetDiscovery(m.ctx, config); discovery != nil {
+		return discovery
+	}
+	return &schemas.MCPDiscovery{}
+}
+
+// installedDiscoveryByID is installedDiscovery for the client with this ID. Takes m.mu, so the
+// caller must not hold it.
+func (m *MCPManager) installedDiscoveryByID(clientID string) *schemas.MCPDiscovery {
+	m.mu.RLock()
+	var config *schemas.MCPClientConfig
+	if _, ok := m.clientMap[clientID]; ok {
+		config = m.config(clientID)
+	}
+	m.mu.RUnlock()
+	return m.installedDiscovery(config)
+}
+
+// clientConn is the manager's entry for one MCP client: its connection and connection state. The
+// client's configuration is not kept here; it is read from the Account (see config).
+//
+// dialed points at the Account's record the connection was built from, never a copy, and is read
+// only to compare the old configuration with the new one on an update. pendingVerification is
+// taken from the record when the client is added and cleared once a discovery lands.
+type clientConn struct {
+	Name              string                           // The client's name when the entry was last built or updated, for logs and callbacks
+	Conn              *client.Client                   // Active MCP client connection
+	ConnectionInfo    *schemas.MCPClientConnectionInfo // Connection metadata for management
+	CancelFunc        context.CancelFunc               // Cancel function for SSE connections
+	State             schemas.MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
+	LastFailure       *schemas.MCPConnectionFailure    // Why State is not Healthy; nil while Healthy
+	ConnGeneration    uint64                           // Counts connection swaps; late writers bound to an older Conn compare against it
+	LastDiscoveryHash string                           // Content hash of the last discovery the change callback fired for
+
+	dialed              *schemas.MCPClientConfig // the Account's record the connection was built from; see clientConn
+	pendingVerification bool                     // the client still awaits its one-time admin step in this process
+}
+
+// internalClientConfig is the configuration of core's own client, which hosts the tools registered
+// with RegisterTool, while the Account serves none for it. To change it, an Account serves a record
+// with the client's ID (BifrostMCPClientKey) and the caller applies it with UpdateClient, as for any
+// other client. Read-only.
+var internalClientConfig = &schemas.MCPClientConfig{
+	ID:             BifrostMCPClientKey,
+	Name:           BifrostMCPClientKey, // Use same value as ID for consistent prefixing
+	ToolsToExecute: []string{"*"},       // Allow all tools for internal client
+}
+
+// config returns the configuration of the MCP client with this ID as the Account serves it now,
+// or nil when it has none; core's own client falls back to internalClientConfig. The value is
+// read-only.
+func (m *MCPManager) config(id string) *schemas.MCPClientConfig {
+	if m.account != nil {
+		if config, err := m.account.GetConfigForMCPClient(id); err == nil && config != nil {
+			return config
+		}
+	}
+	if id == BifrostMCPClientKey {
+		return internalClientConfig
+	}
+	return nil
+}
+
+// configByName returns the configuration of the MCP client with this name as the Account serves it
+// now, or nil when it has none; core's own client falls back to internalClientConfig. The value is
+// read-only.
+func (m *MCPManager) configByName(name string) *schemas.MCPClientConfig {
+	if m.account != nil {
+		if config, err := m.account.GetConfigForMCPClientByName(name); err == nil && config != nil {
+			return config
+		}
+	}
+	if name == internalClientConfig.Name {
+		return internalClientConfig
+	}
+	return nil
+}
+
+// snapshot is entry as callers see it: a copy of its connection state, with the client's
+// configuration as the Account serves it now. The copy shares Conn and LastFailure, which are only
+// ever replaced, never changed.
+func (m *MCPManager) snapshot(id string, entry *clientConn) *schemas.MCPClientState {
+	return &schemas.MCPClientState{
+		Name:              entry.Name,
+		Conn:              entry.Conn,
+		ExecutionConfig:   m.config(id),
+		ConnectionInfo:    entry.ConnectionInfo,
+		CancelFunc:        entry.CancelFunc,
+		State:             entry.State,
+		LastFailure:       entry.LastFailure,
+		ConnGeneration:    entry.ConnGeneration,
+		LastDiscoveryHash: entry.LastDiscoveryHash,
+	}
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -156,7 +251,9 @@ type MCPToolFunction[T any] func(args T) (string, error)
 //
 // Parameters:
 //   - ctx: Context for the MCP manager
-//   - config: MCP configuration including server port and client configs
+//   - config: MCP configuration (tool manager settings, sync interval, stores, hooks)
+//   - account: Serves every MCP client's configuration, which the manager reads and never keeps
+//     a copy of. nil serves none.
 //   - credStore: CredentialStore that resolves per-call credentials (Bearer
 //     tokens, static headers, user-submitted headers) and signals whether
 //     each client requires an ephemeral upstream connection. Pass nil only
@@ -168,7 +265,7 @@ type MCPToolFunction[T any] func(args T) (string, error)
 //
 // Returns:
 //   - *MCPManager: Initialized manager instance
-func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore schemas.MCPCredentialStore, logger schemas.Logger, codeMode CodeMode) *MCPManager {
+func NewMCPManager(ctx context.Context, config schemas.MCPConfig, account schemas.Account, credStore schemas.MCPCredentialStore, logger schemas.Logger, codeMode CodeMode) *MCPManager {
 	if logger == nil {
 		logger = defaultLogger
 	}
@@ -187,13 +284,18 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 		}
 	}
 	// Creating new instance
+	discoveryStore := NewDiscoveryStore(config.SharedDiscoveryStore, config.PerUserDiscoveryStore)
 	manager := &MCPManager{
-		ctx:            ctx,
-		logger:         logger,
-		clientMap:      make(map[string]*schemas.MCPClientState),
-		checkerManager: NewConnectionCheckerManager(config.ToolSyncInterval),
-		credStore:      credStore,
+		ctx:                    ctx,
+		logger:                 logger,
+		account:                account,
+		clientMap:              make(map[string]*clientConn),
+		discoveryStore:         discoveryStore,
+		checkerManager:         NewConnectionCheckerManager(config.ToolSyncInterval),
+		credStore:              credStore,
+		inProcessServerFactory: config.InProcessServerFactory,
 	}
+	manager.maxProtocolVersion.Store(config.MaxProtocolVersion)
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline
 	var releasePluginPipeline func(pipeline PluginPipeline)
@@ -223,61 +325,119 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 		manager.toolsManager.SetCodeMode(codeMode)
 	}
 
-	// Retain client configs for an explicit dial via ConnectConfiguredClients.
-	// Construction no longer connects: callers dial after every plugin is
-	// registered so PreMCPConnectionHook sees the full plugin set (otherwise a
-	// connect issued during Init would run against the point-in-time plugin
-	// snapshot and silently skip plugins registered afterwards).
-	manager.bootClientConfigs = config.ClientConfigs
+	// Construction never connects: callers dial with ConnectConfiguredClients after
+	// every plugin is registered so PreMCPConnectionHook sees the full plugin set
+	// (otherwise a connect issued during Init would run against the point-in-time
+	// plugin snapshot and silently skip plugins registered afterwards).
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager
 }
 
-// ConnectConfiguredClients dials the MCP clients supplied at construction time
-// (MCPConfig.ClientConfigs). It is separated from NewMCPManager so the caller can
-// run it only after all plugins are registered, ensuring every PreMCPConnectionHook
-// participates in the connection. Safe to call once after construction; clients are
-// dialed in parallel and a failed client is retained in the Unstable state with a
-// connection checker that recovers it automatically.
-func (m *MCPManager) ConnectConfiguredClients(ctx context.Context) {
+// SetInProcessServerFactory replaces the factory used to synthesize in-process
+// servers for openapi clients. Takes effect on the next connect (reconnect,
+// refresh or a newly added client); live connections are untouched.
+func (m *MCPManager) SetInProcessServerFactory(factory schemas.InProcessServerFactory) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inProcessServerFactory = factory
+}
+
+// getInProcessServerFactory returns the current factory under the read lock.
+func (m *MCPManager) getInProcessServerFactory() schemas.InProcessServerFactory {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.inProcessServerFactory
+}
+
+// ConnectConfiguredClients dials the MCP clients the Account lists. It is separated
+// from NewMCPManager so the caller can run it only after all plugins are registered,
+// ensuring every PreMCPConnectionHook participates in the connection. Only the first
+// call dials; clients are dialed in parallel and a failed client is retained in the
+// Unstable state with a connection checker that recovers it automatically. It returns
+// once every client has been attempted; onClientDone, when not nil, is called as each
+// attempt finishes, never two calls at once.
+func (m *MCPManager) ConnectConfiguredClients(ctx context.Context, onClientDone func(clientID string)) {
 	m.connectOnce.Do(func() {
-		m.connectConfiguredClients(ctx)
+		m.connectConfiguredClients(ctx, m.configuredClients(), onClientDone)
 	})
+}
+
+// configuredClients returns the configuration of every MCP client the Account lists. A client
+// whose configuration cannot be read is logged and left out.
+func (m *MCPManager) configuredClients() []*schemas.MCPClientConfig {
+	if m.account == nil {
+		return nil
+	}
+	ids, err := m.account.GetConfiguredMCPClients()
+	if err != nil {
+		m.logger.Warn("%s Failed to list the configured MCP clients: %v", MCPLogPrefix, err)
+		return nil
+	}
+	configs := make([]*schemas.MCPClientConfig, 0, len(ids))
+	for _, id := range ids {
+		// Core creates its own client; a record the Account serves for it only configures it.
+		if id == BifrostMCPClientKey {
+			continue
+		}
+		config := m.config(id)
+		if config == nil {
+			m.logger.Warn("%s Skipping MCP client %s: the account has no configuration for it", MCPLogPrefix, id)
+			continue
+		}
+		configs = append(configs, config)
+	}
+	return configs
 }
 
 // connectConfiguredClients performs the actual dial. It is invoked exactly once via
 // m.connectOnce, guarding against accidental repeat invocations (e.g. a double-Bootstrap
-// or a future code path) that would otherwise re-dial every boot config.
-func (m *MCPManager) connectConfiguredClients(ctx context.Context) {
-	if len(m.bootClientConfigs) == 0 {
+// or a future code path) that would otherwise re-dial every configured client.
+func (m *MCPManager) connectConfiguredClients(ctx context.Context, configs []*schemas.MCPClientConfig, onClientDone func(clientID string)) {
+	if len(configs) == 0 {
 		return
 	}
 	if ctx == nil {
 		ctx = m.ctx
 	}
+	// Serializes onClientDone, so a caller resyncing on each call never has an
+	// older snapshot land after a newer one.
+	var doneMu sync.Mutex
 	// Add clients in parallel
 	wg := sync.WaitGroup{}
-	wg.Add(len(m.bootClientConfigs))
-	for _, clientConfig := range m.bootClientConfigs {
+	wg.Add(len(configs))
+	for _, clientConfig := range configs {
 		go func(clientConfig *schemas.MCPClientConfig) {
 			defer wg.Done()
-			if err := m.AddClient(ctx, clientConfig); err != nil {
+			if onClientDone != nil {
+				defer func() {
+					doneMu.Lock()
+					defer doneMu.Unlock()
+					onClientDone(clientConfig.ID)
+				}()
+			}
+			// A failed dial is kept unstable and recovered by addClient itself, which
+			// checks the client was not removed meanwhile: the caller may serve the
+			// API while this runs.
+			dialed, err := m.addClient(ctx, clientConfig, true)
+			if err != nil {
 				m.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
-				// Retain the entry in Unstable state and start a connection checker to
-				// recover it automatically. On startup, a connection failure is likely
-				// transient (e.g. autoscaling cold start) — the client was previously
-				// configured and should be recovered without user intervention.
+			}
+			if err != nil && !dialed {
+				// Refused before any dial, so nothing was kept. Retain the entry in
+				// Unstable state and start a connection checker to recover it
+				// automatically. On startup, a connection failure is likely transient
+				// (e.g. autoscaling cold start); the client was previously configured
+				// and should be recovered without user intervention.
 				m.mu.Lock()
 				if _, exists := m.clientMap[clientConfig.ID]; !exists {
-					m.clientMap[clientConfig.ID] = &schemas.MCPClientState{
-						Name:            clientConfig.Name,
-						ExecutionConfig: clientConfig,
-						State:           schemas.MCPConnectionStateUnstable,
-						ToolMap:         make(map[string]schemas.ChatTool),
-						ToolNameMapping: make(map[string]string),
+					m.clientMap[clientConfig.ID] = &clientConn{
+						Name:  clientConfig.Name,
+						State: schemas.MCPConnectionStateUnstable,
 						ConnectionInfo: &schemas.MCPClientConnectionInfo{
 							Type: clientConfig.ConnectionType,
 						},
+						dialed:              clientConfig,
+						pendingVerification: clientConfig.PendingVerification,
 					}
 				} else {
 					m.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateUnstable
@@ -337,6 +497,11 @@ func (m *MCPManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.Ch
 	return m.toolsManager.GetAvailableTools(ctx)
 }
 
+// UpdateCodeModeLimits replaces the per-execution code mode limits at runtime.
+func (m *MCPManager) UpdateCodeModeLimits(limits *schemas.MCPCodeModeLimits) {
+	m.toolsManager.UpdateCodeModeLimits(limits)
+}
+
 // UpdateToolManagerConfig updates the configuration for the tool manager.
 // This allows runtime updates to settings like execution timeout and max agent depth.
 //
@@ -359,11 +524,12 @@ func (m *MCPManager) UpdateToolSyncInterval(interval time.Duration) {
 	// so nesting the two here would invert that lock order.
 	var clients []ClientIntervalSource
 	m.mu.RLock()
-	for id, clientState := range m.clientMap {
-		if id == BifrostMCPClientKey || clientState.ExecutionConfig == nil {
+	for id := range m.clientMap {
+		config := m.config(id)
+		if id == BifrostMCPClientKey || config == nil {
 			continue
 		}
-		clients = append(clients, ClientIntervalSource{ID: id, Config: clientState.ExecutionConfig})
+		clients = append(clients, ClientIntervalSource{ID: id, Config: config})
 	}
 	m.mu.RUnlock()
 	m.checkerManager.ApplyGlobalInterval(interval, clients)
@@ -488,7 +654,7 @@ func (m *MCPManager) Cleanup() error {
 	}
 
 	// Clear the client map
-	m.clientMap = make(map[string]*schemas.MCPClientState)
+	m.clientMap = make(map[string]*clientConn)
 
 	// Clear local server reference
 	// Note: mark3labs/mcp-go STDIO server cleanup is handled automatically

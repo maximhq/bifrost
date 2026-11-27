@@ -4,14 +4,20 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,8 +29,12 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/passthroughparse"
+	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -44,6 +54,68 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 	require.NoError(t, err)
 	assert.Equal(t, "openai/whisper-1", model)
 	assert.True(t, stream)
+}
+
+// TestHandlePassthrough_MultipartModelIsStrict asserts a streamed multipart passthrough body names
+// its model the way a JSON body must: at most one model field, spelled "model", or 400 before the
+// upstream is called. Repeated fields routed and governed the first value while the forwarded body
+// still carried every value, so the upstream could run a model that was never checked.
+func TestHandlePassthrough_MultipartModelIsStrict(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"ok"}`))
+	}))
+	defer upstream.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughRewriteAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	for _, tc := range []struct {
+		name       string
+		fields     [][2]string
+		wantStatus int
+		wantErr    string
+	}{
+		{"one model", [][2]string{{"model", "whisper-1"}}, fasthttp.StatusOK, ""},
+		{"repeated model", [][2]string{{"model", "whisper-1"}, {"model", "gpt-4o-transcribe"}}, fasthttp.StatusBadRequest, "at most once"},
+		{"model under two spellings", [][2]string{{"model", "whisper-1"}, {"Model", "gpt-4o-transcribe"}}, fasthttp.StatusBadRequest, "at most once"},
+		{"misspelled model", [][2]string{{"Model", "whisper-1"}}, fasthttp.StatusBadRequest, "spelled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body bytes.Buffer
+			w := multipart.NewWriter(&body)
+			for _, f := range tc.fields {
+				require.NoError(t, w.WriteField(f[0], f[1]))
+			}
+			part, err := w.CreateFormFile("file", "sample.mp3")
+			require.NoError(t, err)
+			_, _ = part.Write([]byte("audio-bytes"))
+			require.NoError(t, w.Close())
+			raw := append([]byte(fmt.Sprintf("POST /openai_passthrough/v1/audio/transcriptions HTTP/1.1\r\nHost: bifrost\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", w.FormDataContentType(), body.Len())), body.Bytes()...)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&fasthttp.Request{}, nil, nil)
+			require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewReader(raw))))
+			defer ctx.Request.Reset()
+			before := hits.Load()
+
+			r.Handler(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			if tc.wantErr != "" {
+				assert.Contains(t, string(ctx.Response.Body()), tc.wantErr)
+				assert.Equal(t, before, hits.Load(), "the upstream was called for a refused request")
+			}
+		})
+	}
 }
 
 // TestParsePassthroughBody_JSONModelIsStrict: the model governance checks must be
@@ -71,7 +143,15 @@ func TestParsePassthroughBody_JSONModelIsStrict(t *testing.T) {
 		{name: "invalid JSON declared as JSON", contentType: "application/json; charset=utf-8", body: `{"model":"gpt-4o",`, wantErr: "not valid JSON"},
 		{name: "invalid JSON with another content type is ignored", contentType: "text/plain", body: `model=gpt-4o`},
 		{name: "valid JSON with no content type is still read", contentType: "", body: `{"model":"gpt-4o"}`, wantModel: "gpt-4o"},
-		{name: "array body has no model", contentType: "application/json", body: `[{"model":"gpt-4o"}]`},
+		// A task array (Runware) names a model per task. One agreed model is the request's; tasks
+		// naming different models leave it empty, and governance reads them from the body instead.
+		{name: "single-task array names its model", contentType: "application/json", body: `[{"taskType":"imageInference","model":"runware:101@1"}]`, wantModel: "runware:101@1"},
+		{name: "array agreeing on one model names it", contentType: "application/json", body: `[{"model":"runware:101@1"},{"taskType":"getResponse"},{"model":" runware:101@1 "}]`, wantModel: "runware:101@1"},
+		{name: "array naming different models has no single model", contentType: "application/json", body: `[{"model":"runware:100@1"},{"model":"runware:101@1"}]`},
+		{name: "array task with a non-string model", contentType: "application/json", body: `[{"model":["runware:101@1"]}]`, wantErr: "must be a string"},
+		{name: "array task with duplicate model keys", contentType: "application/json", body: `[{"model":"blocked","model":"allowed"}]`, wantErr: "at most once"},
+		{name: "array task with duplicate model keys after a disagreement", contentType: "application/json", body: `[{"model":"a"},{"model":"b"},{"model":"a","model":"c"}]`, wantErr: "at most once"},
+		{name: "array of non-objects has no model", contentType: "application/json", body: `["runware:101@1"]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,6 +185,38 @@ func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 	r.Handler(&ctx)
 
 	require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
+}
+
+func TestChatGPTPassthroughRouterRegistersOnlyCodexRoutes(t *testing.T) {
+	r := router.New()
+	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(fasthttp.StatusNoContent)
+		}
+	})
+
+	cases := []struct {
+		method string
+		uri    string
+		want   int
+	}{
+		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/models?client_version=0.160.0", fasthttp.StatusNoContent},
+		{fasthttp.MethodPost, "/chatgpt_passthrough/backend-api/codex/responses", fasthttp.StatusNoContent},
+		{fasthttp.MethodPost, "/chatgpt_passthrough/backend-api/codex/models", fasthttp.StatusMethodNotAllowed},
+		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/responses", fasthttp.StatusMethodNotAllowed}, // the upgrade is the Codex WebSocket relay's route, not this router's
+		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/conversations", fasthttp.StatusNotFound},
+		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/models/gpt-5.5", fasthttp.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.uri, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.SetRequestURI(tc.uri)
+			r.Handler(&ctx)
+			require.Equal(t, tc.want, ctx.Response.StatusCode())
+		})
+	}
 }
 
 func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
@@ -990,7 +1102,7 @@ func TestApplyPassthroughCallerAuth_OpenAIJWTForwarded(t *testing.T) {
 	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	safeHeaders := map[string]string{}
-	jwt := "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln"
+	jwt := "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.c2ln"
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, schemas.OpenAI, jwt, "https://chatgpt.com")
 	if got := safeHeaders["authorization"]; got != jwt {
 		t.Fatalf("expected JWT forwarded in safe headers, got %q", got)
@@ -1006,11 +1118,16 @@ func TestApplyPassthroughCallerAuth_APIKeysStayStripped(t *testing.T) {
 		auth        string
 		upstreamURL string
 	}{
-		"openai plain api key":      {schemas.OpenAI, "Bearer sk-plain-api-key", ""},
-		"anthropic api key bearer":  {schemas.Anthropic, "Bearer sk-ant-api03-key", ""},
-		"provider override bedrock": {schemas.Bedrock, "Bearer sk-ant-oat01-caller-token", ""},
-		"openai two-segment token":  {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.c2ln", ""},
-		"http upstream override":    {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln", "http://mock.local"},
+		"openai plain api key":             {schemas.OpenAI, "Bearer sk-plain-api-key", ""},
+		"anthropic api key bearer":         {schemas.Anthropic, "Bearer sk-ant-api03-key", ""},
+		"provider override bedrock":        {schemas.Bedrock, "Bearer sk-ant-oat01-caller-token", ""},
+		"openai two-segment token":         {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.c2ln", ""},
+		"http upstream override":           {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.c2ln", "http://mock.local"},
+		"openai jwt on openai api":         {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.c2ln", ""},
+		"openai jwt on other https":        {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.c2ln", "https://api.example.com"},
+		"identity provider jwt on chatgpt": {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2lkcC5leGFtcGxlLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.c2ln", "https://chatgpt.com"},
+		"jwt without issuer on chatgpt":    {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln", "https://chatgpt.com"},
+		"undecodable jwt on chatgpt":       {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.!!!.c2ln", "https://chatgpt.com"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
@@ -1051,7 +1168,7 @@ func Test_handleStreaming_RetentionCancelsAndLeavesNoGoroutine(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 
 	rec := newCancelRecorder()
-	router.handleStreaming(ctx, nil, RouteConfig{}, stream, rec.cancel)
+	router.handleStreaming(ctx, nil, RouteConfig{}, "", stream, rec.cancel)
 
 	// Drain the response body so the producer's SendEvent calls succeed and it reaches
 	// its normal end-of-stream path rather than the write-error path (which has always
@@ -1081,6 +1198,107 @@ func Test_handleStreaming_RetentionCancelsAndLeavesNoGoroutine(t *testing.T) {
 	// release gate trains people to rerun until green. The outcome this mechanism protects
 	// is asserted precisely, by name, in
 	// lib.TestClientDisconnectWatcher_RetentionNoGoroutineLeak against a real socket.
+}
+
+// Test_handleStreaming_ConverterPanicIsRecovered pins that a panic inside a stream chunk
+// converter does not end the process. The producer goroutine runs after the handler has
+// returned, outside RecoveryMiddleware, so without its own recover an unrecovered panic
+// there crashes the server (and this test binary). It must instead cancel upstream, drain
+// the remaining chunks so the provider goroutine is not left blocked on a send, and close
+// the client stream.
+func Test_handleStreaming_ConverterPanicIsRecovered(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	route := RouteConfig{StreamConfig: &StreamConfig{
+		ChatStreamResponseConverter: func(*schemas.BifrostContext, *schemas.BifrostChatResponse) (string, interface{}, error) {
+			var resp *schemas.BifrostChatResponse
+			return "", resp.ID, nil // nil dereference, as a converter bug would
+		},
+	}}
+
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", stream, rec.cancel)
+
+	type readResult struct {
+		body []byte
+		err  error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		b, err := io.ReadAll(ctx.Response.BodyStream())
+		readDone <- readResult{b, err}
+	}()
+
+	// Unbuffered: every send after the panicking one only completes if the recover drains.
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		for i := 0; i < 3; i++ {
+			stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{}}
+		}
+		close(stream)
+	}()
+
+	select {
+	case <-sendDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider side stayed blocked on send: the stream was not drained after the panic")
+	}
+	select {
+	case res := <-readDone:
+		require.NoError(t, res.err)
+		// The route has no error converter, so the default internal_error body is framed.
+		require.Contains(t, string(res.body), `"internal_error"`, "a stream cut short by a panic must end with an error frame, got %q", res.body)
+	case <-time.After(5 * time.Second):
+		t.Fatal("response body stream never closed after the panic")
+	}
+	rec.requireCancelled(t, "upstream was not cancelled after the converter panicked")
+}
+
+// Test_handleStreaming_TeardownPanicsAreRecovered pins that the producer's deferred
+// teardown survives a panicking step. The teardown runs after the producer's recover, so a
+// panic in it (an integration's stream Cleanup, the trace completer that runs observability
+// plugins) is a new panic nothing else catches. Each step is contained, the steps after it
+// still run, and the client stream still closes.
+func Test_handleStreaming_TeardownPanicsAreRecovered(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{}}
+	close(stream)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	traceRan := make(chan struct{})
+	ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func([]schemas.PluginLogEntry) {
+		close(traceRan)
+		panic("trace completer")
+	})
+	route := RouteConfig{StreamConfig: &StreamConfig{
+		ChatStreamResponseConverter: func(*schemas.BifrostContext, *schemas.BifrostChatResponse) (string, interface{}, error) {
+			return "", map[string]string{"ok": "1"}, nil
+		},
+		Cleanup: func(*schemas.BifrostContext) { panic("cleanup") },
+	}}
+
+	rec := newCancelRecorder()
+	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", stream, rec.cancel)
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(ctx.Response.BodyStream())
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("response body stream never closed after a teardown panic")
+	}
+	select {
+	case <-traceRan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the trace completer did not run after Cleanup panicked")
+	}
+	rec.requireCancelled(t, "the teardown's cancel did not run after a teardown panic")
 }
 
 // cancelRecorder captures the cancel func handed to handleStreaming.
@@ -1113,36 +1331,83 @@ func (c *cancelRecorder) requireCancelled(t *testing.T, msg string) {
 
 // passthroughTestAccount configures a single Anthropic provider whose BaseURL points at a
 // local test upstream, so passthrough tests can observe exactly what (if anything) reaches it.
+// Anthropic-shaped custom providers the passthrough tests reach through x-model-provider:
+// one opted in with a passthrough policy, one never did.
+const (
+	passthroughSidecar    schemas.ModelProvider = "passthrough-sidecar"
+	passthroughSidecarOff schemas.ModelProvider = "passthrough-sidecar-off"
+)
+
 type passthroughTestAccount struct {
-	baseURL string
+	baseURL              string
+	anthropicPassthrough *schemas.PassthroughPolicy
 }
 
 func (a passthroughTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{schemas.Anthropic}, nil
+	return []schemas.ModelProvider{schemas.Anthropic, passthroughSidecar, passthroughSidecarOff}, nil
 }
 
 func (a passthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
-	if p != schemas.Anthropic {
+	value := "sk-ant-test-operator-key"
+	switch p {
+	case schemas.Anthropic:
+	case passthroughSidecar, passthroughSidecarOff:
+		value = "sk-" + string(p)
+	default:
 		return nil, nil
 	}
 	return []schemas.Key{{
-		ID:     "passthrough-test-key",
-		Value:  *schemas.NewSecretVar("sk-ant-test-operator-key"),
+		ID:     "passthrough-test-key-" + string(p),
+		Value:  *schemas.NewSecretVar(value),
 		Models: schemas.WhiteList{"*"},
 		Weight: 1.0,
 	}}, nil
 }
 
 func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	if p != schemas.Anthropic {
-		return nil, fmt.Errorf("unsupported provider %s", p)
-	}
 	nc := schemas.DefaultNetworkConfig
 	nc.BaseURL = a.baseURL
-	return &schemas.ProviderConfig{
+	config := &schemas.ProviderConfig{
 		NetworkConfig:            nc,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-	}, nil
+	}
+	switch p {
+	case schemas.Anthropic:
+		config.Passthrough = a.anthropicPassthrough
+	case passthroughSidecar:
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}
+		config.Passthrough = &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+			{Methods: []string{fasthttp.MethodPost}, Path: "/v1/models/*/predict"},
+		}}
+	case passthroughSidecarOff:
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}
+	default:
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	return config, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a passthroughTestAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a passthroughTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a passthroughTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// passthroughTestStore reports the test account's custom providers the way lib.Config does.
+func passthroughTestStore() *mockHandlerStore {
+	return &mockHandlerStore{customProviders: map[schemas.ModelProvider]mockCustomProvider{
+		passthroughSidecar:    {base: schemas.Anthropic, passthrough: true},
+		passthroughSidecarOff: {base: schemas.Anthropic},
+	}}
 }
 
 type passthroughUpstreamHit struct {
@@ -1153,16 +1418,18 @@ type passthroughUpstreamHit struct {
 func TestStripPassthroughPrefix(t *testing.T) {
 	genai := []string{"/genai_passthrough/v1beta1", "/genai_passthrough/v1beta", "/genai_passthrough/v1", "/genai_passthrough"}
 	tests := []struct {
-		name     string
-		path     string
-		prefixes []string
-		want     string
-		wantOK   bool
+		name        string
+		path        string
+		prefixes    []string
+		want        string
+		wantVersion string
+		wantOK      bool
 	}{
-		{name: "versioned prefix at boundary", path: "/genai_passthrough/v1beta/models/x", prefixes: genai, want: "/models/x", wantOK: true},
-		{name: "v1 prefix at boundary", path: "/genai_passthrough/v1/models/x", prefixes: genai, want: "/models/x", wantOK: true},
+		{name: "versioned prefix at boundary", path: "/genai_passthrough/v1beta/models/x", prefixes: genai, want: "/models/x", wantVersion: "v1beta", wantOK: true},
+		{name: "v1 prefix at boundary", path: "/genai_passthrough/v1/models/x", prefixes: genai, want: "/models/x", wantVersion: "v1", wantOK: true},
+		{name: "v1beta1 prefix keeps its version for vertex", path: "/genai_passthrough/v1beta1/projects/p/locations/global/interactions", prefixes: genai, want: "/projects/p/locations/global/interactions", wantVersion: "v1beta1", wantOK: true},
 		{name: "bare prefix at boundary", path: "/genai_passthrough/files/abc", prefixes: genai, want: "/files/abc", wantOK: true},
-		{name: "exact prefix yields root", path: "/genai_passthrough/v1beta", prefixes: genai, want: "/", wantOK: true},
+		{name: "exact prefix yields root", path: "/genai_passthrough/v1beta", prefixes: genai, want: "/", wantVersion: "v1beta", wantOK: true},
 		{name: "longer first segment falls through to shorter prefix", path: "/genai_passthrough/v1beta1foo/x", prefixes: genai, want: "/v1beta1foo/x", wantOK: true},
 		{name: "userinfo separator after prefix falls through to shorter prefix", path: "/genai_passthrough/v1@127.0.0.1/x", prefixes: genai, want: "/v1@127.0.0.1/x", wantOK: true},
 		{name: "single prefix with userinfo separator does not match", path: "/anthropic_passthrough@evil.example/x", prefixes: []string{"/anthropic_passthrough"}, wantOK: false},
@@ -1171,10 +1438,11 @@ func TestStripPassthroughPrefix(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := stripPassthroughPrefix(tc.path, tc.prefixes)
+			got, version, ok := stripPassthroughPrefix(tc.path, tc.prefixes)
 			require.Equal(t, tc.wantOK, ok)
 			if ok {
 				require.Equal(t, tc.want, got)
+				require.Equal(t, tc.wantVersion, version)
 			}
 		})
 	}
@@ -1248,18 +1516,22 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 
 	r := router.New()
 	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
-	NewGenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
-	NewAnthropicPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	store := passthroughTestStore()
+	NewGenAIPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
 
 	tests := []struct {
 		name         string
+		method       string
 		uri          string
 		provider     string
 		wantStatus   int
 		wantUpstream string // expected upstream request URI; empty means no upstream request allowed
 		wantBodyHas  string
+		wantStreamed bool
+		wantKey      string // upstream credential; empty means the anthropic operator key
 	}{
 		{
 			// "/genai_passthrough/v1" no longer matches past the boundary, so the bare prefix
@@ -1291,24 +1563,66 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			wantBodyHas: "x-model-provider",
 		},
 		{
+			name: "account operation is forwarded", uri: "/anthropic_passthrough/v1/files", wantStatus: fasthttp.StatusOK, wantUpstream: "/v1/files",
+		},
+		{
+			name: "batch operation is forwarded", uri: "/anthropic_passthrough/v1/messages/batches", wantStatus: fasthttp.StatusOK, wantUpstream: "/v1/messages/batches",
+		},
+		{
+			name: "non-POST operation is forwarded", method: fasthttp.MethodGet, uri: "/anthropic_passthrough/v1/files/file_1", wantStatus: fasthttp.StatusOK, wantUpstream: "/v1/files/file_1",
+		},
+		{
+			// Resuming an interaction: GET .../interactions/{id}?stream=true answers with SSE.
+			name: "GET asking for a stream in its query is streamed", method: fasthttp.MethodGet, uri: "/anthropic_passthrough/v1/files/file_1?stream=true", wantStatus: fasthttp.StatusOK, wantUpstream: "/v1/files/file_1?stream=true", wantStreamed: true,
+		},
+		{
 			name:         "well-formed anthropic path is forwarded",
 			uri:          "/anthropic_passthrough/v1/messages?beta=true",
 			wantStatus:   fasthttp.StatusOK,
 			wantUpstream: "/v1/messages?beta=true",
 		},
 		{
-			name:         "versioned genai prefix is stripped at the boundary",
-			uri:          "/genai_passthrough/v1beta/models/claude:generateContent",
-			provider:     "anthropic",
-			wantStatus:   fasthttp.StatusOK,
-			wantUpstream: "/models/claude:generateContent",
+			name:        "versioned genai prefix is stripped at the boundary",
+			uri:         "/genai_passthrough/v1beta/models/claude:generateContent",
+			provider:    "anthropic",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "provider does not match",
 		},
 		{
-			name:         "longer first segment falls back to the shorter prefix",
-			uri:          "/genai_passthrough/v1beta1foo/x",
-			provider:     "anthropic",
+			name:        "longer first segment falls back to the shorter prefix",
+			uri:         "/genai_passthrough/v1beta1foo/x",
+			provider:    "anthropic",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "provider does not match",
+		},
+		{
+			name:         "custom provider with a passthrough policy is reachable on its base route",
+			uri:          "/anthropic_passthrough/v1/models/m1/predict",
+			provider:     string(passthroughSidecar),
 			wantStatus:   fasthttp.StatusOK,
-			wantUpstream: "/v1beta1foo/x",
+			wantUpstream: "/v1/models/m1/predict",
+			wantKey:      "sk-" + string(passthroughSidecar),
+		},
+		{
+			name:        "route outside a custom provider's policy is refused",
+			uri:         "/anthropic_passthrough/v1/files",
+			provider:    string(passthroughSidecar),
+			wantStatus:  fasthttp.StatusForbidden,
+			wantBodyHas: "passthrough route POST /v1/files is not allowed for provider " + string(passthroughSidecar),
+		},
+		{
+			name:        "custom provider without a passthrough policy is refused",
+			uri:         "/anthropic_passthrough/v1/messages",
+			provider:    string(passthroughSidecarOff),
+			wantStatus:  fasthttp.StatusForbidden,
+			wantBodyHas: "passthrough is not enabled for provider " + string(passthroughSidecarOff),
+		},
+		{
+			name:        "custom provider on another wire format's route is refused",
+			uri:         "/genai_passthrough/v1beta/models/m1:generateContent",
+			provider:    string(passthroughSidecar),
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "provider does not match",
 		},
 	}
 
@@ -1316,7 +1630,11 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			takeHits()
 			var ctx fasthttp.RequestCtx
-			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			method := fasthttp.MethodPost
+			if tc.method != "" {
+				method = tc.method
+			}
+			ctx.Request.Header.SetMethod(method)
 			ctx.Request.SetRequestURI(tc.uri)
 			ctx.Request.Header.SetContentType("application/json")
 			if tc.provider != "" {
@@ -1331,13 +1649,2048 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			if tc.wantBodyHas != "" {
 				require.Contains(t, string(ctx.Response.Body()), tc.wantBodyHas)
 			}
+			require.Equal(t, tc.wantStreamed, string(ctx.Response.Header.Peek("X-Accel-Buffering")) == "no", "streaming handler")
 			if tc.wantUpstream == "" {
 				require.Empty(t, got, "no request may reach the upstream for %s", tc.uri)
 				return
 			}
 			require.Len(t, got, 1)
 			require.Equal(t, tc.wantUpstream, got[0].path)
-			require.Equal(t, "sk-ant-test-operator-key", got[0].apiKey)
+			wantKey := tc.wantKey
+			if wantKey == "" {
+				wantKey = "sk-ant-test-operator-key"
+			}
+			require.Equal(t, wantKey, got[0].apiKey)
+		})
+	}
+}
+
+// TestHandlePassthrough_ProviderPolicy drives a built-in provider whose passthrough policy allows
+// only POST /v1/messages: that route is forwarded, every other route or method is refused with 403
+// and an error naming the route, and nothing refused reaches the upstream.
+func TestHandlePassthrough_ProviderPolicy(t *testing.T) {
+	var mu sync.Mutex
+	var hits []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughTestAccount{baseURL: upstream.URL, anthropicPassthrough: &schemas.PassthroughPolicy{
+			AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{"POST"}, Path: "/v1/messages"}},
+		}},
+		Logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	NewAnthropicPassthroughRouter(client, passthroughTestStore(), nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next })
+
+	for _, tc := range []struct {
+		method, uri string
+		wantStatus  int
+		wantBodyHas string
+	}{
+		{fasthttp.MethodPost, "/anthropic_passthrough/v1/messages", fasthttp.StatusOK, ""},
+		{fasthttp.MethodPost, "/anthropic_passthrough/v1/files", fasthttp.StatusForbidden, "passthrough route POST /v1/files is not allowed for provider anthropic"},
+		{fasthttp.MethodGet, "/anthropic_passthrough/v1/messages", fasthttp.StatusForbidden, "passthrough route GET /v1/messages is not allowed"},
+		{fasthttp.MethodPost, "/anthropic_passthrough/v1/messages/batches", fasthttp.StatusForbidden, "add it to the provider's passthrough allowed routes"},
+	} {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(tc.method)
+		ctx.Request.SetRequestURI(tc.uri)
+		ctx.Request.Header.SetContentType("application/json")
+		ctx.Request.SetBodyString(`{}`)
+		r.Handler(&ctx)
+		require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "%s %s: %s", tc.method, tc.uri, ctx.Response.Body())
+		require.Contains(t, string(ctx.Response.Body()), tc.wantBodyHas, "%s %s", tc.method, tc.uri)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"POST /v1/messages"}, hits, "only the allowed route may reach the upstream")
+}
+
+// TestRegisterPassthroughTextRewriters verifies each passthrough route gets the same text rewriters as the native route
+// for the API it speaks, and that routes with no typed equivalent or no JSON text get none.
+func TestRegisterPassthroughTextRewriters(t *testing.T) {
+	cases := []struct {
+		name  string
+		route passthroughparse.Route
+		want  bool
+	}{
+		{"anthropic messages", passthroughparse.Route{Wire: schemas.Anthropic, RequestType: schemas.ResponsesRequest}, true},
+		{"anthropic count tokens", passthroughparse.Route{Wire: schemas.Anthropic, RequestType: schemas.CountTokensRequest}, true},
+		{"gemini generate", passthroughparse.Route{Wire: schemas.Gemini, RequestType: schemas.ResponsesRequest}, true},
+		{"openai chat", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ChatCompletionRequest}, true},
+		{"openai responses", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ResponsesRequest}, true},
+		{"openai embeddings", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.EmbeddingRequest}, false},
+		{"gemini interactions", passthroughparse.Route{Wire: passthroughparse.WireGeminiInteractions, RequestType: schemas.ResponsesRequest}, true},
+		{"runware tasks", passthroughparse.Route{Wire: schemas.Runware}, true},
+		{"sagemaker invocations", passthroughparse.Route{Wire: schemas.SageMaker}, true},
+		{"bedrock agent", passthroughparse.Route{Wire: schemas.Bedrock}, true},
+		{"untyped route", passthroughparse.Route{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			registerPassthroughTextRewriters(ctx, tc.route)
+			_, registered := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			require.Equal(t, tc.want, registered)
+		})
+	}
+}
+
+// TestPassthroughRequestRewritersMatchTheReaders verifies, for every request shape the Runware, SageMaker, Bedrock agent
+// and Gemini Interactions readers accept, that the route's rewriter rewrites exactly the texts passthroughparse hands
+// guardrails: rewriting a value the reader read gives a body that reads back with only that value replaced. A text the
+// reader reads but the rewriter cannot reach would turn a decided redaction into a refused request. Synthetic payloads.
+func TestPassthroughRequestRewritersMatchTheReaders(t *testing.T) {
+	const secret = "alice@example.com"
+	runware := passthroughparse.Input{Provider: schemas.Runware, Method: "POST", Path: "/v1"}
+	sageMaker := passthroughparse.Input{Provider: schemas.SageMaker, Method: "POST", Path: "/endpoints/e/invocations"}
+	agent := passthroughparse.Input{Provider: schemas.Bedrock, Method: "POST", Path: "/agents/A/agentAliases/B/sessions/c/text"}
+	gemini := passthroughparse.Input{Provider: schemas.Gemini, Method: "POST", Path: "/v1beta/interactions"}
+	vertex := passthroughparse.Input{Provider: schemas.Vertex, Method: "POST", Path: "/v1beta1/projects/p/locations/global/interactions"}
+	interactionSteps := `{"model":"gemini-3.8-flash","system_instruction":"reply to alice@example.com","input":[` +
+		`{"type":"user_input","content":[{"type":"text","text":"mail alice@example.com"},{"type":"image","uri":"gs://b/i.png"}]},` +
+		`{"type":"model_output","content":[{"type":"text","text":"sent to alice@example.com"}]},` +
+		`{"type":"function_call","id":"c1","name":"send","arguments":{"to":"alice@example.com","cc":["alice@example.com"]}},` +
+		`{"type":"function_result","name":"send","call_id":"c1","result":"delivered to alice@example.com"},` +
+		`{"type":"function_result","name":"send","call_id":"c2","result":[{"type":"text","text":"list alice@example.com"}]},` +
+		`{"type":"function_result","name":"send","call_id":"c3","result":{"content":[{"type":"text","text":"content alice@example.com"}]}},` +
+		`{"type":"text","text":"part alice@example.com"}]}`
+	cases := []struct {
+		name string
+		in   passthroughparse.Input
+		body string
+	}{
+		{"runware text and image tasks", runware, `[{"taskType":"textInference","taskUUID":"t1","settings":{"systemPrompt":"sys alice@example.com"},` +
+			`"messages":[{"role":"user","content":"hi alice@example.com"},{"role":"assistant","content":"ok alice@example.com"}]},` +
+			`{"taskType":"imageInference","taskUUID":"t2","positivePrompt":"draw alice@example.com","negativePrompt":"blurry"}]`},
+		{"runware single image task", runware, `{"taskType":"imageInference","taskUUID":"t1","positivePrompt":"draw alice@example.com"}`},
+		{"runware video tasks", runware, `[{"taskType":"videoInference","taskUUID":"t1","positivePrompt":"film alice@example.com"}]`},
+		{"runware avatar speech and kling shots", runware, `[{"taskType":"videoInference","taskUUID":"t1","positivePrompt":"office",` +
+			`"speech":{"text":"email alice@example.com","voice":"v1"}},{"taskType":"videoInference","taskUUID":"t2",` +
+			`"providerSettings":{"klingai":{"multiPrompt":[{"prompt":"wide shot","duration":3},{"prompt":"screen shows alice@example.com","duration":3}]}}}]`},
+		{"runware image system prompt", runware, `[{"taskType":"imageInference","taskUUID":"t1","positivePrompt":"a red fox","settings":{"systemPrompt":"sign as alice@example.com"}}]`},
+		{"runware caption and prompt enhance", runware, `[{"taskType":"caption","taskUUID":"t1","inputs":{"image":"https://example.com/i.png"},"prompt":"mention alice@example.com"},` +
+			`{"taskType":"promptEnhance","taskUUID":"t2","prompt":"portrait of alice@example.com","promptMaxLength":64}]`},
+		{"sagemaker inputs", sageMaker, `{"inputs":"say alice@example.com","parameters":{"max_new_tokens":8}}`},
+		{"sagemaker input list", sageMaker, `{"inputs":["a alice@example.com","b alice@example.com"]}`},
+		{"sagemaker chat with tools", sageMaker, `{"messages":[{"role":"system","content":"sys alice@example.com"},` +
+			`{"role":"user","content":[{"type":"text","text":"hi alice@example.com"}]},` +
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"send","arguments":"{\"to\":\"alice@example.com\"}"}}]},` +
+			`{"role":"tool","tool_call_id":"c1","content":"sent to alice@example.com"}]}`},
+		{"sagemaker completion prompt", sageMaker, `{"prompt":"say alice@example.com","max_tokens":5}`},
+		{"sagemaker messages and inputs", sageMaker, `{"messages":[{"role":"user","content":"hello"}],"inputs":"mail alice@example.com"}`},
+		{"sagemaker messages and prompt", sageMaker, `{"messages":[{"role":"user","content":"hi"}],"prompt":"mail alice@example.com"}`},
+		{"sagemaker prompt and inputs", sageMaker, `{"prompt":["a","b"],"inputs":"mail alice@example.com"}`},
+		{"sagemaker null prompt and inputs", sageMaker, `{"prompt":null,"inputs":"mail alice@example.com"}`},
+		{"sagemaker empty messages and inputs", sageMaker, `{"messages":[],"inputs":"mail alice@example.com"}`},
+		{"sagemaker inputs with token ids", sageMaker, `{"inputs":["mail alice@example.com",[101,2023,102]]}`},
+		{"bedrock agent prompt session attributes", agent, `{"inputText":"book it","sessionState":{"sessionAttributes":{"k":"v"},"promptSessionAttributes":{"contact":"alice@example.com","tz":"UTC"}}}`},
+		{"bedrock agent turn", agent, `{"inputText":"mail alice@example.com","sessionState":{"sessionAttributes":{"k":"v"},` +
+			`"conversationHistory":{"messages":[{"role":"user","content":[{"text":"earlier alice@example.com"}]},{"role":"assistant","content":[{"text":"reply alice@example.com"}]}]},` +
+			`"returnControlInvocationResults":[{"functionResult":{"actionGroup":"g","function":"f","responseBody":{"TEXT":{"body":"result alice@example.com"}}}},` +
+			`{"apiResult":{"actionGroup":"g","apiPath":"/p","httpMethod":"GET","responseBody":{"application/json":{"body":"{\"to\":\"alice@example.com\"}"}}}}]}}`},
+		{"interactions string input", gemini, `{"model":"gemini-3.8-flash","system_instruction":"reply to alice@example.com","input":"mail alice@example.com"}`},
+		{"interactions text part", gemini, `{"model":"gemini-3.8-flash","input":{"type":"text","text":"mail alice@example.com"}}`},
+		{"interactions steps", gemini, interactionSteps},
+		{"vertex interactions steps", vertex, interactionSteps},
+		{"interactions object function result", gemini, `{"model":"gemini-3.8-flash","input":[{"type":"function_result","name":"lookup","call_id":"c1","result":{"owner":"alice@example.com","rows":2,"tags":["alice@example.com"]}}]}`},
+		{"interactions string arguments", gemini, `{"model":"gemini-3.8-flash","input":[{"type":"function_call","id":"c1","name":"send","arguments":"{\"to\":\"alice@example.com\"}"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The rewriter the route registers for the call, as the passthrough handler registers it.
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			registerPassthroughTextRewriters(ctx, passthroughparse.Classify(tc.in.Provider, "", tc.in.Method, tc.in.Path))
+			rewrite, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			require.NotNil(t, rewrite)
+			read := func(body []byte) []string {
+				in := tc.in
+				in.RequestBody = body
+				result, err := passthroughparse.Parse(in)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.NotNil(t, result.Request)
+				return requestStringLeaves(t, result.Request)
+			}
+			before := read([]byte(tc.body))
+			require.True(t, strings.Contains(strings.Join(before, "\n"), secret), "the reader reads the value: %q", before)
+			rewritten, err := rewrite([]byte(tc.body), map[string]string{secret: "[EMAIL]"})
+			require.NoError(t, err)
+			want := make([]string, len(before))
+			for i, text := range before {
+				want[i] = strings.ReplaceAll(text, secret, "[EMAIL]")
+			}
+			require.Equal(t, want, read(rewritten), "the rewritten body reads back as the reader's texts with only the value replaced")
+		})
+	}
+}
+
+// requestStringLeaves returns every string value of v's JSON form, in document order, so two reads of a parsed request
+// can be compared whatever type the reader produced.
+func requestStringLeaves(t *testing.T, v any) []string {
+	t.Helper()
+	encoded, err := json.Marshal(v)
+	require.NoError(t, err)
+	var leaves []string
+	var walk func(gjson.Result)
+	walk = func(value gjson.Result) {
+		switch {
+		case value.Type == gjson.String:
+			leaves = append(leaves, value.Str)
+		case value.IsObject() || value.IsArray():
+			value.ForEach(func(_, child gjson.Result) bool {
+				walk(child)
+				return true
+			})
+		}
+	}
+	walk(gjson.ParseBytes(encoded))
+	return leaves
+}
+
+// TestRewritePassthroughOnlyRawRequestBodies verifies the Runware, SageMaker and Bedrock agent rewriters change only the
+// text fields passthroughparse reads, and keep every other field, unknown ones included, as sent. Synthetic payloads.
+func TestRewritePassthroughOnlyRawRequestBodies(t *testing.T) {
+	replacements := map[string]string{"alice@example.com": "[EMAIL]"}
+	cases := []struct {
+		name      string
+		rewrite   schemas.RawRequestBodyTextRewriter
+		body      string
+		redacted  []string
+		untouched map[string]string
+	}{
+		{
+			name:    "runware tasks",
+			rewrite: rewriteRunwareRawRequestBody,
+			body: `[{"taskType":"textInference","taskUUID":"t1","settings":{"systemPrompt":"sys alice@example.com"},"messages":[{"role":"user","content":"hi alice@example.com"}]},` +
+				`{"taskType":"imageInference","taskUUID":"t2","positivePrompt":"draw alice@example.com","negativePrompt":"alice@example.com"},` +
+				`{"taskType":"imageUpscale","taskUUID":"t3","inputImage":"alice@example.com"}]`,
+			redacted:  []string{"0.settings.systemPrompt", "0.messages.0.content", "1.positivePrompt"},
+			untouched: map[string]string{"1.negativePrompt": "alice@example.com", "2.inputImage": "alice@example.com", "0.taskUUID": "t1"},
+		},
+		{
+			name:      "runware single task",
+			rewrite:   rewriteRunwareRawRequestBody,
+			body:      `{"taskType":"videoInference","positivePrompt":"film alice@example.com","futureField":"alice@example.com"}`,
+			redacted:  []string{"positivePrompt"},
+			untouched: map[string]string{"futureField": "alice@example.com"},
+		},
+		{
+			name:      "sagemaker inputs",
+			rewrite:   rewriteSageMakerRawRequestBody,
+			body:      `{"inputs":"say alice@example.com","parameters":{"stop":["alice@example.com"]}}`,
+			redacted:  []string{"inputs"},
+			untouched: map[string]string{"parameters.stop.0": "alice@example.com"},
+		},
+		{
+			name:     "sagemaker input list",
+			rewrite:  rewriteSageMakerRawRequestBody,
+			body:     `{"inputs":["a alice@example.com","b alice@example.com"]}`,
+			redacted: []string{"inputs.0", "inputs.1"},
+		},
+		{
+			name:      "sagemaker messages",
+			rewrite:   rewriteSageMakerRawRequestBody,
+			body:      `{"messages":[{"role":"user","content":"hi alice@example.com"}],"futureField":"alice@example.com"}`,
+			redacted:  []string{"messages.0.content"},
+			untouched: map[string]string{"futureField": "alice@example.com"},
+		},
+		{
+			name:    "bedrock agent",
+			rewrite: rewriteBedrockAgentRawRequestBody,
+			body: `{"inputText":"mail alice@example.com","sessionState":{"sessionAttributes":{"k":"alice@example.com"},` +
+				`"conversationHistory":{"messages":[{"role":"user","content":[{"text":"earlier alice@example.com"}]}]},` +
+				`"returnControlInvocationResults":[{"functionResult":{"actionGroup":"g","function":"f","responseBody":{"TEXT":{"body":"result alice@example.com"}}}}]}}`,
+			redacted: []string{
+				"inputText",
+				"sessionState.conversationHistory.messages.0.content.0.text",
+				"sessionState.returnControlInvocationResults.0.functionResult.responseBody.TEXT.body",
+			},
+			untouched: map[string]string{"sessionState.sessionAttributes.k": "alice@example.com"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.rewrite([]byte(tc.body), replacements)
+			require.NoError(t, err)
+			assertRawPaths(t, got, tc.redacted, tc.untouched)
+		})
+	}
+}
+
+// TestNewChatGPTCodexTurn pins what one Codex websocket turn is built as: the frame forwarded
+// byte for byte, the model read from it, key selection skipped for the caller's ChatGPT token, and
+// the Responses text rewriter registered so a redacting plugin can rewrite the turn. A frame that
+// is not valid JSON is refused, as the HTTP route refuses the same body.
+func TestNewChatGPTCodexTurn(t *testing.T) {
+	frame := []byte(`{"type":"response.create","model":"gpt-5-codex","input":[{"role":"user","content":[{"type":"input_text","text":"mail alice@example.com"}]}]}`)
+	headers := map[string]string{"chatgpt-account-id": "acct"}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req, err := NewChatGPTCodexTurn(ctx, frame, headers)
+	require.NoError(t, err)
+	require.Equal(t, string(frame), string(req.Body))
+	require.Equal(t, "gpt-5-codex", req.Model)
+	require.Equal(t, fasthttp.MethodPost, req.Method)
+	require.Equal(t, chatGPTCodexResponsesPath, req.Path)
+	require.Equal(t, chatGPTUpstreamURL, req.UpstreamURL)
+	require.Equal(t, schemas.OpenAI, req.Provider)
+	require.Equal(t, headers, req.SafeHeaders)
+
+	skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+	require.True(t, skip, "the caller's ChatGPT token is the upstream credential, so key selection must be skipped")
+
+	rewriter, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+	require.NotNil(t, rewriter, "a Codex turn must carry the Responses text rewriter")
+	rewritten, err := rewriter(bytes.Clone(frame), map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+	require.Contains(t, string(rewritten), "mail [EMAIL]")
+	require.Equal(t, string(frame), string(req.Body), "rewriting must not touch the forwarded frame")
+
+	_, err = NewChatGPTCodexTurn(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), []byte(`{"type":"response.create"`), headers)
+	require.Error(t, err)
+}
+
+// passthroughRewriteCustom is a custom provider based on Anthropic that may forward every passthrough route.
+const passthroughRewriteCustom schemas.ModelProvider = "passthrough-claude-proxy"
+
+// passthroughRewriteAccount serves Anthropic, OpenAI, and a custom provider based on Anthropic from one local upstream.
+type passthroughRewriteAccount struct{ baseURL string }
+
+// GetConfiguredProviders lists the providers the rewrite test routes to.
+func (passthroughRewriteAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Anthropic, schemas.OpenAI, passthroughRewriteCustom}, nil
+}
+
+// GetKeysForProvider supplies one synthetic operator key per provider.
+func (passthroughRewriteAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "rewrite-" + string(p), Value: *schemas.NewSecretVar("sk-rewrite-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+// GetConfigForProvider points every provider at the local upstream; the custom provider is based on Anthropic.
+func (a passthroughRewriteAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = a.baseURL
+	config := &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}
+	if p == passthroughRewriteCustom {
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}
+	}
+	return config, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a passthroughRewriteAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a passthroughRewriteAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a passthroughRewriteAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// passthroughRewritingPlugin stands in for a plugin that redacts a passthrough request: it records what the router
+// handed over and rewrites the body through the registered rewriter, as it would after finding a value.
+type passthroughRewritingPlugin struct {
+	mu           sync.Mutex
+	baseProvider schemas.ModelProvider
+	provider     schemas.ModelProvider
+	hasRewriter  bool
+	formTypes    map[string][]string
+	summary      string // the multipart log summary the logging plugin would store
+}
+
+// GetName identifies the test plugin.
+func (*passthroughRewritingPlugin) GetName() string { return "synthetic-passthrough-rewriter" }
+
+// Cleanup has no resources to release.
+func (*passthroughRewritingPlugin) Cleanup() error { return nil }
+
+// PreRequestHook leaves the request unchanged.
+func (*passthroughRewritingPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+// PreLLMHook records the routing data and replaces the body with the rewriter's output when one is registered.
+func (p *passthroughRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	passthrough := req.PassthroughRequest
+	p.baseProvider, p.provider = passthrough.BaseProvider, passthrough.Provider
+	p.formTypes = passthrough.FormTypes
+	p.summary = ""
+	if summary, ok := passthroughparse.SummarizeMultipartForm(passthrough.Form, passthrough.FormTypes); ok {
+		p.summary = string(summary)
+	}
+	rewriter, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+	p.hasRewriter = rewriter != nil
+	if rewriter == nil {
+		return req, nil, nil
+	}
+	body, err := rewriter(bytes.Clone(passthrough.Body), map[string]string{"alice@example.com": "[EMAIL]"})
+	if err != nil {
+		return req, nil, err
+	}
+	rewritten := *passthrough
+	rewritten.Body = body
+	out := *req
+	out.PassthroughRequest = &rewritten
+	return &out, nil, nil
+}
+
+// PostLLMHook leaves the response unchanged.
+func (*passthroughRewritingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// TestHandlePassthrough_MultipartParseErrorRefused asserts a streamed multipart passthrough upload
+// whose form does not parse (here 1,001 parts, over Go's limit) is refused with 400 and never
+// forwarded. The body stream is partly read by the failed parse, so falling back to Body() would
+// forward only the unread rest of the upload.
+func TestHandlePassthrough_MultipartParseErrorRefused(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		io.Copy(io.Discard, r.Body) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"file-abc"}`)) //nolint:errcheck
+	}))
+	defer server.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughRewriteAccount{baseURL: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	for i := 0; i <= 1000; i++ {
+		require.NoError(t, w.WriteField(fmt.Sprintf("f%d", i), "v"))
+	}
+	require.NoError(t, w.Close())
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/openai_passthrough/v1/files")
+	ctx.Request.Header.SetContentType(w.FormDataContentType())
+	ctx.Request.SetBodyStream(bytes.NewReader(body.Bytes()), body.Len())
+	defer ctx.Request.Reset()
+	r.Handler(ctx)
+
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	assert.Equal(t, int32(0), hits.Load(), "a multipart body that does not parse must not be forwarded")
+}
+
+// TestHandlePassthrough_MultipartUploadStreamed pins the passthrough Files API upload path. A 17 MB
+// multipart upload (over fasthttp's 16 MB in-memory limit, so the server keeps it in a temp file)
+// must reach the upstream intact with a Content-Length. OpenAI streams it from the parsed form, so
+// the gateway allocates less than the file's size; before, the router rebuilt the form in memory
+// with Body() and the provider copied it into the request. Anthropic does not stream passthrough
+// bodies, so Bifrost reads the form into Body once and it must still arrive intact.
+func TestHandlePassthrough_MultipartUploadStreamed(t *testing.T) {
+	const fileSize = 17 << 20
+	file := bytes.Repeat([]byte(`{"custom_id":"r","method":"POST"}`+"\n"), fileSize/34+1)[:fileSize]
+	wantSum := sha256.Sum256(file)
+
+	upstream := &fileUploadUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughRewriteAccount{baseURL: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	for _, tc := range []struct {
+		name          string
+		uri           string
+		streams       bool
+		wantUpstream  string
+		wantFieldName string
+	}{
+		{name: "openai streams the form", uri: "/openai_passthrough/v1/files", streams: true, wantUpstream: "/v1/files"},
+		{name: "anthropic reads the form once", uri: "/anthropic_passthrough/v1/files", wantUpstream: "/v1/files"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body bytes.Buffer
+			w := multipart.NewWriter(&body)
+			require.NoError(t, w.WriteField("purpose", "batch"))
+			part, err := w.CreateFormFile("file", "batch.jsonl")
+			require.NoError(t, err)
+			_, err = part.Write(file)
+			require.NoError(t, err)
+			require.NoError(t, w.Close())
+			raw := append([]byte(fmt.Sprintf("POST %s HTTP/1.1\r\nHost: bifrost\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", tc.uri, w.FormDataContentType(), body.Len())), body.Bytes()...)
+			body.Reset()
+
+			// Read the request the way the server does: the form is parsed while reading
+			// and the file lands in a temp file.
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&fasthttp.Request{}, nil, nil)
+			require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewReader(raw))))
+			raw = nil
+			defer ctx.Request.Reset()
+
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			r.Handler(ctx)
+			runtime.ReadMemStats(&after)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			upstream.mu.Lock()
+			defer upstream.mu.Unlock()
+			assert.Equal(t, tc.wantUpstream, upstream.path)
+			assert.Greater(t, upstream.contentLength, int64(fileSize), "upstream must get a Content-Length, not a chunked body")
+			assert.Equal(t, "batch", upstream.fields["purpose"])
+			assert.Equal(t, "batch.jsonl", upstream.filename)
+			assert.Equal(t, int64(fileSize), upstream.fileSize)
+			assert.Equal(t, wantSum, upstream.fileSum, "upstream file content differs from the upload")
+			allocated := after.TotalAlloc - before.TotalAlloc
+			t.Logf("%d-byte upload allocated %d bytes in the gateway", fileSize, allocated)
+			if tc.streams {
+				assert.Less(t, allocated, uint64(fileSize), "a %d-byte upload allocated %d bytes in the gateway; the form must be streamed, not held in memory", fileSize, allocated)
+			}
+		})
+	}
+}
+
+// TestHandlePassthrough_MultipartValueTypesKept asserts a passthrough upload keeps the Content-Type of
+// a part sent without a filename, which the parsed form alone has lost: the upstream receives the
+// part with it, and plugins (the logging summary) get it in FormTypes, so a file sent without a
+// filename is not logged as a text field. Streamed and buffered bodies behave the same.
+func TestHandlePassthrough_MultipartValueTypesKept(t *testing.T) {
+	upstream := &fileUploadUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+	plugin := &passthroughRewritingPlugin{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    passthroughRewriteAccount{baseURL: server.URL},
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	// pluginReadsFirst stands in for a transport plugin that opens the upload before the route runs
+	// (multipartFormBodySource.Open), on the same route middleware chain.
+	var pluginReadsFirst bool
+	readsBody := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if pluginReadsFirst {
+				if _, _, err := lib.SharedMultipartForm(ctx); err != nil {
+					t.Errorf("plugin read of the upload: %v", err)
+				}
+			}
+			next(ctx)
+		}
+	}
+	r := router.New()
+	NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, readsBody)
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	require.NoError(t, w.WriteField("purpose", "batch"))
+	part, err := w.CreatePart(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="mask"`}, "Content-Type": {"application/octet-stream"}})
+	require.NoError(t, err)
+	_, err = part.Write([]byte("printable file bytes sent without a filename"))
+	require.NoError(t, err)
+	part, err = w.CreateFormFile("file", "batch.jsonl")
+	require.NoError(t, err)
+	_, err = part.Write([]byte(`{"custom_id":"r"}`))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	for _, tc := range []struct{ streamed, pluginFirst bool }{{true, false}, {false, false}, {true, true}, {false, true}} {
+		streamed := tc.streamed
+		t.Run(fmt.Sprintf("streamed=%v/plugin-reads-first=%v", tc.streamed, tc.pluginFirst), func(t *testing.T) {
+			pluginReadsFirst = tc.pluginFirst
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/openai_passthrough/v1/files")
+			ctx.Request.Header.SetContentType(w.FormDataContentType())
+			if streamed {
+				ctx.Request.SetBodyStream(bytes.NewReader(body.Bytes()), body.Len())
+			} else {
+				ctx.Request.SetBody(body.Bytes())
+			}
+			defer ctx.Request.Reset()
+			r.Handler(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+
+			upstream.mu.Lock()
+			assert.Equal(t, "application/octet-stream", upstream.fieldTypes["mask"], "the upstream must get the part's Content-Type")
+			assert.Equal(t, "", upstream.fieldTypes["purpose"], "a plain field stays a plain field")
+			assert.Equal(t, "printable file bytes sent without a filename", upstream.fields["mask"])
+			assert.Equal(t, "batch.jsonl", upstream.filename)
+			upstream.mu.Unlock()
+			plugin.mu.Lock()
+			assert.Equal(t, map[string][]string{"purpose": {""}, "mask": {"application/octet-stream"}}, plugin.formTypes)
+			assert.NotContains(t, plugin.summary, "printable file bytes", "the log summary must not hold the part's bytes")
+			assert.Contains(t, plugin.summary, `"content_type":"application/octet-stream"`, "the log summary must record the part like a file")
+			plugin.mu.Unlock()
+		})
+	}
+}
+
+// TestHandlePassthrough_PluginRewritesBodyThroughRegisteredRewriter drives passthrough calls end to end and verifies a
+// plugin sees the route's base provider, including for a custom provider, and that a body it rewrites through the
+// registered rewriter is what the upstream receives: content fields redacted, other fields byte-identical. A route
+// with no typed equivalent registers no rewriter and forwards the original bytes. Payloads are synthetic.
+func TestHandlePassthrough_PluginRewritesBodyThroughRegisteredRewriter(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	plugin := &passthroughRewritingPlugin{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    passthroughRewriteAccount{baseURL: upstream.URL},
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	store := &mockHandlerStore{customProviders: map[schemas.ModelProvider]mockCustomProvider{
+		passthroughRewriteCustom: {base: schemas.Anthropic, passthrough: true},
+	}}
+	NewAnthropicPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewOpenAIPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	const anthropicBody = `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"mail alice@example.com"}],"metadata":{"user_id":"alice@example.com"}}`
+	const openAIBody = `{"model":"gpt-4o","messages":[{"role":"user","content":"mail alice@example.com"}],"user":"alice@example.com"}`
+	cases := []struct {
+		name         string
+		uri          string
+		provider     schemas.ModelProvider
+		body         string
+		wantBase     schemas.ModelProvider
+		wantProvider schemas.ModelProvider
+		wantRewriter bool
+		wantBody     string
+	}{
+		{"anthropic messages", "/anthropic_passthrough/v1/messages", "", anthropicBody, schemas.Anthropic, schemas.Anthropic, true,
+			`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"mail [EMAIL]"}],"metadata":{"user_id":"alice@example.com"}}`},
+		{"custom provider based on anthropic", "/anthropic_passthrough/v1/messages", passthroughRewriteCustom, anthropicBody, schemas.Anthropic, passthroughRewriteCustom, true,
+			`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"mail [EMAIL]"}],"metadata":{"user_id":"alice@example.com"}}`},
+		{"openai chat", "/openai_passthrough/v1/chat/completions", "", openAIBody, schemas.OpenAI, schemas.OpenAI, true,
+			`{"model":"gpt-4o","messages":[{"role":"user","content":"mail [EMAIL]"}],"user":"alice@example.com"}`},
+		{"route without a typed equivalent", "/anthropic_passthrough/v1/files", "", `{"purpose":"alice@example.com"}`, schemas.Anthropic, schemas.Anthropic, false,
+			`{"purpose":"alice@example.com"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetContentType("application/json")
+			if tc.provider != "" {
+				ctx.Request.Header.Set("x-model-provider", string(tc.provider))
+			}
+			ctx.Request.SetBodyString(tc.body)
+			r.Handler(&ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+			plugin.mu.Lock()
+			require.Equal(t, tc.wantBase, plugin.baseProvider)
+			require.Equal(t, tc.wantProvider, plugin.provider)
+			require.Equal(t, tc.wantRewriter, plugin.hasRewriter)
+			plugin.mu.Unlock()
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.NotEmpty(t, bodies)
+			require.Equal(t, tc.wantBody, bodies[len(bodies)-1], "the upstream must receive the plugin's body")
+		})
+	}
+}
+
+// directKeyHandlerStore is the shared mock store with direct keys allowed.
+type directKeyHandlerStore struct{ *mockHandlerStore }
+
+func (directKeyHandlerStore) ShouldAllowDirectKeys() bool { return true }
+
+// directKeyTestAccount configures OpenAI and Anthropic, each against its own upstream.
+type directKeyTestAccount struct{ openAIURL, anthropicURL string }
+
+func (a directKeyTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}, nil
+}
+
+func (a directKeyTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "operator-" + string(p), Value: *schemas.NewSecretVar("sk-operator-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a directKeyTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	switch p {
+	case schemas.OpenAI:
+		nc.BaseURL = a.openAIURL
+	case schemas.Anthropic:
+		nc.BaseURL = a.anthropicURL
+	default:
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a directKeyTestAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a directKeyTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a directKeyTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// A direct key is the caller's credential for the provider whose SDK called the route. A drop-in
+// model listing that names no provider used to ask every configured provider and send the key to
+// each of them; it now asks only the route's own provider, refuses when that provider is not
+// configured, and refuses an explicit "all".
+func TestListModelsDirectKeyStaysOnTheRouteProvider(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string][]string{}
+	recording := func(name string, body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			seen[name] = append(seen[name], r.Header.Get("Authorization")+r.Header.Get("x-api-key"))
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+	}
+	openAISrv := recording("openai", `{"object":"list","data":[{"id":"gpt-4o-mini","object":"model","created":1700000000,"owned_by":"test"}]}`)
+	defer openAISrv.Close()
+	anthropicSrv := recording("anthropic", `{"data":[{"id":"claude-test","type":"model","display_name":"Claude Test","created_at":"2026-01-01T00:00:00Z"}],"has_more":false}`)
+	defer anthropicSrv.Close()
+	take := func() map[string][]string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := seen
+		seen = map[string][]string{}
+		return out
+	}
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: directKeyTestAccount{openAIURL: openAISrv.URL, anthropicURL: anthropicSrv.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	store := directKeyHandlerStore{&mockHandlerStore{availableProviders: []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}}}
+	NewOpenAIRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	list := func(uri string, headers map[string]string) *fasthttp.RequestCtx {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.Set("x-bf-direct-key", "true")
+		for k, v := range headers {
+			ctx.Request.Header.Set(k, v)
+		}
+		r.Handler(&ctx)
+		return &ctx
+	}
+
+	ctx := list("/openai/v1/models", map[string]string{"Authorization": "Bearer sk-caller-openai"})
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Equal(t, map[string][]string{"openai": {"Bearer sk-caller-openai"}}, take(), "the caller's OpenAI key must reach OpenAI only")
+
+	ctx = list("/anthropic/v1/models", map[string]string{"x-api-key": "sk-caller-anthropic"})
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Equal(t, map[string][]string{"anthropic": {"sk-caller-anthropic"}}, take(), "the caller's Anthropic key must reach Anthropic only")
+
+	ctx = list("/openai/v1/models", map[string]string{"Authorization": "Bearer sk-caller-openai", "x-bf-model-provider": "all"})
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Contains(t, string(ctx.Response.Body()), "must name its provider")
+	require.Empty(t, take(), "a refused listing must reach no provider")
+
+	// The same route on a gateway where its provider is not configured has no provider to ask.
+	anthropicOnly := router.New()
+	NewOpenAIRouter(client, directKeyHandlerStore{&mockHandlerStore{availableProviders: []schemas.ModelProvider{schemas.Anthropic}}}, nil, &testLogger{}).RegisterRoutes(anthropicOnly, identity)
+	var unconfigured fasthttp.RequestCtx
+	unconfigured.Request.Header.SetMethod(fasthttp.MethodGet)
+	unconfigured.Request.SetRequestURI("/openai/v1/models")
+	unconfigured.Request.Header.Set("x-bf-direct-key", "true")
+	unconfigured.Request.Header.Set("Authorization", "Bearer sk-caller-openai")
+	anthropicOnly.Handler(&unconfigured)
+	require.Equal(t, fasthttp.StatusBadRequest, unconfigured.Response.StatusCode(), "body: %s", unconfigured.Response.Body())
+	require.Contains(t, string(unconfigured.Response.Body()), "provider openai is not configured")
+	require.Empty(t, take(), "a listing for an unconfigured provider must reach no provider")
+}
+
+// The Bedrock passthrough is a restricted route: it targets the Bedrock provider and is mounted
+// at /bedrock_passthrough, so it can never be mistaken for the native /bedrock integration.
+func TestBedrockPassthroughRouterTargetsBedrockAtItsOwnPrefix(t *testing.T) {
+	r := NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	require.NotNil(t, r.passthroughCfg)
+	assert.Equal(t, schemas.Bedrock, r.passthroughCfg.Provider)
+	assert.Equal(t, []string{"/bedrock_passthrough"}, r.passthroughCfg.StripPrefix)
+	assert.Empty(t, r.passthroughCfg.AllowedRoutes, "the operation allow-list lives in the provider, which also holds the signing credentials")
+}
+
+// The Bedrock passthrough streams exactly the operation whose AWS response is an event stream.
+// InvokeAgent's path and body carry no "stream" marker, so the router needs the provider's word for it.
+func TestBedrockPassthroughRouterStreamsOnlyInvokeAgent(t *testing.T) {
+	cfg := NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).passthroughCfg
+	require.NotNil(t, cfg.StreamingPath, "the router must know InvokeAgent streams")
+
+	const invokeAgent = "/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text"
+	assert.True(t, cfg.streams(http.MethodPost, invokeAgent, false), "InvokeAgent answers with an event stream")
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/KB12345678/retrieve", false), "Retrieve is a plain request/response call")
+	assert.False(t, cfg.streams(http.MethodPost, "/guardrail/gr1a2b3c4d5e/version/DRAFT/apply", false), "ApplyGuardrail is a plain request/response call")
+	assert.False(t, cfg.streams(http.MethodGet, invokeAgent, false), "only the POST that the provider forwards streams")
+	assert.False(t, cfg.streams(http.MethodPost, "/model/amazon.titan-text-express-v1/invoke", false), "a route outside the allow-list is not special-cased")
+
+	// The provider's word is final: an accepted identifier that happens to contain "stream", or a body
+	// that says stream: true, must not move a request/response operation onto the streaming handler.
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/STREAMKB01/retrieve", false), "a knowledge-base id containing the word stream is still a plain Retrieve")
+	assert.False(t, cfg.streams(http.MethodPost, "/guardrail/streamguard1/version/DRAFT/apply", false), "a guardrail id containing the word stream is still a plain ApplyGuardrail")
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/KB12345678/retrieve", true), "stream: true in a Retrieve body does not make it stream")
+	assert.True(t, cfg.streams(http.MethodPost, "/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text", false), "InvokeAgent still streams")
+}
+
+// The generic stream decision is unchanged for every other passthrough router.
+func TestPassthroughConfigStreamsDecision(t *testing.T) {
+	plain := &PassthroughConfig{}
+	assert.True(t, plain.streams(http.MethodPost, "/v1beta/models/x:streamGenerateContent", false), "a stream marker in the path")
+	assert.True(t, plain.streams(http.MethodPost, "/v1/messages", true), "stream: true in the body")
+	assert.False(t, plain.streams(http.MethodPost, "/v1/messages", false))
+
+	custom := &PassthroughConfig{StreamingPath: func(method, path string) bool { return method == http.MethodPost && path == "/always" }}
+	assert.True(t, custom.streams(http.MethodPost, "/always", false), "the provider hook marks the route as streaming")
+	assert.False(t, custom.streams(http.MethodPost, "/other", false))
+	assert.False(t, custom.streams(http.MethodPost, "/stream/other", false), "when the provider supplies a route predicate it replaces the generic path marker")
+	assert.False(t, custom.streams(http.MethodPost, "/other", true), "and the generic body marker")
+}
+
+func TestPassthroughQueryStreams(t *testing.T) {
+	assert.True(t, passthroughQueryStreams(http.MethodGet, "stream=true"))
+	assert.True(t, passthroughQueryStreams(http.MethodGet, "last_event_id=evt-1&stream=TRUE"))
+	assert.False(t, passthroughQueryStreams(http.MethodGet, "stream=false"))
+	assert.False(t, passthroughQueryStreams(http.MethodGet, "include_input=true"))
+	assert.False(t, passthroughQueryStreams(http.MethodGet, ""))
+	assert.False(t, passthroughQueryStreams(http.MethodPost, "stream=true"), "a POST declares streaming in its body")
+}
+
+// After provider-injected tools ran, a non-stream response is assembled from several
+// model turns, while RawResponse holds only the last one. Every integration whose
+// converter answers with the raw upstream bytes (OpenAI, Bedrock, Cohere, GenAI,
+// Typesafe, Anthropic) must get the assembled response instead. The raw bytes stay on
+// the original for logging.
+func TestResponseForConverterDropsRawAfterInjectedTools(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	chat := &schemas.BifrostChatResponse{
+		Choices:     []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Turn 1 text. Sunny.")}}}}},
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"raw":"turn 2 only"}`},
+	}
+	responses := &schemas.BifrostResponsesResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"raw":"turn 2 only"}`},
+	}
+
+	if got := chatResponseForConverter(ctx, chat); got.ExtraFields.RawResponse == nil {
+		t.Fatal("a single-turn reply keeps its raw bytes for raw-preferring converters")
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, true)
+	if got := chatResponseForConverter(ctx, chat); got.ExtraFields.RawResponse != nil {
+		t.Fatal("chat: after injected tools ran, the converter must not see the last turn's raw reply")
+	}
+	if got := responsesResponseForConverter(ctx, responses); got.ExtraFields.RawResponse != nil {
+		t.Fatal("responses: after injected tools ran, the converter must not see the last turn's raw reply")
+	}
+	if chat.ExtraFields.RawResponse == nil || responses.ExtraFields.RawResponse == nil {
+		t.Fatal("the original keeps its raw bytes for logging")
+	}
+
+	var openAIChat ChatResponseConverter
+	for _, route := range CreateOpenAIRouteConfigs("/openai", nil) {
+		if route.ChatResponseConverter != nil {
+			openAIChat = route.ChatResponseConverter
+			break
+		}
+	}
+	if openAIChat == nil {
+		t.Fatal("no OpenAI chat route")
+	}
+	body, err := openAIChat(ctx, chatResponseForConverter(ctx, chat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := body.(string); ok && s == `{"raw":"turn 2 only"}` {
+		t.Fatal("the OpenAI route answered with the last turn's raw bytes")
+	}
+}
+
+// codexPassthroughAccount initializes only the provider needed by the synthetic relay test.
+type codexPassthroughAccount struct{}
+
+// GetConfiguredProviders keeps the test independent of installed provider configuration.
+func (codexPassthroughAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI}, nil
+}
+
+// GetKeysForProvider supplies a synthetic key that must never replace the caller's subscription token.
+func (codexPassthroughAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "synthetic-key", Value: *schemas.NewSecretVar("synthetic-key"), Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+
+// GetConfigForProvider uses defaults; the short circuit guarantees no live upstream is contacted.
+func (codexPassthroughAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{}, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (codexPassthroughAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (codexPassthroughAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (codexPassthroughAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// codexPassthroughReceipt witnesses the real router-to-core request before an explicit synthetic policy denial.
+type codexPassthroughReceipt struct {
+	request          *schemas.BifrostRequest
+	skipKeySelection bool
+	skipModelCheck   bool
+	modelListFilter  schemas.PassthroughModelListFilter
+}
+
+// GetName identifies the isolated test plugin.
+func (*codexPassthroughReceipt) GetName() string { return "synthetic-codex-receipt" }
+
+// Cleanup has no resources to release.
+func (*codexPassthroughReceipt) Cleanup() error { return nil }
+
+// PreRequestHook leaves native passthrough state unchanged.
+func (*codexPassthroughReceipt) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+// PreLLMHook captures native dispatch and rejects before any live upstream or operator key can be used.
+func (p *codexPassthroughReceipt) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	snapshot := *req
+	p.request = &snapshot
+	p.skipKeySelection, _ = ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+	p.skipModelCheck, _ = ctx.Value(schemas.BifrostContextKeySkipModelCheck).(bool)
+	p.modelListFilter, _ = ctx.Value(schemas.BifrostContextKeyPassthroughModelListFilter).(schemas.PassthroughModelListFilter)
+	status := 403
+	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "synthetic policy denial"}}}, nil
+}
+
+// PostLLMHook preserves the synthetic receipt unchanged.
+func (*codexPassthroughReceipt) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// TestChatGPTPassthroughStreamsWithoutBodyFlag reproduces a server buffering a Codex WebSocket bridge's native response when stream is omitted.
+// The reported logs contain no raw body: these requests and the policy denial are synthetic, not captured production payloads.
+func TestChatGPTPassthroughStreamsWithoutBodyFlag(t *testing.T) {
+	for _, flag := range []string{"", `,"stream":true`, `,"stream":false`} {
+		t.Run(flag, func(t *testing.T) {
+			plugin := &codexPassthroughReceipt{}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+			require.NoError(t, err)
+			defer client.Shutdown()
+			r := router.New()
+			NewChatGPTPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+			body := `{"model":"gpt-5.5","input":[],"future":9007199254740993` + flag + `}`
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/responses")
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.Header.Set("Authorization", "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature")
+			ctx.Request.SetBodyString(body)
+			r.Handler(&ctx)
+			require.Equal(t, 403, ctx.Response.StatusCode())
+			require.Contains(t, string(ctx.Response.Body()), "synthetic policy denial")
+			require.NotNil(t, plugin.request)
+			require.Equal(t, schemas.PassthroughStreamRequest, plugin.request.RequestType, "native Codex responses must not use the buffered API path")
+			require.True(t, plugin.skipKeySelection)
+			require.False(t, plugin.skipModelCheck, "a responses turn runs a model, so the model allowlist still applies")
+			require.Nil(t, plugin.modelListFilter, "a responses turn is not a model list")
+			require.Equal(t, "https://chatgpt.com", plugin.request.PassthroughRequest.UpstreamURL)
+			require.Equal(t, "/backend-api/codex/responses", plugin.request.PassthroughRequest.Path)
+			require.Equal(t, body, string(plugin.request.PassthroughRequest.Body))
+			require.Equal(t, "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature", plugin.request.PassthroughRequest.SafeHeaders["authorization"])
+		})
+	}
+}
+
+// TestChatGPTPassthroughForwardsCodexModelList covers Codex fetching its model list through the gateway
+// with ChatGPT sign-in: the caller's ChatGPT token goes upstream, the gateway credential does not.
+func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
+	plugin := &codexPassthroughReceipt{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	NewChatGPTPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	jwt := "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature"
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/models?client_version=0.160.0")
+	ctx.Request.Header.Set("Authorization", jwt)
+	ctx.Request.Header.Set("ChatGPT-Account-ID", "synthetic-workspace")
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-synthetic")
+	ctx.Request.Header.Set("Cookie", "session=synthetic; auth-openid=synthetic-gateway-token")
+	ctx.Request.Header.Set("If-None-Match", `"cached-etag"`)
+	r.Handler(&ctx)
+	require.Equal(t, 403, ctx.Response.StatusCode())
+	require.NotNil(t, plugin.request)
+	require.Equal(t, schemas.PassthroughRequest, plugin.request.RequestType)
+	require.True(t, plugin.skipKeySelection)
+	require.True(t, plugin.skipModelCheck, "a model list runs no model, so a restricted model allowlist must not refuse it")
+	require.NotNil(t, plugin.modelListFilter, "governance trims the list with the filter the route registers")
+	req := plugin.request.PassthroughRequest
+	require.Equal(t, fasthttp.MethodGet, req.Method)
+	require.Equal(t, "https://chatgpt.com", req.UpstreamURL)
+	require.Equal(t, "/backend-api/codex/models", req.Path)
+	require.Equal(t, "client_version=0.160.0", req.RawQuery)
+	require.Equal(t, jwt, req.SafeHeaders["authorization"])
+	require.Equal(t, "synthetic-workspace", req.SafeHeaders["chatgpt-account-id"])
+	require.NotContains(t, req.SafeHeaders, "x-bf-vk")
+	require.NotContains(t, req.SafeHeaders, "cookie")
+	require.NotContains(t, req.SafeHeaders, "if-none-match", "a 304 would keep a list filtered under an older access")
+}
+
+// geminiPassthroughAccount initializes only Gemini for the synthetic Interactions passthrough tests.
+type geminiPassthroughAccount struct{}
+
+// GetConfiguredProviders keeps the test independent of installed provider configuration.
+func (geminiPassthroughAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Gemini}, nil
+}
+
+// GetKeysForProvider supplies a synthetic key; the receipt plugin short-circuits before any upstream call.
+func (geminiPassthroughAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "synthetic-gemini-key", Value: *schemas.NewSecretVar("synthetic-gemini-key"), Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+
+// GetConfigForProvider uses defaults.
+func (geminiPassthroughAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{}, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (geminiPassthroughAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (geminiPassthroughAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (geminiPassthroughAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// TestGenAIPassthroughInteractionsAgentIsTheModel covers Deep Research runs on /genai_passthrough: the
+// create names an agent instead of a model, and the polls, cancels and deletes that follow name none.
+// The agent has to reach key selection, the model allowlist and pricing as the request's model, and
+// the follow-up calls must not be refused by a restricted allowlist for naming no model.
+func TestGenAIPassthroughInteractionsAgentIsTheModel(t *testing.T) {
+	tests := []struct {
+		name          string
+		method        string
+		uri           string
+		body          string
+		wantStatus    int
+		wantModel     string
+		wantModelFree bool
+		wantBodyHas   string
+		wantProvider  schemas.ModelProvider
+	}{
+		{name: "create with agent names the agent", method: "POST", uri: "/genai_passthrough/v1beta/interactions", body: `{"agent":"deep-research-preview-04-2026","input":"x","background":true}`, wantStatus: 403, wantModel: "deep-research-preview-04-2026"},
+		{name: "create with model still names the model", method: "POST", uri: "/genai_passthrough/v1beta/interactions", body: `{"model":"gemini-3.8-flash","input":"x"}`, wantStatus: 403, wantModel: "gemini-3.8-flash"},
+		{name: "agent wins over model", method: "POST", uri: "/genai_passthrough/v1beta/interactions", body: `{"agent":"deep-research-max-preview-04-2026","model":"gemini-3.8-flash","input":"x"}`, wantStatus: 403, wantModel: "deep-research-max-preview-04-2026"},
+		{name: "non-string agent is refused", method: "POST", uri: "/genai_passthrough/v1beta/interactions", body: `{"agent":5,"input":"x"}`, wantStatus: 400, wantBodyHas: "agent must be a string"},
+		{name: "duplicate agent is refused", method: "POST", uri: "/genai_passthrough/v1beta/interactions", body: `{"agent":"deep-research-preview-04-2026","Agent":"deep-research-max-preview-04-2026","input":"x"}`, wantStatus: 400, wantBodyHas: "agent key at most once"},
+		{name: "agent outside interactions is ignored", method: "POST", uri: "/genai_passthrough/v1beta/models/gemini-2.5-flash:generateContent", body: `{"agent":"deep-research-preview-04-2026","contents":[]}`, wantStatus: 403, wantModel: "gemini-2.5-flash"},
+		{name: "poll runs no model", method: "GET", uri: "/genai_passthrough/v1beta/interactions/int_123", wantStatus: 403, wantModelFree: true},
+		{name: "cancel runs no model", method: "POST", uri: "/genai_passthrough/v1beta/interactions/int_123/cancel", wantStatus: 403, wantModelFree: true},
+		{name: "delete runs no model", method: "DELETE", uri: "/genai_passthrough/v1beta/interactions/int_123", wantStatus: 403, wantModelFree: true},
+		// A Vertex project may be named "models" (or "deployments"), which path model parsing reads as
+		// a model segment. An Interactions path names no model, so the project id must never become one.
+		{name: "vertex create on a project named models names the agent", method: "POST", uri: "/genai_passthrough/v1beta1/projects/models/locations/global/interactions", body: `{"agent":"deep-research-preview-04-2026","input":"x","background":true}`, wantStatus: 403, wantModel: "deep-research-preview-04-2026", wantProvider: schemas.Vertex},
+		{name: "vertex poll on a project named models runs no model", method: "GET", uri: "/genai_passthrough/v1beta1/projects/models/locations/global/interactions/int_123", wantStatus: 403, wantModelFree: true, wantProvider: schemas.Vertex},
+		{name: "a project whose name only contains interactions keeps its path model", method: "POST", uri: "/genai_passthrough/v1beta1/projects/interactions-lab/locations/global/publishers/google/models/gemini-2.5-flash:generateContent", body: `{"contents":[]}`, wantStatus: 403, wantModel: "gemini-2.5-flash", wantProvider: schemas.Vertex},
+		{name: "vertex cancel on a project named deployments runs no model", method: "POST", uri: "/genai_passthrough/v1beta1/projects/deployments/locations/global/interactions/int_123:cancel", wantStatus: 403, wantModelFree: true, wantProvider: schemas.Vertex},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := &codexPassthroughReceipt{}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: geminiPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+			require.NoError(t, err)
+			defer client.Shutdown()
+			r := router.New()
+			NewGenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.SetRequestURI(tc.uri)
+			if tc.body != "" {
+				ctx.Request.Header.SetContentType("application/json")
+				ctx.Request.SetBodyString(tc.body)
+			}
+			r.Handler(&ctx)
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus == 400 {
+				require.Contains(t, string(ctx.Response.Body()), tc.wantBodyHas)
+				require.Nil(t, plugin.request, "a refused body must not reach the core")
+				return
+			}
+			require.NotNil(t, plugin.request)
+			wantProvider := tc.wantProvider
+			if wantProvider == "" {
+				wantProvider = schemas.Gemini
+			}
+			require.Equal(t, wantProvider, plugin.request.PassthroughRequest.Provider)
+			require.Equal(t, tc.wantModel, plugin.request.PassthroughRequest.Model)
+			require.Equal(t, tc.wantModelFree, plugin.skipModelCheck)
+			require.Equal(t, tc.body, string(plugin.request.PassthroughRequest.Body), "the body is forwarded unchanged")
+		})
+	}
+}
+
+// BenchmarkGenAIPassthroughBodyModelKey measures the Interactions agent lookup every GenAI passthrough
+// request runs: a route predicate on non-Interactions paths, one strict key read on a create.
+func BenchmarkGenAIPassthroughBodyModelKey(b *testing.B) {
+	cfg := NewGenAIPassthroughRouter(nil, nil, nil, &testLogger{}).passthroughCfg
+	body := []byte(`{"agent":"deep-research-preview-04-2026","input":"Research the history of lighthouses.","background":true}`)
+	b.Run("generateContent", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = cfg.BodyModelKey("POST", "/models/gemini-2.5-flash:generateContent")
+		}
+	})
+	b.Run("no path model predicate on generateContent", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = cfg.NoPathModel("POST", "/projects/p/locations/global/publishers/google/models/gemini-2.5-flash:generateContent")
+		}
+	})
+	b.Run("interactions create", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if key := cfg.BodyModelKey("POST", "/interactions"); key != "" {
+				_, _ = passthroughBodyKeyModel(body, key)
+			}
+		}
+	})
+}
+
+// BenchmarkChatGPTPassthroughStreamDecision measures the route predicate without touching provider execution.
+func BenchmarkChatGPTPassthroughStreamDecision(b *testing.B) {
+	cfg := NewChatGPTPassthroughRouter(nil, nil, nil, &testLogger{}).passthroughCfg
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = cfg.streams("POST", "/backend-api/codex/responses", false)
+	}
+}
+
+// BenchmarkChatGPTPassthroughModelFreeDecision measures the model-list predicate every ChatGPT passthrough request runs.
+func BenchmarkChatGPTPassthroughModelFreeDecision(b *testing.B) {
+	cfg := NewChatGPTPassthroughRouter(nil, nil, nil, &testLogger{}).passthroughCfg
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = cfg.ModelFreePath("POST", "/backend-api/codex/responses")
+	}
+}
+
+// BenchmarkIsChatGPTBearer measures the issuer check each ChatGPT passthrough request runs, on a token padded to a real ChatGPT token's size.
+func BenchmarkIsChatGPTBearer(b *testing.B) {
+	claims := `{"iss":"https://auth.openai.com","sub":"synthetic","pad":"` + strings.Repeat("x", 1500) + `"}`
+	authHeader := "Bearer eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + "." + strings.Repeat("s", 342)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = isChatGPTBearer(authHeader)
+	}
+}
+
+// TestPassthroughStreamTeardownPanicIsRecovered pins that the passthrough relay goroutine
+// survives a panic in its deferred teardown (the trace completer runs observability
+// plugins after the handler returned, outside RecoveryMiddleware): the relayed body still
+// reaches the client and the stream still closes, instead of the process ending.
+func TestPassthroughStreamTeardownPanicIsRecovered(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = http.ReadRequest(bufio.NewReader(conn))
+		event := "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\n"
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n", len(event), event)
+	}()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+
+	var ctx fasthttp.RequestCtx
+	traceRan := make(chan struct{})
+	ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func([]schemas.PluginLogEntry) {
+		close(traceRan)
+		panic("trace completer")
+	})
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	g.handlePassthroughStream(&ctx, bifrostCtx, cancel, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+		Method:      "POST",
+		Path:        "/backend-api/codex/responses",
+		UpstreamURL: "http://" + ln.Addr().String(),
+		Body:        []byte(`{"model":"gpt-5.5","input":[],"stream":true}`),
+		SafeHeaders: map[string]string{"content-type": "application/json"},
+	})
+	require.Equal(t, 200, ctx.Response.StatusCode())
+
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(ctx.Response.BodyStream())
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		require.Contains(t, string(b), `"type":"response.completed"`)
+	case <-time.After(10 * time.Second):
+		t.Fatal("relayed stream never closed after the teardown panic")
+	}
+	select {
+	case <-traceRan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("trace completer never ran")
+	}
+}
+
+// TestChatGPTPassthroughStreamEndsWithResponseFailedOnUpstreamError covers an upstream that answers
+// 200 text/event-stream and then fails mid-body. The relay used to stop on the error chunk without
+// writing anything, so Codex saw the stream close with no terminal event, retried the same request
+// blind and reported "stream closed before response.completed" instead of the upstream's error.
+func TestChatGPTPassthroughStreamEndsWithResponseFailedOnUpstreamError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = http.ReadRequest(bufio.NewReader(conn))
+		event := "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\"}}\n\n"
+		// Chunked body with no terminating chunk: the connection drops mid-stream.
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n", len(event), event)
+	}()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+
+	var ctx fasthttp.RequestCtx
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	g.handlePassthroughStream(&ctx, bifrostCtx, cancel, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+		Method:      "POST",
+		Path:        "/backend-api/codex/responses",
+		UpstreamURL: "http://" + ln.Addr().String(),
+		Body:        []byte(`{"model":"gpt-5.5","input":[],"stream":true}`),
+		SafeHeaders: map[string]string{"content-type": "application/json"},
+	})
+	require.Equal(t, 200, ctx.Response.StatusCode())
+
+	bodyStream := ctx.Response.BodyStream()
+	require.NotNil(t, bodyStream)
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(bodyStream)
+		done <- b
+	}()
+	var body string
+	select {
+	case b := <-done:
+		body = string(b)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out reading the relayed stream")
+	}
+
+	require.Contains(t, body, `"type":"response.created"`, "events before the failure are relayed unchanged")
+	require.Contains(t, body, "event: response.failed\n", "a stream that fails mid-body must end with a terminal event: %q", body)
+	failed := body[strings.LastIndex(body, "data: ")+len("data: "):]
+	var event struct {
+		Type     string `json:"type"`
+		Response struct {
+			Status string `json:"status"`
+			Error  struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	require.NoError(t, sonic.UnmarshalString(strings.TrimSpace(failed), &event), "terminal frame must be JSON: %q", failed)
+	assert.Equal(t, "response.failed", event.Type)
+	assert.Equal(t, "failed", event.Response.Status)
+	assert.NotEmpty(t, event.Response.Error.Code)
+	assert.NotEmpty(t, event.Response.Error.Message)
+}
+
+// TestPassthroughFailedFrameOnlyForResponsesSSE pins the gate: only an SSE stream on an OpenAI-shaped
+// Responses path speaks response.failed, so every other passthrough keeps ending without a frame.
+func TestPassthroughFailedFrameOnlyForResponsesSSE(t *testing.T) {
+	cases := []struct {
+		name        string
+		provider    schemas.ModelProvider
+		path        string
+		contentType string
+		want        bool
+	}{
+		{"codex responses", schemas.OpenAI, "/backend-api/codex/responses", "text/event-stream", true},
+		{"openai responses", schemas.OpenAI, "/v1/responses", "text/event-stream; charset=utf-8", true},
+		{"azure responses", schemas.Azure, "/openai/v1/responses", "text/event-stream", true},
+		{"openai chat", schemas.OpenAI, "/v1/chat/completions", "text/event-stream", false},
+		{"non sse", schemas.OpenAI, "/v1/responses", "application/json", false},
+		{"anthropic messages", schemas.Anthropic, "/v1/messages", "text/event-stream", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, passthroughEndsWithResponsesFailed(nil, tc.provider, tc.path, tc.contentType))
+		})
+	}
+}
+
+// TestPassthroughResponsesFailedFrameHidesGatewayReadErrors keeps a gateway-side read failure out of
+// the client's response.failed: ProcessAndSendError puts the raw read error ("read tcp 10.0.0.5:...")
+// in the message, which names internal addresses. An upstream's own error still reaches the client.
+func TestPassthroughResponsesFailedFrameHidesGatewayReadErrors(t *testing.T) {
+	failedError := func(frame []byte) (code, message string) {
+		data := strings.TrimSpace(string(frame)[strings.Index(string(frame), "data: ")+len("data: "):])
+		var event struct {
+			Response struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"response"`
+		}
+		require.NoError(t, sonic.UnmarshalString(data, &event), "frame must be JSON: %q", frame)
+		return event.Response.Error.Code, event.Response.Error.Message
+	}
+
+	t.Run("gateway read error", func(t *testing.T) {
+		frame := passthroughResponsesFailedFrame(&schemas.BifrostError{
+			IsBifrostError: true,
+			Error:          &schemas.ErrorField{Message: "Error reading stream: read tcp 10.0.0.5:51234->104.18.32.47:443: read: connection reset by peer"},
+		}, "", 0)
+		require.NotNil(t, frame)
+		assert.NotContains(t, string(frame), "10.0.0.5")
+		assert.NotContains(t, string(frame), "read tcp")
+		code, message := failedError(frame)
+		assert.Equal(t, "server_error", code)
+		assert.Equal(t, "upstream stream failed", message)
+	})
+
+	t.Run("upstream error", func(t *testing.T) {
+		frame := passthroughResponsesFailedFrame(&schemas.BifrostError{
+			Error: &schemas.ErrorField{Code: schemas.Ptr("context_length_exceeded"), Message: "Your input exceeds the context window of this model."},
+		}, "", 0)
+		require.NotNil(t, frame)
+		code, message := failedError(frame)
+		assert.Equal(t, "context_length_exceeded", code)
+		assert.Equal(t, "Your input exceeds the context window of this model.", message)
+	})
+}
+
+// relayResponsesPassthrough runs handlePassthroughStream for a Codex Responses request against a raw
+// TCP upstream scripted by upstream, and returns every byte the client received.
+func relayResponsesPassthrough(t *testing.T, upstream func(conn net.Conn)) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = http.ReadRequest(bufio.NewReader(conn))
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		upstream(conn)
+	}()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+
+	var ctx fasthttp.RequestCtx
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	g.handlePassthroughStream(&ctx, bifrostCtx, cancel, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+		Method:      "POST",
+		Path:        "/backend-api/codex/responses",
+		UpstreamURL: "http://" + ln.Addr().String(),
+		Body:        []byte(`{"model":"gpt-5.5","input":[],"stream":true}`),
+		SafeHeaders: map[string]string{"content-type": "application/json"},
+	})
+	require.Equal(t, 200, ctx.Response.StatusCode())
+	bodyStream := ctx.Response.BodyStream()
+	require.NotNil(t, bodyStream)
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(bodyStream)
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		return string(b)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out reading the relayed stream")
+		return ""
+	}
+}
+
+// writeChunk writes one HTTP/1.1 chunk and pauses so the relay reads it on its own.
+func writeChunk(conn net.Conn, data string) {
+	_, _ = fmt.Fprintf(conn, "%x\r\n%s\r\n", len(data), data)
+	time.Sleep(50 * time.Millisecond)
+}
+
+const relayCreatedFrame = "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\"}}\n\n"
+
+// TestResponsesPassthroughDropsPartialFrameBeforeFailure covers an upstream that drops inside a data
+// line. The half-sent line must never reach the client: SSE has no way to cancel a partial line, so
+// the failure frame would be glued onto it and neither would parse.
+func TestResponsesPassthroughDropsPartialFrameBeforeFailure(t *testing.T) {
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, relayCreatedFrame+"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"del")
+	})
+	require.True(t, strings.HasPrefix(body, relayCreatedFrame), "complete frames are relayed unchanged: %q", body)
+	assert.NotContains(t, body, "response.output_text.delta", "the partial frame must not reach the client")
+	rest := strings.TrimPrefix(body, relayCreatedFrame)
+	require.True(t, strings.HasPrefix(rest, "event: response.failed\ndata: "), "the failure frame starts on a fresh line: %q", rest)
+	require.True(t, strings.HasSuffix(rest, "\n\n"), "the failure frame is terminated: %q", rest)
+	var event struct {
+		Type string `json:"type"`
+	}
+	require.NoError(t, sonic.UnmarshalString(strings.TrimSpace(strings.TrimPrefix(rest, "event: response.failed\ndata: ")), &event))
+	assert.Equal(t, "response.failed", event.Type)
+	assert.Contains(t, rest, `"message":"upstream closed the stream before response.completed"`, "a clean close names the truncation")
+}
+
+// TestResponsesPassthroughHealthyStreamIsByteExact keeps a stream that completes untouched: frames
+// split across reads come out byte for byte, and no failure frame is added after response.completed.
+func TestResponsesPassthroughHealthyStreamIsByteExact(t *testing.T) {
+	completed := "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\n"
+	split := len(completed) / 2
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, relayCreatedFrame+completed[:split])
+		writeChunk(conn, completed[split:])
+		_, _ = io.WriteString(conn, "0\r\n\r\n")
+	})
+	assert.Equal(t, relayCreatedFrame+completed, body)
+}
+
+// TestResponsesPassthroughConnectionResetEndsWithGenericFailure takes the error-chunk path end to end:
+// a TCP reset surfaces as a gateway read error, which ends the stream with response.failed carrying
+// the generic message, never the read error and its addresses.
+func TestResponsesPassthroughConnectionResetEndsWithGenericFailure(t *testing.T) {
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, relayCreatedFrame)
+		time.Sleep(100 * time.Millisecond)
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetLinger(0)
+		}
+	})
+	require.True(t, strings.HasPrefix(body, relayCreatedFrame), "complete frames are relayed unchanged: %q", body)
+	assert.Contains(t, body, "event: response.failed\n")
+	assert.Contains(t, body, `"message":"upstream stream failed"`)
+	assert.NotContains(t, body, "127.0.0.1")
+	assert.NotContains(t, body, "connection reset")
+}
+
+// BenchmarkResponsesFrameRelay measures the per-chunk cost the gated Responses passthrough pays for
+// whole-frame forwarding: one text delta frame per read, the common shape of a streamed turn.
+func BenchmarkResponsesFrameRelay(b *testing.B) {
+	delta := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":7,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello world\"}\n\n")
+	relay := &responsesFrameRelay{}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = relay.complete(delta)
+	}
+}
+
+// TestResponsesFrameRelayCapsUnterminatedFrame bounds the relay's buffer: an upstream that never
+// terminates a frame must not grow pending past core's native per-event ceiling.
+func TestResponsesFrameRelayCapsUnterminatedFrame(t *testing.T) {
+	relay := &responsesFrameRelay{}
+	piece := []byte("data: " + strings.Repeat("x", 4090))
+	for sent := 0; sent <= responsesFrameRelayMaxPending; sent += len(piece) {
+		require.Empty(t, relay.complete(piece), "an unterminated frame is never forwarded")
+	}
+	assert.True(t, relay.overflowed, "passing the cap must mark the relay overflowed")
+	assert.Empty(t, relay.pending, "the unterminated tail is discarded, not retained")
+}
+
+// TestResponsesFrameRelayLargeEventIsByteExact keeps a large legitimate event (below the cap) intact
+// when it arrives in 4 KiB reads, the way the passthrough producer reads the upstream.
+func TestResponsesFrameRelayLargeEventIsByteExact(t *testing.T) {
+	event := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"blob\":\"" + strings.Repeat("y", 9<<20) + "\"}\n\n")
+	relay := &responsesFrameRelay{}
+	var out []byte
+	for off := 0; off < len(event); off += 4096 {
+		out = append(out, relay.complete(event[off:min(off+4096, len(event))])...)
+	}
+	assert.Equal(t, len(event), len(out))
+	assert.True(t, bytes.Equal(event, out), "a large event must come out byte-exact")
+	assert.True(t, relay.sawTerminal)
+	assert.False(t, relay.overflowed)
+}
+
+// TestResponsesFrameRelayFindsDelimiterSplitAcrossChunks pins the overlap the incremental scan keeps:
+// a CRLF blank line split across two reads still completes the frame.
+func TestResponsesFrameRelayFindsDelimiterSplitAcrossChunks(t *testing.T) {
+	relay := &responsesFrameRelay{}
+	assert.Empty(t, relay.complete([]byte("event: response.created\r\ndata: {\"type\":\"response.created\"}\r\n\r")))
+	assert.Equal(t, "event: response.created\r\ndata: {\"type\":\"response.created\"}\r\n\r\n", string(relay.complete([]byte("\n"))))
+}
+
+// TestResponsesPassthroughOverflowEndsWithOneFailure fails closed end to end: once an unterminated
+// frame passes the cap the relay stops forwarding and the client gets exactly one response.failed.
+func TestResponsesPassthroughOverflowEndsWithOneFailure(t *testing.T) {
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, relayCreatedFrame)
+		piece := "data: " + strings.Repeat("z", 64<<10)
+		for sent := 0; sent <= responsesFrameRelayMaxPending+len(piece); sent += len(piece) {
+			if _, err := fmt.Fprintf(conn, "%x\r\n%s\r\n", len(piece), piece); err != nil {
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	})
+	require.True(t, strings.HasPrefix(body, relayCreatedFrame), "complete frames are relayed unchanged")
+	rest := strings.TrimPrefix(body, relayCreatedFrame)
+	assert.NotContains(t, rest, "zzzz", "no partial frame bytes reach the client")
+	assert.Equal(t, 1, strings.Count(rest, "event: response.failed\n"), "exactly one failure frame: %.300q", rest)
+	assert.Contains(t, rest, "upstream event exceeded the 10 MB frame limit")
+}
+
+// BenchmarkResponsesFrameRelayLargeEvent measures a 4 MiB event arriving in 4 KiB reads; the scan
+// covers only the new bytes, so the cost grows linearly with the event.
+func BenchmarkResponsesFrameRelayLargeEvent(b *testing.B) {
+	event := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"blob\":\"" + strings.Repeat("y", 4<<20) + "\"}\n\n")
+	b.ReportAllocs()
+	b.SetBytes(int64(len(event)))
+	for b.Loop() {
+		relay := &responsesFrameRelay{}
+		for off := 0; off < len(event); off += 4096 {
+			_ = relay.complete(event[off:min(off+4096, len(event))])
+		}
+	}
+}
+
+// relayedFailedEvent parses the response.failed frame that ends a relayed body.
+func relayedFailedEvent(t *testing.T, body string) (id string, seq int, hasSeq bool) {
+	t.Helper()
+	i := strings.LastIndex(body, "event: response.failed\ndata: ")
+	require.GreaterOrEqual(t, i, 0, "no response.failed frame: %q", body)
+	var event struct {
+		SequenceNumber *int `json:"sequence_number"`
+		Response       struct {
+			ID string `json:"id"`
+		} `json:"response"`
+	}
+	require.NoError(t, sonic.UnmarshalString(strings.TrimSpace(body[i+len("event: response.failed\ndata: "):]), &event))
+	if event.SequenceNumber != nil {
+		return event.Response.ID, *event.SequenceNumber, true
+	}
+	return event.Response.ID, 0, false
+}
+
+// TestResponsesPassthroughFailureCarriesUpstreamIdentity ties the synthetic response.failed to the
+// response the client already saw: the id from response.created and the next sequence number, the
+// way an upstream's own response.failed would (developers.openai.com/api/reference/resources/responses/streaming-events).
+func TestResponsesPassthroughFailureCarriesUpstreamIdentity(t *testing.T) {
+	created := "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_up_42\",\"status\":\"in_progress\"}}\n\n"
+	delta := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":5,\"item_id\":\"msg_1\",\"delta\":\"hi\"}\n\n"
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, created+delta+"event: response.output_text.delta\ndata: {\"type\":\"resp")
+	})
+	id, seq, hasSeq := relayedFailedEvent(t, body)
+	assert.Equal(t, "resp_up_42", id, "response.failed names the response the client already received")
+	require.True(t, hasSeq)
+	assert.Equal(t, 6, seq, "response.failed continues the upstream sequence")
+}
+
+// TestResponsesPassthroughFailureBeforeCreatedHasNoIdentity covers a failure before response.created:
+// there is no id to repeat, so none is invented, and the sequence starts at 0.
+func TestResponsesPassthroughFailureBeforeCreatedHasNoIdentity(t *testing.T) {
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, "event: response.created\ndata: {\"type\":\"resp")
+	})
+	id, seq, hasSeq := relayedFailedEvent(t, body)
+	assert.Empty(t, id)
+	require.True(t, hasSeq)
+	assert.Equal(t, 0, seq)
+}
+
+// holdUntilFinalPlugin mirrors a buffering output guardrail: it pauses the stream on the
+// first chunk and only resumes it once the final chunk has been seen and evaluated.
+type holdUntilFinalPlugin struct{ paused bool }
+
+func (p *holdUntilFinalPlugin) GetName() string { return "hold-until-final" }
+func (p *holdUntilFinalPlugin) Cleanup() error  { return nil }
+func (p *holdUntilFinalPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *holdUntilFinalPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *holdUntilFinalPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if !p.paused {
+		p.paused = true
+		ctx.PauseStream()
+	}
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		ctx.ResumeStream()
+	}
+	return resp, bifrostErr, nil
+}
+
+// blockAtFinalPlugin mirrors a buffering output guardrail that rejects the response once it
+// has seen all of it: it drops the held chunks and ends the stream with an error.
+type blockAtFinalPlugin struct{ holdUntilFinalPlugin }
+
+func (p *blockAtFinalPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if !p.paused {
+		p.paused = true
+		ctx.PauseStream()
+	}
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		_ = ctx.ClearPausedStreamBuffer()
+		ctx.ResumeStream()
+		return nil, &schemas.BifrostError{StatusCode: schemas.Ptr(446), Error: &schemas.ErrorField{Message: "blocked by guardrail"}}, nil
+	}
+	return resp, bifrostErr, nil
+}
+
+type heldStreamResult struct {
+	committedAfter time.Duration
+	status         int
+	body           string
+	upstreamHits   int
+}
+
+// runHeldStream sends one streaming request through a real Bifrost whose plugin holds the
+// stream, against an Anthropic upstream that pauses for hold mid-generation.
+func runHeldStream(t *testing.T, plugin schemas.LLMPlugin, hold time.Duration, uri, body string) heldStreamResult {
+	t.Helper()
+	return runHeldStreamWith(t, plugin, hold, uri, body, func(send func(event, data string)) {
+		send("message_start", heldMessageStart)
+		send("content_block_start", heldTextBlockStart)
+		send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
+		time.Sleep(hold)
+		send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}`)
+		send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+		send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+		send("message_stop", `{"type":"message_stop"}`)
+	})
+}
+
+const (
+	heldMessageStart   = `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"usage":{"input_tokens":5,"output_tokens":1}}}`
+	heldTextBlockStart = `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`
+)
+
+// runHeldStreamWith is runHeldStream with the upstream's SSE events scripted by events.
+func runHeldStreamWith(t *testing.T, plugin schemas.LLMPlugin, hold time.Duration, uri, body string, events func(send func(event, data string))) heldStreamResult {
+	t.Helper()
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		events(func(event, data string) {
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+			flusher.Flush()
+		})
+	}))
+	t.Cleanup(upstream.Close)
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := tracing.NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    passthroughTestAccount{baseURL: upstream.URL},
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Tracer:     tracer,
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewAnthropicRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI(uri)
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(body)
+
+	start := time.Now()
+	returned := make(chan struct{})
+	go func() {
+		r.Handler(&ctx)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(2*hold + 5*time.Second):
+		t.Fatal("handler never returned")
+	}
+	res := heldStreamResult{committedAfter: time.Since(start), status: ctx.Response.StatusCode()}
+	if bs := ctx.Response.BodyStream(); bs != nil {
+		raw, _ := io.ReadAll(bs)
+		res.body = string(raw)
+	} else {
+		res.body = string(ctx.Response.Body())
+	}
+	res.upstreamHits = int(hits.Load())
+	return res
+}
+
+// A plugin that holds a stream (a buffering output guardrail) keeps every chunk out of the
+// provider channel until the upstream finishes. The handler must still commit the SSE response
+// and start heartbeats once the upstream has produced output; otherwise a proxy in front of
+// Bifrost (Cloudflare's 125s read timeout) sees zero bytes for the whole generation and cuts the
+// request with a 524, which Bifrost then logs as "client disconnected". Once committed, the
+// client gets heartbeats during the hold and then every held chunk in order, with no trace of
+// the internal commit marker.
+func TestAnthropicHeldStreamDeliversHeartbeatsThenContent(t *testing.T) {
+	const hold = 2500 * time.Millisecond
+	res := runHeldStream(t, &holdUntilFinalPlugin{}, hold, "/anthropic/v1/messages",
+		`{"model":"anthropic/claude-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Less(t, res.committedAfter, hold/2, "response committed only after %s", res.committedAfter)
+	heartbeat := strings.Index(res.body, ": heartbeat")
+	start := strings.Index(res.body, "event: message_start")
+	require.NotEqual(t, -1, heartbeat, "no heartbeat reached the client during the hold: %s", res.body)
+	require.Less(t, heartbeat, start, "heartbeats must precede the held content: %s", res.body)
+	hello := strings.Index(res.body, `"text":"Hello"`)
+	world := strings.Index(res.body, `"text":" world"`)
+	require.True(t, hello != -1 && world > hello, "held text missing or out of order: %s", res.body)
+	require.Contains(t, res.body, "event: message_stop")
+	require.NotContains(t, res.body, "data: {}", "the commit marker leaked to the client")
+}
+
+// The neutral OpenAI-shaped route reaches Anthropic through the same core path and must
+// commit a held stream just as early.
+func TestOpenAIChatHeldStreamCommitsEarly(t *testing.T) {
+	const hold = 2500 * time.Millisecond
+	res := runHeldStream(t, &holdUntilFinalPlugin{}, hold, "/openai/v1/chat/completions",
+		`{"model":"anthropic/claude-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Less(t, res.committedAfter, hold/2, "response committed only after %s", res.committedAfter)
+	require.Contains(t, res.body, ": heartbeat")
+	require.Contains(t, res.body, `"content":"Hello"`)
+	require.Contains(t, res.body, "data: [DONE]")
+	require.NotContains(t, res.body, "data: {}", "the commit marker leaked to the client")
+}
+
+// A guardrail that rejects a held stream at its end now reports it as an in-stream error on
+// the already committed response, and the upstream is not called again for it.
+func TestAnthropicHeldStreamBlockedAtEndIsInStreamError(t *testing.T) {
+	const hold = 1500 * time.Millisecond
+	res := runHeldStream(t, &blockAtFinalPlugin{}, hold, "/anthropic/v1/messages",
+		`{"model":"anthropic/claude-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Less(t, res.committedAfter, hold/2, "response committed only after %s", res.committedAfter)
+	require.Contains(t, res.body, "event: error")
+	require.Contains(t, res.body, "blocked by guardrail")
+	require.NotContains(t, res.body, `"text":"Hello"`, "blocked content reached the client")
+	require.Equal(t, 1, res.upstreamHits, "a guardrail block must not re-run the upstream")
+}
+
+// When the upstream's first events carry no output (an OpenAI-family model, whose startup
+// events the retry loop withholds while it checks for a startup error), a held stream must not
+// commit on them: committing ends that check, along with any first-token deadline. It commits
+// once the first real output is held instead.
+func TestOpenAIChatHeldStreamCommitsOnOutputNotStartupEvents(t *testing.T) {
+	const hold = 1500 * time.Millisecond
+	res := runHeldStreamWith(t, &holdUntilFinalPlugin{}, hold, "/openai/v1/chat/completions",
+		`{"model":"anthropic/gpt-4o-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		func(send func(event, data string)) {
+			send("message_start", heldMessageStart)
+			time.Sleep(hold) // startup only: nothing generated yet
+			send("content_block_start", heldTextBlockStart)
+			send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
+			time.Sleep(hold) // a long generation still in progress
+			send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+			send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+			send("message_stop", `{"type":"message_stop"}`)
+		})
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Greater(t, res.committedAfter, hold/2,
+		"the response was committed after %s, on the startup event alone, before any output existed", res.committedAfter)
+	require.Less(t, res.committedAfter, hold+hold/2,
+		"the response was committed only after %s: the held output did not commit it", res.committedAfter)
+	require.Contains(t, res.body, `"content":"Hello"`)
+	require.Contains(t, res.body, "data: [DONE]")
+	require.NotContains(t, res.body, "data: {}", "the commit marker leaked to the client")
+}
+
+// heldDeadlineAccount serves an OpenAI primary and an Anthropic fallback from two test upstreams.
+type heldDeadlineAccount struct{ primaryURL, fallbackURL string }
+
+func (a heldDeadlineAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}, nil
+}
+
+func (a heldDeadlineAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: string(p) + "-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a heldDeadlineAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	switch p {
+	case schemas.OpenAI:
+		nc.BaseURL = a.primaryURL
+	case schemas.Anthropic:
+		nc.BaseURL = a.fallbackURL
+	default:
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a heldDeadlineAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a heldDeadlineAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a heldDeadlineAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// A first-token deadline still governs a held stream. The startup check only learns that a held
+// attempt produced output through the commit marker, and the marker disarms the deadline: an
+// attempt whose first token came in time must not be cut off, or fall back, while a plugin holds
+// the rest of it past the deadline.
+func TestHeldStreamFirstTokenDeadline(t *testing.T) {
+	const deadline = time.Second
+	openAIChunk := func(w http.ResponseWriter, data string) {
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		w.(http.Flusher).Flush()
+	}
+	stall := func(r *http.Request, d time.Duration) bool {
+		select {
+		case <-time.After(d):
+			return true
+		case <-r.Context().Done():
+			return false
+		}
+	}
+	cases := []struct {
+		name         string
+		primary      func(w http.ResponseWriter, r *http.Request)
+		wantContent  string
+		wantFallback int32
+	}{
+		{
+			// Output before the deadline, then a hold that outlasts it: the primary made its
+			// first token in time and must not be cut off while the plugin holds the rest.
+			name: "primary with output in time survives a long hold",
+			primary: func(w http.ResponseWriter, r *http.Request) {
+				openAIChunk(w, `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"primary"}}]}`)
+				if !stall(r, 3*deadline) {
+					return
+				}
+				openAIChunk(w, `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+				openAIChunk(w, "[DONE]")
+			},
+			wantContent:  "primary",
+			wantFallback: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var primaryHits, fallbackHits atomic.Int32
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				primaryHits.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				tc.primary(w, r)
+			}))
+			fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fallbackHits.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				send := func(event, data string) {
+					_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+					w.(http.Flusher).Flush()
+				}
+				send("message_start", heldMessageStart)
+				send("content_block_start", heldTextBlockStart)
+				send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`)
+				send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+				send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+				send("message_stop", `{"type":"message_stop"}`)
+			}))
+			t.Cleanup(func() {
+				primary.CloseClientConnections()
+				fallback.CloseClientConnections()
+				primary.Close()
+				fallback.Close()
+			})
+
+			store := tracing.NewTraceStore(5*time.Minute, nil)
+			t.Cleanup(store.Stop)
+			tracer := tracing.NewTracer(store, nil, nil)
+			t.Cleanup(tracer.Stop)
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account:    heldDeadlineAccount{primaryURL: primary.URL, fallbackURL: fallback.URL},
+				LLMPlugins: []schemas.LLMPlugin{&holdUntilFinalPlugin{}},
+				Tracer:     tracer,
+				Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			ctx.SetValue(schemas.BifrostContextKeyStreamFirstTokenTimeout, deadline)
+			stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider:  schemas.OpenAI,
+				Model:     "gpt-4o-mini",
+				Input:     []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-test"}},
+			})
+			require.Nil(t, bifrostErr, "stream failed: %+v", bifrostErr)
+
+			var content strings.Builder
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for chunk := range stream {
+					require.False(t, schemas.IsStreamCommitMarker(chunk), "the commit marker leaked to the caller")
+					if chunk.BifrostError != nil {
+						t.Errorf("stream error: %+v", chunk.BifrostError.Error)
+						continue
+					}
+					if r := chunk.BifrostChatResponse; r != nil {
+						for _, c := range r.Choices {
+							if c.ChatStreamResponseChoice != nil && c.ChatStreamResponseChoice.Delta != nil && c.ChatStreamResponseChoice.Delta.Content != nil {
+								content.WriteString(*c.ChatStreamResponseChoice.Delta.Content)
+							}
+						}
+					}
+				}
+			}()
+			select {
+			case <-done:
+			case <-time.After(8 * time.Second):
+				t.Fatal("the stream never ended")
+			}
+
+			require.Equal(t, tc.wantContent, content.String())
+			require.Equal(t, int32(1), primaryHits.Load(), "a first-token miss must not retry the primary")
+			require.Equal(t, tc.wantFallback, fallbackHits.Load())
+		})
+	}
+}
+
+// BenchmarkHandleStreamingSpeech streams 64 speech chunks through the router's chunk loop, as SSE events and as the raw
+// audio of a route that sets RawAudio.
+func BenchmarkHandleStreamingSpeech(b *testing.B) {
+	audio := bytes.Repeat([]byte("a"), 4096)
+	chunks := make([]*schemas.BifrostStreamChunk, 64)
+	for i := range chunks {
+		chunks[i] = &schemas.BifrostStreamChunk{BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: audio}}
+	}
+	sse := RouteConfig{StreamConfig: &StreamConfig{
+		SpeechStreamResponseConverter: func(_ *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
+			return "", resp, nil
+		},
+	}}
+	for name, config := range map[string]RouteConfig{"sse": sse, "raw audio": rawAudioConfig()} {
+		b.Run(name, func(b *testing.B) {
+			router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+			b.ReportAllocs()
+			for b.Loop() {
+				stream := make(chan *schemas.BifrostStreamChunk, len(chunks))
+				for _, chunk := range chunks {
+					stream <- chunk
+				}
+				close(stream)
+				ctx := &fasthttp.RequestCtx{}
+				router.handleStreaming(ctx, nil, config, schemas.SpeechStreamRequest, stream, func() {})
+				_, _ = io.Copy(io.Discard, ctx.Response.BodyStream())
+			}
 		})
 	}
 }

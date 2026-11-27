@@ -68,6 +68,8 @@ func TestAppDerivedFromUserAgent(t *testing.T) {
 	for _, tc := range []struct{ ua, want string }{
 		{"claude-code/1.2.3", "Claude Code"},
 		{"Cursor/0.42 (darwin)", "Cursor"},
+		{"antigravity/2.23.0", "Antigravity Desktop"},
+		{"antigravity-cli/1.0", "Antigravity CLI"},
 		{"python-requests/2.31", UserAgentAppOther},
 		{"", ""},
 	} {

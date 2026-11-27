@@ -895,9 +895,9 @@ func TestFallbackCredit_BetaHeaderInjectionGating(t *testing.T) {
 	}
 }
 
-// AWS surfaces ship the same feature under a later date; the canonical header
-// must be rewritten rather than dropped or forwarded verbatim.
-func TestFilterBetaHeadersForProvider_FallbackCreditVersionRewrite(t *testing.T) {
+// Fallback credit passes through with the client's date on every supporting
+// provider; Bedrock rejects any rewritten date it does not recognise.
+func TestFilterBetaHeadersForProvider_FallbackCreditPassthrough(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -907,8 +907,8 @@ func TestFilterBetaHeadersForProvider_FallbackCreditVersionRewrite(t *testing.T)
 		{schemas.Anthropic, []string{AnthropicFallbackCreditBetaHeader}},
 		{schemas.Vertex, []string{AnthropicFallbackCreditBetaHeader}},
 		{schemas.Azure, []string{AnthropicFallbackCreditBetaHeader}},
-		{schemas.Bedrock, []string{AnthropicFallbackCreditBetaHeaderAWS}},
-		{schemas.BedrockMantle, []string{AnthropicFallbackCreditBetaHeaderAWS}},
+		{schemas.Bedrock, []string{AnthropicFallbackCreditBetaHeader}},
+		{schemas.BedrockMantle, []string{AnthropicFallbackCreditBetaHeader}},
 		{schemas.DeepSeek, []string{}},
 	} {
 		got := FilterBetaHeadersForProvider([]string{AnthropicFallbackCreditBetaHeader}, tc.provider)
@@ -916,22 +916,14 @@ func TestFilterBetaHeadersForProvider_FallbackCreditVersionRewrite(t *testing.T)
 			t.Errorf("%s: filtered = %v, want %v", tc.provider, got, tc.want)
 		}
 	}
-}
 
-// The rewrite is prefix-driven, so an inbound AWS-dated header sent to the
-// Claude API is normalised back to the canonical date rather than duplicated.
-func TestFilterBetaHeadersForProvider_FallbackCreditRewriteIsBidirectional(t *testing.T) {
-	t.Parallel()
-
-	got := FilterBetaHeadersForProvider([]string{AnthropicFallbackCreditBetaHeaderAWS}, schemas.Bedrock)
-	if !slices.Equal(got, []string{AnthropicFallbackCreditBetaHeaderAWS}) {
-		t.Errorf("Bedrock: filtered = %v, want the AWS date unchanged", got)
-	}
-	// Anthropic keeps whatever date arrived — only providers in the rewrite table
-	// are remapped, so a caller pinning a specific date on the Claude API is honoured.
-	got = FilterBetaHeadersForProvider([]string{AnthropicFallbackCreditBetaHeaderAWS}, schemas.Anthropic)
-	if !slices.Equal(got, []string{AnthropicFallbackCreditBetaHeaderAWS}) {
-		t.Errorf("Anthropic: filtered = %v, want the inbound date preserved", got)
+	for _, date := range []string{"fallback-credit-2026-07-01", "fallback-credit-2026-06-09"} {
+		for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle, schemas.Anthropic} {
+			got := FilterBetaHeadersForProvider([]string{date}, provider)
+			if !slices.Equal(got, []string{date}) {
+				t.Errorf("%s: filtered = %v, want %s preserved", provider, got, date)
+			}
+		}
 	}
 }
 

@@ -254,13 +254,15 @@ The branch you started on becomes the lower PR. If it already has an open PR, ke
 name: GitHub ties a PR to its branch name, so renaming strands the PR and a resubmit opens
 a second one. Name only the new upper branch (`gt create` derives it from the message), and
 reach for `gt rename` only when no PR exists yet and the name now describes part of what
-the branch holds.
+the branch holds. Branch names are `fix/<area>-<noun>` or `feat/<area>-<noun>`, never a
+username prefix (`akshaydeo/...`) or an issue number: pass the name explicitly
+(`gt create fix/<area>-<noun> -m ...`) rather than relying on the derived one.
 
 ```bash
 gh pr list --head "$(git branch --show-current)" --state open --json number,url   # non-empty: keep this name
 
 git add -A                            # everything remaining is the upper PR
-gt create -m "<type>(<scope>): <the other decision>"
+gt create <type>/<area>-<noun> -m "<type>(<scope>): <the other decision>"
 ```
 
 `gt submit --stack` publishes both PRs. Stop here and confirm with the user before running

@@ -132,3 +132,47 @@ func TestToVertexEmbeddingRequestBatch(t *testing.T) {
 		require.Contains(t, err.Error(), "only supports text parts")
 	})
 }
+
+// documentOcr / audioTrackExtraction are only accepted inside embedContentConfig. Top-level
+// keys are not rewritten (Vertex rejects them there), and the caller's params stay intact
+// because retries and fallbacks reuse them.
+func TestToVertexGeminiEmbeddingRequestForwardsEmbedContentConfig(t *testing.T) {
+	text := "alpha"
+	convert := func(extra map[string]interface{}) (*VertexGeminiEmbeddingRequest, []byte, []byte) {
+		t.Helper()
+		req, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model:  "gemini-embedding-2",
+			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+			Params: &schemas.EmbeddingParameters{ExtraParams: extra},
+		})
+		require.NoError(t, err)
+		body, err := providerUtils.MarshalSorted(req)
+		require.NoError(t, err)
+		merged, err := providerUtils.MergeExtraParamsIntoJSON(body, req.ExtraParams)
+		require.NoError(t, err)
+		return req, body, merged
+	}
+
+	t.Run("nested config reaches the wire", func(t *testing.T) {
+		extra := map[string]interface{}{"embedContentConfig": map[string]interface{}{"documentOcr": true, "audioTrackExtraction": true}}
+		_, body, merged := convert(extra)
+		// Without passthrough only the struct is sent; with it the extras are merged on top.
+		for _, wire := range [][]byte{body, merged} {
+			var out map[string]interface{}
+			require.NoError(t, schemas.Unmarshal(wire, &out))
+			cfg, _ := out["embedContentConfig"].(map[string]interface{})
+			require.Equal(t, true, cfg["documentOcr"], string(wire))
+			require.Equal(t, true, cfg["audioTrackExtraction"], string(wire))
+		}
+		_, again, _ := convert(extra)
+		require.Equal(t, string(body), string(again), "a second attempt (retry/fallback) must send the same body")
+	})
+
+	t.Run("top-level keys are not rewritten", func(t *testing.T) {
+		extra := map[string]interface{}{"documentOcr": true}
+		req, body, _ := convert(extra)
+		require.Nil(t, req.EmbedContentConfig)
+		require.NotContains(t, string(body), "documentOcr")
+		require.Contains(t, extra, "documentOcr", "caller's ExtraParams must not be mutated")
+	})
+}

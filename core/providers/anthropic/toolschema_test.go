@@ -54,7 +54,7 @@ func TestNormalizeAnthropicToolInputSchemaOtherRootCompositions(t *testing.T) {
 			if err := schemas.Unmarshal([]byte(test.raw), &schema); err != nil {
 				t.Fatalf("unmarshal schema: %v", err)
 			}
-			normalized, err := normalizeAnthropicToolInputSchema(&schema)
+			normalized, err := NormalizeAnthropicToolInputSchema(&schema)
 			if err != nil {
 				t.Fatalf("normalize schema: %v", err)
 			}
@@ -72,7 +72,7 @@ func TestNormalizeAnthropicToolInputSchemaOtherRootCompositions(t *testing.T) {
 // alternatives are merged without removing accepted nested composition.
 func TestNormalizeAnthropicToolInputSchemaRootOneOf(t *testing.T) {
 	original := codexUnionToolSchema(t)
-	normalized, err := normalizeAnthropicToolInputSchema(original)
+	normalized, err := NormalizeAnthropicToolInputSchema(original)
 	if err != nil {
 		t.Fatalf("normalize schema: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestNormalizeAnthropicToolInputSchemaPreservesAllOfPropertyConjunction(t *t
 		t.Fatalf("unmarshal schema: %v", err)
 	}
 
-	normalized, err := normalizeAnthropicToolInputSchema(&schema)
+	normalized, err := NormalizeAnthropicToolInputSchema(&schema)
 	if err != nil {
 		t.Fatalf("normalize schema: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestNormalizeAnthropicToolInputSchemaPreservesAllOfPropertyConjunction(t *t
 
 func TestNormalizeAnthropicToolInputSchemaRejectsExcessiveComplexity(t *testing.T) {
 	t.Run("branch count", func(t *testing.T) {
-		_, err := normalizeAnthropicToolInputSchema(explosiveAnthropicToolSchema(t))
+		_, err := NormalizeAnthropicToolInputSchema(explosiveAnthropicToolSchema(t))
 		if err == nil || !strings.Contains(err.Error(), "branch count") {
 			t.Fatalf("expected branch-count error, got %v", err)
 		}
@@ -231,7 +231,7 @@ func TestNormalizeAnthropicToolInputSchemaRejectsExcessiveComplexity(t *testing.
 		if err := schemas.Unmarshal([]byte(`{"type":"object","oneOf":[`+branch+`]}`), &schema); err != nil {
 			t.Fatalf("unmarshal deep schema: %v", err)
 		}
-		_, err := normalizeAnthropicToolInputSchema(&schema)
+		_, err := NormalizeAnthropicToolInputSchema(&schema)
 		if err == nil || !strings.Contains(err.Error(), "depth") {
 			t.Fatalf("expected depth error, got %v", err)
 		}

@@ -15,8 +15,9 @@ import (
 // TestRuleStore_CreateAndRetrieve tests creating and retrieving routing rules
 func TestRuleStore_CreateAndRetrieve(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	// Create a global routing rule
 	rule1 := &configstoreTables.TableRoutingRule{
@@ -58,9 +59,9 @@ func TestRuleStore_CreateAndRetrieve(t *testing.T) {
 	}
 
 	// Store rules in memory
-	err = store.UpsertRule(context.Background(), rule1)
+	err = store.Put(context.Background(), rule1)
 	require.NoError(t, err)
-	err = store.UpsertRule(context.Background(), rule2)
+	err = store.Put(context.Background(), rule2)
 	require.NoError(t, err)
 
 	// Test retrieval by scope
@@ -72,16 +73,15 @@ func TestRuleStore_CreateAndRetrieve(t *testing.T) {
 	assert.Equal(t, 1, len(teamRules))
 	assert.Equal(t, "Team Rule", teamRules[0].Name)
 
-	// Test ListRoutingRules
-	allRules := store.GetAllRules(context.Background())
-	assert.Equal(t, 2, len(allRules))
+	assert.True(t, store.HasRules(context.Background()))
 }
 
 // TestRuleStore_PriorityOrdering tests that rules are sorted by priority
 func TestRuleStore_PriorityOrdering(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	// Create rules with different priorities
 	rules := []*configstoreTables.TableRoutingRule{
@@ -112,7 +112,7 @@ func TestRuleStore_PriorityOrdering(t *testing.T) {
 	}
 
 	for _, rule := range rules {
-		err := store.UpsertRule(context.Background(), rule)
+		err := store.Put(context.Background(), rule)
 		require.NoError(t, err)
 	}
 
@@ -127,8 +127,9 @@ func TestRuleStore_PriorityOrdering(t *testing.T) {
 // TestRuleStore_DisabledRulesFiltered tests that disabled rules are filtered out
 func TestRuleStore_DisabledRulesFiltered(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	enabledRule := &configstoreTables.TableRoutingRule{
 		ID:      "1",
@@ -146,9 +147,9 @@ func TestRuleStore_DisabledRulesFiltered(t *testing.T) {
 		ScopeID: nil,
 	}
 
-	err = store.UpsertRule(context.Background(), enabledRule)
+	err = store.Put(context.Background(), enabledRule)
 	require.NoError(t, err)
-	err = store.UpsertRule(context.Background(), disabledRule)
+	err = store.Put(context.Background(), disabledRule)
 	require.NoError(t, err)
 
 	// Only enabled rules should be returned
@@ -160,8 +161,9 @@ func TestRuleStore_DisabledRulesFiltered(t *testing.T) {
 // TestRuleStore_DeleteRule tests deleting a routing rule
 func TestRuleStore_DeleteRule(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:      "1",
@@ -172,14 +174,14 @@ func TestRuleStore_DeleteRule(t *testing.T) {
 	}
 
 	// Add rule
-	err = store.UpsertRule(context.Background(), rule)
+	err = store.Put(context.Background(), rule)
 	require.NoError(t, err)
 
 	retrieved := store.GetScopedRules(context.Background(), "global", "")
 	assert.Equal(t, 1, len(retrieved))
 
 	// Delete rule
-	err = store.DeleteRule(context.Background(), rule.ID)
+	err = store.Delete(context.Background(), rule.ID)
 	require.NoError(t, err)
 
 	// Verify deletion
@@ -190,8 +192,9 @@ func TestRuleStore_DeleteRule(t *testing.T) {
 // TestRuleStore_MultipleScopes tests rules with multiple scopes
 func TestRuleStore_MultipleScopes(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	customerID := "cust-123"
 	teamID := "team-456"
@@ -207,9 +210,9 @@ func TestRuleStore_MultipleScopes(t *testing.T) {
 		ID: "3", Name: "Team", Scope: "team", ScopeID: &teamID, Priority: 30, Enabled: bifrost.Ptr(true),
 	}
 
-	require.NoError(t, store.UpsertRule(context.Background(), globalRule))
-	require.NoError(t, store.UpsertRule(context.Background(), customerRule))
-	require.NoError(t, store.UpsertRule(context.Background(), teamRule))
+	require.NoError(t, store.Put(context.Background(), globalRule))
+	require.NoError(t, store.Put(context.Background(), customerRule))
+	require.NoError(t, store.Put(context.Background(), teamRule))
 
 	// Test global scope
 	globalRules := store.GetScopedRules(context.Background(), "global", "")
@@ -225,20 +228,14 @@ func TestRuleStore_MultipleScopes(t *testing.T) {
 	teamRules := store.GetScopedRules(context.Background(), "team", teamID)
 	assert.Equal(t, 1, len(teamRules))
 	assert.Equal(t, "Team", teamRules[0].Name)
-
-	// ListAll should return all rules sorted by priority ASC (lower numbers = higher priority)
-	allRules := store.GetAllRules(context.Background())
-	assert.Equal(t, 3, len(allRules))
-	assert.Equal(t, 10, allRules[0].Priority) // Global (highest)
-	assert.Equal(t, 20, allRules[1].Priority) // Customer
-	assert.Equal(t, 30, allRules[2].Priority) // Team (lowest)
 }
 
 // TestCompileAndCacheProgram tests CEL program compilation and caching
 func TestCompileAndCacheProgram(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "rule-1",
@@ -267,8 +264,9 @@ func TestCompileAndCacheProgram(t *testing.T) {
 // TestCompileAndCacheProgram_InvalidExpression tests error handling for invalid CEL
 func TestCompileAndCacheProgram_InvalidExpression(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "rule-invalid",
@@ -291,8 +289,9 @@ func TestCompileAndCacheProgram_InvalidExpression(t *testing.T) {
 // TestCompileAndCacheProgram_CacheInvalidation tests cache invalidation on rule update
 func TestCompileAndCacheProgram_CacheInvalidation(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "rule-update",
@@ -312,7 +311,7 @@ func TestCompileAndCacheProgram_CacheInvalidation(t *testing.T) {
 
 	// Update rule in memory (should invalidate cache)
 	rule.CelExpression = "model == 'gpt-4-turbo'"
-	err = store.UpsertRule(context.Background(), rule)
+	err = store.Put(context.Background(), rule)
 	require.NoError(t, err)
 
 	// Recompile should work
@@ -324,8 +323,9 @@ func TestCompileAndCacheProgram_CacheInvalidation(t *testing.T) {
 // TestCompileAndCacheProgram_CacheInvalidationOnDelete tests cache invalidation on rule deletion
 func TestCompileAndCacheProgram_CacheInvalidationOnDelete(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "rule-delete",
@@ -343,7 +343,7 @@ func TestCompileAndCacheProgram_CacheInvalidationOnDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete rule (should invalidate cache)
-	err = store.DeleteRule(context.Background(), rule.ID)
+	err = store.Delete(context.Background(), rule.ID)
 	require.NoError(t, err)
 
 	// After deletion, we can't verify cache directly, but the rule is gone from storage
@@ -352,8 +352,9 @@ func TestCompileAndCacheProgram_CacheInvalidationOnDelete(t *testing.T) {
 // TestCompileAndCacheProgram_EmptyExpression tests compilation of empty CEL expression (defaults to "true")
 func TestCompileAndCacheProgram_EmptyExpression(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "rule-empty",
@@ -376,14 +377,14 @@ func TestCompileAndCacheProgram_EmptyExpression(t *testing.T) {
 	assert.Equal(t, program, program2)
 }
 
-// TestRuleStore_GetAllRulesOrdersEqualPriorityNewestFirst pins the ordering GetAllRules
-// documents. Rules are ordered by priority ascending, and rules sharing a priority come back
-// newest first. This behavior carried over unchanged from the governance rule cache this store
-// replaced, so it is pinned here rather than adjusted.
-func TestRuleStore_GetAllRulesOrdersEqualPriorityNewestFirst(t *testing.T) {
+// TestRuleStore_ScopedRulesOrderEqualPriorityNewestFirst pins the evaluation order of one scope's
+// rules: priority ascending, and rules sharing a priority newest first, as the database reads
+// them at boot.
+func TestRuleStore_ScopedRulesOrderEqualPriorityNewestFirst(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalStore(context.Background(), logger, nil)
+	store, err := NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	older := &configstoreTables.TableRoutingRule{
 		ID: "older", Name: "Older", Scope: "global", Priority: 5, Enabled: bifrost.Ptr(true),
@@ -398,11 +399,11 @@ func TestRuleStore_GetAllRulesOrdersEqualPriorityNewestFirst(t *testing.T) {
 		CreatedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
 	}
 
-	require.NoError(t, store.UpsertRule(context.Background(), older))
-	require.NoError(t, store.UpsertRule(context.Background(), newer))
-	require.NoError(t, store.UpsertRule(context.Background(), highPriority))
+	require.NoError(t, store.Put(context.Background(), older))
+	require.NoError(t, store.Put(context.Background(), newer))
+	require.NoError(t, store.Put(context.Background(), highPriority))
 
-	got := store.GetAllRules(context.Background())
+	got := store.GetScopedRules(context.Background(), "global", "")
 	require.Len(t, got, 3)
 
 	ids := []string{got[0].ID, got[1].ID, got[2].ID}

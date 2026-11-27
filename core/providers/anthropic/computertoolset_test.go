@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -123,6 +124,27 @@ func TestComputerToolset_NameSurvivesSymmetricReplay(t *testing.T) {
 	results := `{"type":"tool_result","tool_use_id":"toolu_aaa","toolset_name":"computer","content":"ok"},
 		{"type":"tool_result","tool_use_id":"toolu_bbb","toolset_name":"computer","content":"ok"}`
 	calls, got := toolsetNames(roundTripAnthropicBody(t, fmt.Sprintf(toolsetReplayBody, results)))
+
+	assert.Equal(t, map[string]string{"toolu_aaa": "computer", "toolu_bbb": "computer"}, calls)
+	assert.Equal(t, map[string]string{"toolu_aaa": "computer", "toolu_bbb": "computer"}, got)
+}
+
+// The Messages ingress groups tool calls when the target is Bedrock. That
+// converter must keep toolset_name on the tool_use, or the pair reaches Bedrock half-tagged.
+func TestComputerToolset_NameSurvivesBedrockReplay(t *testing.T) {
+	results := `{"type":"tool_result","tool_use_id":"toolu_aaa","toolset_name":"computer","content":"ok"},
+		{"type":"tool_result","tool_use_id":"toolu_bbb","toolset_name":"computer","content":"ok"}`
+	body := strings.Replace(fmt.Sprintf(toolsetReplayBody, results),
+		`"model":"claude-opus-5-5"`, `"model":"bedrock/us.anthropic.claude-opus-5-5"`, 1)
+	var req AnthropicMessageRequest
+	require.NoError(t, json.Unmarshal([]byte(body), &req))
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := req.ToBifrostResponsesRequest(ctx)
+	require.Equal(t, schemas.Bedrock, bifrostReq.Provider)
+	out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	calls, got := toolsetNames(out)
 
 	assert.Equal(t, map[string]string{"toolu_aaa": "computer", "toolu_bbb": "computer"}, calls)
 	assert.Equal(t, map[string]string{"toolu_aaa": "computer", "toolu_bbb": "computer"}, got)
@@ -277,7 +299,7 @@ func TestComputerToolset_RawBodyUpgradedToToolset(t *testing.T) {
 // form the tool is dropped, because a zero-sized display is a hard 400 and would
 // turn a re-routed request into a failure rather than a degraded one.
 func TestComputerToolset_ForwardedWhenTargetAcceptsIt(t *testing.T) {
-	// Every model the computer-use docs list for the toolset, on the two surfaces
+	// Every model the computer-use docs list for the toolset, on the surfaces
 	// that serve it. All of these also accept the dated tool, so the generation
 	// says "dated" — forwarding still has to win, or the caller loses the toolset
 	// they explicitly asked for.
@@ -290,6 +312,8 @@ func TestComputerToolset_ForwardedWhenTargetAcceptsIt(t *testing.T) {
 		{schemas.Anthropic, "claude-opus-4-8"},
 		{schemas.Anthropic, "claude-fable-5-1"},
 		{schemas.Vertex, "claude-opus-5"},
+		{schemas.Bedrock, "claude-opus-5-5"},
+		{schemas.Bedrock, "claude-sonnet-5-5"},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
@@ -309,13 +333,12 @@ func TestComputerToolset_ForwardedWhenTargetAcceptsIt(t *testing.T) {
 }
 
 func TestComputerToolset_DroppedWhenTargetTakesNeitherForm(t *testing.T) {
-	// AWS and Foundry serve only the dated tool, and Sonnet 4.6 and older reject
-	// the toolset on every surface — so there is no shape left to send.
+	// Bedrock Mantle and Foundry serve only the dated tool, and Sonnet 4.6 and older
+	// reject the toolset on every surface — so there is no shape left to send.
 	cases := []struct {
 		provider schemas.ModelProvider
 		model    string
 	}{
-		{schemas.Bedrock, "claude-opus-5-5"},
 		{schemas.BedrockMantle, "claude-opus-5-5"},
 		{schemas.Azure, "claude-opus-5-5"},
 		{schemas.Anthropic, "claude-sonnet-4-6"},
@@ -357,8 +380,8 @@ func TestComputerToolset_AcceptanceDatasheetOutranksFallback(t *testing.T) {
 			return &schemas.ModelCapabilities{SupportsComputerToolset: &yes}
 		})
 		t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
-		assert.False(t, AcceptsComputerToolset(schemas.ResolveModelCaps(schemas.Bedrock, "claude-opus-5-5")),
-			"AWS serves only the dated tool regardless of the row")
+		assert.False(t, AcceptsComputerToolset(schemas.ResolveModelCaps(schemas.Azure, "claude-opus-5-5")),
+			"Foundry serves only the dated tool regardless of the row")
 	})
 }
 
@@ -402,4 +425,124 @@ func TestComputerToolset_RawBodyDropsUndowngradableToolset(t *testing.T) {
 	assert.NotContains(t, types, "computer_toolset_20260801", "the target cannot take a toolset either: %s", out)
 	assert.Contains(t, types, "text_editor_20250728", "sibling tools carry no geometry and must survive: %s", out)
 	assert.Contains(t, types, "bash_20250124", "sibling tools carry no geometry and must survive: %s", out)
+}
+
+// The OpenAI computer tool carries no display geometry, so it can only become a
+// toolset; where the target takes no toolset it is dropped and reported.
+func TestComputerTool_OpenAIComputerToResponsesToolset(t *testing.T) {
+	computer := &schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputer}
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		want     *AnthropicToolType
+	}{
+		{"toolset generation", schemas.Anthropic, "claude-opus-5-5", schemas.Ptr(AnthropicToolTypeComputerToolset20260801)},
+		{"dated generation that accepts the toolset", schemas.Anthropic, "claude-opus-4-8", schemas.Ptr(AnthropicToolTypeComputerToolset20260801)},
+		{"dated-only model", schemas.Anthropic, "claude-sonnet-4-6", nil},
+		{"bedrock serves the toolset", schemas.Bedrock, "claude-opus-5-5", schemas.Ptr(AnthropicToolTypeComputerToolset20260801)},
+		{"surface without the toolset", schemas.Azure, "claude-opus-5-5", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(tc.provider, tc.model)
+			tool := convertBifrostToolToAnthropic(caps, computer, tc.provider, false)
+			if tc.want == nil {
+				assert.Nil(t, tool)
+				return
+			}
+			require.NotNil(t, tool)
+			require.NotNil(t, tool.Type)
+			assert.Equal(t, *tc.want, *tool.Type)
+			assert.Empty(t, tool.Name, "a toolset entry takes no name")
+			assert.Nil(t, tool.AnthropicToolComputerUse, "a toolset entry takes no display")
+		})
+	}
+}
+
+// Validation must report a dropped computer tool instead of letting it vanish in conversion.
+func TestComputerTool_ValidateCoversOpenAIComputer(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		toolType schemas.ResponsesToolType
+		kept     bool
+	}{
+		{"computer on toolset model", schemas.Anthropic, "claude-opus-5-5", schemas.ResponsesToolTypeComputer, true},
+		{"computer on vertex toolset model", schemas.Vertex, "claude-opus-5-5", schemas.ResponsesToolTypeComputer, true},
+		{"computer on bedrock toolset model", schemas.Bedrock, "claude-opus-5-5", schemas.ResponsesToolTypeComputer, true},
+		{"computer on foundry", schemas.Azure, "claude-opus-5-5", schemas.ResponsesToolTypeComputer, false},
+		// Conversion drops it here (no toolset, no geometry), so validation must report it.
+		{"computer on dated-only model", schemas.Anthropic, "claude-sonnet-4-6", schemas.ResponsesToolTypeComputer, false},
+		{"computer_use_preview on dated-only model", schemas.Anthropic, "claude-sonnet-4-6", schemas.ResponsesToolTypeComputerUsePreview, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(tc.provider, tc.model)
+			keep, dropped := ValidateResponsesToolsForProvider([]schemas.ResponsesTool{{Type: tc.toolType}}, caps)
+			if tc.kept {
+				assert.Len(t, keep, 1)
+				assert.Empty(t, dropped)
+			} else {
+				assert.Empty(t, keep)
+				assert.Equal(t, []string{string(tc.toolType)}, dropped)
+			}
+		})
+	}
+}
+
+// A toolset entry rejects input_examples (400 "not accepted on a toolset entry"); the
+// dated tool takes them, so only the toolset drops them.
+func TestComputerToolset_DropsInputExamples(t *testing.T) {
+	examples := []schemas.ChatToolInputExample{{Input: json.RawMessage(`{"action":"screenshot"}`)}}
+	for _, tc := range []struct {
+		name     string
+		model    string
+		tool     schemas.ResponsesTool
+		wantType AnthropicToolType
+		kept     bool
+	}{
+		{"toolset", "claude-opus-5-5", schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputer, InputExamples: examples}, AnthropicToolTypeComputerToolset20260801, false},
+		{"dated", "claude-sonnet-4-6", schemas.ResponsesTool{
+			Type:                            schemas.ResponsesToolTypeComputerUsePreview,
+			InputExamples:                   examples,
+			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1280, DisplayHeight: 800, Environment: "browser"},
+		}, AnthropicToolTypeComputer20251124, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(schemas.Anthropic, tc.model)
+			tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{tc.tool}, schemas.Anthropic)
+			require.NoError(t, err)
+			require.Len(t, tools, 1)
+			require.NotNil(t, tools[0].Type)
+			assert.Equal(t, tc.wantType, *tools[0].Type)
+			if tc.kept {
+				assert.Len(t, tools[0].InputExamples, 1)
+			} else {
+				assert.Empty(t, tools[0].InputExamples)
+			}
+		})
+	}
+}
+
+// A toolset has no geometry, so it maps to the OpenAI computer tool rather than a
+// 0x0 computer_use_preview; a dated tool keeps its display as computer_use_preview.
+func TestComputerTool_AnthropicToResponses(t *testing.T) {
+	toolset := convertAnthropicToolToBifrost(&AnthropicTool{Type: schemas.Ptr(AnthropicToolTypeComputerToolset20260801)})
+	require.NotNil(t, toolset)
+	assert.Equal(t, schemas.ResponsesToolTypeComputer, toolset.Type)
+	assert.Nil(t, toolset.ResponsesToolComputerUsePreview)
+
+	dated := convertAnthropicToolToBifrost(&AnthropicTool{
+		Type: schemas.Ptr(AnthropicToolTypeComputer20251124),
+		Name: "computer",
+		AnthropicToolComputerUse: &AnthropicToolComputerUse{
+			DisplayWidthPx:  schemas.Ptr(1280),
+			DisplayHeightPx: schemas.Ptr(800),
+		},
+	})
+	require.NotNil(t, dated)
+	assert.Equal(t, schemas.ResponsesToolTypeComputerUsePreview, dated.Type)
+	require.NotNil(t, dated.ResponsesToolComputerUsePreview)
+	assert.Equal(t, 1280, dated.ResponsesToolComputerUsePreview.DisplayWidth)
+	assert.Equal(t, 800, dated.ResponsesToolComputerUsePreview.DisplayHeight)
 }

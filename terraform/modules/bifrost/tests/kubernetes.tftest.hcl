@@ -155,3 +155,22 @@ run "k8s_tags" {
     tags           = { Environment = "staging", Team = "platform" }
   }
 }
+
+run "k8s_with_ingress_path" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider       = "kubernetes"
+    service              = "deployment"
+    region               = "local"
+    config_json          = jsonencode({})
+    create_load_balancer = true
+    domain_name          = "bifrost.example.com"
+    ingress_path         = "/bifrost"
+    server               = { base_path = "/bifrost" }
+  }
+  assert {
+    condition     = output.health_check_url == "http://bifrost.example.com/bifrost/health"
+    error_message = "the ingress-facing health URL must carry the ingress path prefix"
+  }
+}

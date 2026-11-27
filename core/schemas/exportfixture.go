@@ -27,6 +27,24 @@ const ExportFixtureRawSecret = "BIFROST-RAW-SENTINEL"
 // way the guardrails plugin does. It must never appear in a connector's output.
 const ExportFixturePII = "BIFROST-PII-SENTINEL"
 
+// NewA2AExportFixtureTrace builds synthetic agent content on root, operation and
+// stream events, with raw bodies on the private carrier. Backend tests use it
+// to verify their own formats rather than assuming OTel conversion proves parity.
+func NewA2AExportFixtureTrace() *Trace {
+	now := time.Unix(1700000000, 0).UTC()
+	input := `[{"role":"user","parts":[{"text":"` + ExportFixtureSecret + `"}]}]`
+	output := `[{"role":"agent","parts":[{"text":"` + ExportFixtureSecret + `"}]}]`
+	root := &Span{SpanID: "1111111111111111", Name: "a2a.dispatch", Kind: SpanKindHTTPRequest, StartTime: now, EndTime: now.Add(time.Second), Status: SpanStatusOk, Attributes: map[string]any{AttrInputMessages: input, AttrOutputMessages: output}}
+	op := &Span{SpanID: "2222222222222222", ParentID: root.SpanID, Name: "a2a.send_streaming_message.fixture", Kind: SpanKindA2AOperation, StartTime: now, EndTime: now.Add(time.Second), Status: SpanStatusError, StatusMsg: "Synthetic task failed", Attributes: map[string]any{
+		AttrInputMessages: input, AttrOutputMessages: output, AttrAgentName: "fixture-agent",
+		AttrBifrostA2AOperationName: "SendStreamingMessage", AttrOperationName: OTelOperationNameInvokeAgent,
+		AttrA2ATaskID: "fixture-task", AttrConversationID: "fixture-context", AttrA2ATaskState: "TASK_STATE_FAILED", AttrErrorTypeSpec: "a2a.task.failed",
+	}}
+	op.SetA2ARawPayloads(op.SpanID, &A2ASpanData{RawRequest: ExportFixtureRawSecret, RawResponse: ExportFixtureRawSecret})
+	op.AddEvent(SpanEvent{Name: "a2a.status_update", Timestamp: now, Attributes: map[string]any{AttrOutputMessages: output, AttrA2ATaskState: "TASK_STATE_FAILED"}})
+	return &Trace{TraceID: "0123456789abcdef0123456789abcdef", RequestID: "fixture-request", RootSpan: root, Spans: []*Span{root, op}, StartTime: now, EndTime: now.Add(time.Second)}
+}
+
 // ExportFixtureCost is the cost breakdown the fixture carries. Values are chosen
 // so every category is distinct and non-zero, and so the sides sum to the total
 // and each side's categories sum to that side — a connector's output can be

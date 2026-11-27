@@ -5,11 +5,15 @@ DAC:
   enum:
     - own-data
     - team-data
+    - business-unit-data
+    - customer-data
     - all-data
   description: |
     Data access scope. Determines which rows members of the role can see.
     - `own-data` - Only rows the member personally owns.
     - `team-data` - Own rows plus rows owned by any team they belong to.
+    - `business-unit-data` - Own rows plus rows owned by any business unit they belong to.
+    - `customer-data` - Everything under the customers they reach through their teams or business units.
     - `all-data` - No row filtering.
 
 Role:

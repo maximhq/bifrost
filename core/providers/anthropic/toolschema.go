@@ -23,14 +23,14 @@ type anthropicSchemaBranch struct {
 	additionalPropertiesFalse bool
 }
 
-// normalizeAnthropicToolInputSchema converts root-level JSON Schema
+// NormalizeAnthropicToolInputSchema converts root-level JSON Schema
 // compositions into an object schema accepted by Anthropic. Anthropic accepts
 // composition inside properties, but rejects oneOf, anyOf, and allOf directly
 // on a custom tool's input_schema. Schemas without a root composition take a
 // zero-allocation fast path. Rewrites use a new root and property map while
 // sharing immutable nested definitions, so the caller-owned request is not
 // mutated and large $defs trees are not copied twice before normalization.
-func normalizeAnthropicToolInputSchema(input *schemas.ToolFunctionParameters) (*schemas.ToolFunctionParameters, error) {
+func NormalizeAnthropicToolInputSchema(input *schemas.ToolFunctionParameters) (*schemas.ToolFunctionParameters, error) {
 	if input == nil {
 		return nil, nil
 	}
@@ -99,6 +99,24 @@ func normalizeAnthropicToolInputSchema(input *schemas.ToolFunctionParameters) (*
 	out.AnyOf = nil
 	out.AllOf = nil
 	return out, nil
+}
+
+// withAnthropicObjectRootType returns input with `"type":"object"` at the
+// root when the root has no `type`. Anthropic requires input_schema.type on
+// every custom tool and accepts only "object", so a typeless root — a bare
+// `properties`, `description` or `$ref` object, or a raw `{}` — is sent as an
+// object schema with every other key kept. A root composition never reaches
+// here typeless: normalizeAnthropicToolInputSchema already rewrote it into an
+// object schema. A root with any other `type` is returned unchanged, since
+// rewriting it would change what the client asked for. When it injects the
+// type it writes a shallow copy, so the caller-owned schema is not mutated.
+func withAnthropicObjectRootType(input *schemas.ToolFunctionParameters) *schemas.ToolFunctionParameters {
+	if input == nil || input.Type != "" {
+		return input
+	}
+	out := *input
+	out.Type = "object"
+	return &out
 }
 
 // expandAnthropicSchemaBranch resolves local root references and recursively
