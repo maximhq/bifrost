@@ -2950,6 +2950,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(or $(PROVIDER_ERROR_FIXTURE),$(providerErrorFixture))),--env-var "providerErrorFixture=1",) \
 				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
 				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
@@ -3223,6 +3224,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(or $(PROVIDER_ERROR_FIXTURE),$(providerErrorFixture))),--env-var "providerErrorFixture=1",) \
 				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
 				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
@@ -3288,6 +3290,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(or $(PROVIDER_ERROR_FIXTURE),$(providerErrorFixture))),--env-var "providerErrorFixture=1",) \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
 				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
@@ -3344,6 +3347,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(or $(PROVIDER_ERROR_FIXTURE),$(providerErrorFixture))),--env-var "providerErrorFixture=1",) \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
 				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \

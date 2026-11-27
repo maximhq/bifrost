@@ -352429,7 +352429,7 @@
     },
     {
       "name": "393. FastAPI detail error message propagation (fastapi-detail-error) (#10182)",
-      "description": "Local fixture regression, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. Sends chat completions requests targeting openai/upstream-400-detail, which answers HTTP 400 {\"detail\": \"...\"}, and asserts error.message preserves the FastAPI detail text.",
+      "description": "Local fixture regression, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run make run-provider-harness-test with PROVIDER_ERROR_FIXTURE=1 (or providerErrorFixture=1, or ENV_FILE=/path/to/env.json containing {\"values\":[{\"key\":\"providerErrorFixture\",\"value\":\"1\",\"enabled\":true}]}); every case is skipped otherwise. Sends chat completions requests targeting openai/upstream-400-detail, which answers HTTP 400 {\"detail\": \"...\"}, and asserts error.message preserves the complete FastAPI detail string.",
       "item": [
         {
           "name": "[EXPECT-400] 393.1 openai/upstream-400-detail POST /v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
@@ -352451,9 +352451,11 @@
                 "type": "text/javascript",
                 "exec": [
                   "var j = pm.response.json();",
-                  "pm.test('FastAPI detail error propagates into error.message', function () {",
+                  "var expectedDetail = 'Error: 400 - Bad Request - {\"object\":\"error\",\"message\":\"The input exceeds context length.\",\"type\":\"BadRequestError\",\"code\":400}';",
+                  "pm.test('FastAPI detail error propagates completely into error.message', function () {",
                   "  pm.expect(j.error, pm.response.text()).to.be.an('object');",
-                  "  pm.expect(j.error.message, pm.response.text()).to.be.a('string').and.include('The input exceeds context length.');",
+                  "  pm.expect(j.error.message, pm.response.text()).to.be.a('string');",
+                  "  pm.expect(j.error.message.trim(), pm.response.text()).to.eql(expectedDetail);",
                   "  pm.expect(j.error.message, pm.response.text()).to.not.include('provider API error');",
                   "});"
                 ]
@@ -352505,9 +352507,11 @@
                 "type": "text/javascript",
                 "exec": [
                   "var j = pm.response.json();",
-                  "pm.test('FastAPI detail error propagates into error.message', function () {",
+                  "var expectedDetail = 'Error: 400 - Bad Request - {\"object\":\"error\",\"message\":\"The input exceeds context length.\",\"type\":\"BadRequestError\",\"code\":400}';",
+                  "pm.test('FastAPI detail error propagates completely into error.message', function () {",
                   "  pm.expect(j.error, pm.response.text()).to.be.an('object');",
-                  "  pm.expect(j.error.message, pm.response.text()).to.be.a('string').and.include('The input exceeds context length.');",
+                  "  pm.expect(j.error.message, pm.response.text()).to.be.a('string');",
+                  "  pm.expect(j.error.message.trim(), pm.response.text()).to.eql(expectedDetail);",
                   "  pm.expect(j.error.message, pm.response.text()).to.not.include('provider API error');",
                   "});"
                 ]
