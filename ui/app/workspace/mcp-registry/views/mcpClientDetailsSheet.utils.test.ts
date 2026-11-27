@@ -16,6 +16,7 @@ import {
 	connectionTarget,
 	heroChips,
 	heroRows,
+	initialVKConfigs,
 	mcpGlobalSettings,
 	schemaParams,
 	schemaSummary,
@@ -28,6 +29,34 @@ import {
 
 beforeAll(async () => {
 	await i18n.changeLanguage("en");
+});
+
+describe("initialVKConfigs", () => {
+	it("treats a null tools_to_execute as no tools so the Access tab does not crash", () => {
+		const configs = initialVKConfigs([
+			{ virtual_key_id: "vk-null", virtual_key_name: "No tools key", tools_to_execute: null },
+		] as unknown as MCPClient["vk_configs"]);
+		expect(configs).toHaveLength(1);
+		expect(configs[0].virtual_key_id).toBe("vk-null");
+		expect(configs[0].tools_to_execute).toEqual([]);
+		// The Access tab calls .includes() and .length on this value directly.
+		expect(configs[0].tools_to_execute.includes("*")).toBe(false);
+		expect(configs[0].tools_to_execute.length).toBe(0);
+	});
+
+	it("preserves an explicit tool list and the wildcard unchanged", () => {
+		const configs = initialVKConfigs([
+			{ virtual_key_id: "vk-list", virtual_key_name: "Scoped", tools_to_execute: ["read", "write"] },
+			{ virtual_key_id: "vk-star", virtual_key_name: "All", tools_to_execute: ["*"] },
+			{ virtual_key_id: "vk-empty", virtual_key_name: "Empty", tools_to_execute: [] },
+		] as unknown as MCPClient["vk_configs"]);
+		expect(configs.map((c) => c.tools_to_execute)).toEqual([["read", "write"], ["*"], []]);
+	});
+
+	it("returns an empty list when the client has no virtual-key configs", () => {
+		expect(initialVKConfigs(undefined)).toEqual([]);
+		expect(initialVKConfigs([])).toEqual([]);
+	});
 });
 
 const config = (overrides: Partial<MCPClientConfig> = {}): MCPClientConfig => ({
