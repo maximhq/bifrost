@@ -11622,6 +11622,315 @@
           }
         }
       ]
+    },
+    {
+      "name": "Model listings report the limits of a Bedrock key alias by its model_name",
+      "description": "A bedrock key serves only an alias whose model_id is an application inference profile ARN and whose model_name is anthropic.claude-haiku-4-5-20251001-v1:0. The listing backfills the alias from the key's allow-list, so the placeholder ARN never has to exist and nothing is inferred. GET /v1/models and GET /anthropic/v1/models list the alias with its model_name's context limits; before #9932 neither the alias nor the ARN matched a datasheet row and both listed it without them. Runs on the global standard bedrock provider, since datasheet rows are keyed by standard provider names.",
+      "item": [
+        {
+          "id": "catwiring-bedrock-alias-model-name-01-add-provider",
+          "name": "01. add provider [bedrock-alias-model-name]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [bedrock-alias-model-name]\";",
+                  "pm.test(\"01. add provider [bedrock-alias-model-name]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"bedrock\"}"
+            }
+          }
+        },
+        {
+          "id": "catwiring-bedrock-alias-model-name-02-add-key",
+          "name": "02. add key k1 [bedrock-alias-model-name]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [bedrock-alias-model-name]\";",
+                  "pm.test(\"02. add key k1 [bedrock-alias-model-name]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/bedrock/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "bedrock",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"bedrock-alias-model-name-k1-{{run_id}}\",\"name\":\"catwiring-mc-bedrock-alias-model-name-k1-{{run_id}}\",\"bedrock_key_config\":{\"access_key\":\"env.AWS_ACCESS_KEY_ID\",\"secret_key\":\"env.AWS_SECRET_ACCESS_KEY\",\"region\":\"env.AWS_REGION\"},\"models\":[\"catwiring-bedrock-profile-{{run_id}}\"],\"enabled\":true,\"aliases\":{\"catwiring-bedrock-profile-{{run_id}}\":{\"model_id\":\"arn:aws:bedrock:us-east-1:000000000000:application-inference-profile/catwiring0000\",\"model_name\":\"anthropic.claude-haiku-4-5-20251001-v1:0\"}}}"
+            }
+          }
+        },
+        {
+          "id": "catwiring-bedrock-alias-model-name-03-assert-model-limits",
+          "name": "03. /v1/models lists the alias with its model_name's limits [bedrock-alias-model-name]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));",
+                  "if (attempt === 0) { var __ws = Date.now(); while (Date.now() - __ws < 2000) {} }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [bedrock-alias-model-name]\";",
+                  "function assertNow() {",
+                  "  var wantId = pm.variables.replaceIn(\"bedrock/catwiring-bedrock-profile-{{run_id}}\");",
+                  "  var wantAlias = \"arn:aws:bedrock:us-east-1:000000000000:application-inference-profile/catwiring0000\";",
+                  "  var limitFields = [\"context_length\",\"max_input_tokens\",\"max_output_tokens\"];",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var model = ((pm.response.json() || {}).data || []).filter(function (m) { return m.id === wantId; })[0];",
+                  "  if (!model) { throw new Error(wantId + ' is not listed: ' + pm.response.text().slice(0, 500)); }",
+                  "  if (wantAlias !== null && model.alias !== wantAlias) { throw new Error('alias ' + JSON.stringify(model.alias) + ', want ' + wantAlias); }",
+                  "  limitFields.forEach(function (f) {",
+                  "    if (typeof model[f] !== 'number' || !(model[f] > 0)) { throw new Error('no ' + f + ' on ' + JSON.stringify(model)); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"03. /v1/models lists the alias with its model_name's limits [bedrock-alias-model-name]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"03. /v1/models lists the alias with its model_name's limits [bedrock-alias-model-name]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/models?provider=bedrock",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "catwiring-bedrock-alias-model-name-04-assert-model-limits",
+          "name": "04. /anthropic/v1/models lists the alias with its model_name's limits [bedrock-alias-model-name]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [bedrock-alias-model-name]\";",
+                  "function assertNow() {",
+                  "  var wantId = pm.variables.replaceIn(\"catwiring-bedrock-profile-{{run_id}}\");",
+                  "  var wantAlias = null;",
+                  "  var limitFields = [\"max_input_tokens\",\"max_tokens\"];",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var model = ((pm.response.json() || {}).data || []).filter(function (m) { return m.id === wantId; })[0];",
+                  "  if (!model) { throw new Error(wantId + ' is not listed: ' + pm.response.text().slice(0, 500)); }",
+                  "  if (wantAlias !== null && model.alias !== wantAlias) { throw new Error('alias ' + JSON.stringify(model.alias) + ', want ' + wantAlias); }",
+                  "  limitFields.forEach(function (f) {",
+                  "    if (typeof model[f] !== 'number' || !(model[f] > 0)) { throw new Error('no ' + f + ' on ' + JSON.stringify(model)); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"04. /anthropic/v1/models lists the alias with its model_name's limits [bedrock-alias-model-name]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"04. /anthropic/v1/models lists the alias with its model_name's limits [bedrock-alias-model-name]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-model-provider",
+                "value": "bedrock"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "catwiring-bedrock-alias-model-name-cleanup",
+              "name": "cleanup: delete provider [bedrock-alias-model-name]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [bedrock-alias-model-name]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/bedrock",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "bedrock"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

@@ -43,6 +43,16 @@ const PROVIDERS = [
   { type: "gemini", keyEnv: "GEMINI_API_KEY", modelA: "gemini-2.5-flash", modelB: "gemini-2.5-flash-lite", inferenceModel: "gemini-2.5-flash-lite" },
 ];
 
+// The server's global standard bedrock provider, for a scenario that needs the
+// datasheet: its rows are keyed by standard provider names, so a run-namespaced
+// custom provider is never enriched from it. Its keys carry IAM credentials in
+// bedrock_key_config instead of a value.
+const BEDROCK = {
+  type: "bedrock",
+  standard: true,
+  keyConfig: { bedrock_key_config: { access_key: "env.AWS_ACCESS_KEY_ID", secret_key: "env.AWS_SECRET_ACCESS_KEY", region: "env.AWS_REGION" } },
+};
+
 // --------------------------------------------------------------------------- //
 // Scenario spec helpers
 // --------------------------------------------------------------------------- //
@@ -57,11 +67,11 @@ function key({ id, models = [], blacklisted = [], enabled = true, aliases = {} }
 // Key names and ids must be unique across all providers, so namespace by
 // scenario (which embeds the provider type) + key id + run id. Two same-named
 // keys (e.g. an empty name) collide otherwise.
-function keyBody(k, sid, name, keyEnv) {
+function keyBody(k, sid, name, provider) {
   const out = {
     id: keyId(sid, k.id),
     name,
-    value: `env.${keyEnv}`,
+    ...(provider.keyConfig || { value: `env.${provider.keyEnv}` }),
     models: [...k.models],
     enabled: k.enabled,
   };
@@ -151,6 +161,26 @@ function baseModelsAssertLines(target) {
   ];
 }
 
+// One key alias's row on a models route and the context limits the catalog
+// enriched it with. /v1/models lists provider-prefixed ids, reports the
+// alias's model_id as `alias` and carries context_length; /anthropic/v1/models
+// lists bare ids and names the output limit max_tokens.
+function modelLimitsAssertLines(provider, route, alias, aliasModelId) {
+  const anthropic = route === "anthropic";
+  return [
+    `var wantId = pm.variables.replaceIn(${JSON.stringify(anthropic ? alias : `${provider}/${alias}`)});`,
+    `var wantAlias = ${anthropic ? "null" : JSON.stringify(aliasModelId)};`,
+    `var limitFields = ${JSON.stringify(anthropic ? ["max_input_tokens", "max_tokens"] : ["context_length", "max_input_tokens", "max_output_tokens"])};`,
+    "if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code + ' body ' + pm.response.text()); }",
+    "var model = ((pm.response.json() || {}).data || []).filter(function (m) { return m.id === wantId; })[0];",
+    "if (!model) { throw new Error(wantId + ' is not listed: ' + pm.response.text().slice(0, 500)); }",
+    "if (wantAlias !== null && model.alias !== wantAlias) { throw new Error('alias ' + JSON.stringify(model.alias) + ', want ' + wantAlias); }",
+    "limitFields.forEach(function (f) {",
+    "  if (typeof model[f] !== 'number' || !(model[f] > 0)) { throw new Error('no ' + f + ' on ' + JSON.stringify(model)); }",
+    "});",
+  ];
+}
+
 function inferenceAssertLines(resolvedModel) {
   return [
     "if (pm.response.code !== 200) { throw new Error('inference status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -168,7 +198,7 @@ function inferenceAssertLines(resolvedModel) {
 function expandScenario(sc) {
   const sid = sc.id;
   const provider = sc.provider;
-  const seg = providerSeg(sid);
+  const seg = provider.standard ? provider.type : providerSeg(sid);
   const cleanupName = `cleanup: delete provider [${sid}]`;
   const items = [];
   let counter = 0;
@@ -181,7 +211,7 @@ function expandScenario(sc) {
     return item(
       nextId("add-key"),
       name,
-      request("POST", url(["api", "providers", seg, "keys"]), keyBody(k, sid, keyName(sid, k.id), provider.keyEnv)),
+      request("POST", url(["api", "providers", seg, "keys"]), keyBody(k, sid, keyName(sid, k.id), provider)),
       events(null, mutationTest(name, [200, 201], cleanupName))
     );
   };
@@ -191,7 +221,8 @@ function expandScenario(sc) {
       case "addProvider": {
         const customProviderConfig = { base_provider_type: provider.type, is_key_less: !!step.keyless };
         if (step.allowedRequests) customProviderConfig.allowed_requests = step.allowedRequests;
-        const body = { provider: seg, custom_provider_config: customProviderConfig };
+        // A standard provider takes no custom_provider_config: the handler rejects one on a standard name.
+        const body = provider.standard ? { provider: seg } : { provider: seg, custom_provider_config: customProviderConfig };
         if (step.baseUrl) body.network_config = { base_url: step.baseUrl };
         const name = uniq("add provider");
         items.push(item(nextId("add-provider"), name, request("POST", url(["api", "providers"]), body),
@@ -205,7 +236,7 @@ function expandScenario(sc) {
       case "updateKey": {
         const name = uniq("update key " + step.key.id);
         items.push(item(nextId("update-key"), name,
-          request("PUT", url(["api", "providers", seg, "keys", keyId(sid, step.key.id)]), keyBody(step.key, sid, keyName(sid, step.key.id), provider.keyEnv)),
+          request("PUT", url(["api", "providers", seg, "keys", keyId(sid, step.key.id)]), keyBody(step.key, sid, keyName(sid, step.key.id), provider)),
           events(null, mutationTest(name, [200], cleanupName))));
         break;
       }
@@ -255,6 +286,15 @@ function expandScenario(sc) {
         const query = [{ key: "query", value: step.model }, { key: "limit", value: "1000" }];
         items.push(item(nextId("assert-base-models"), name, request("GET", url(["api", "models", "base"], query), null),
           events(pollPrerequest(step.waitSeconds), pollTest(name, baseModelsAssertLines(step.model), cleanupName))));
+        break;
+      }
+      case "assertModelLimits": {
+        const name = uniq(step.label);
+        const req = step.route === "anthropic"
+          ? request("GET", url(["anthropic", "v1", "models"]), null, [{ key: "anthropic-version", value: "2023-06-01" }, { key: "x-bf-model-provider", value: seg }])
+          : request("GET", url(["v1", "models"], [{ key: "provider", value: seg }]), null);
+        items.push(item(nextId("assert-model-limits"), name, req,
+          events(pollPrerequest(step.waitSeconds), pollTest(name, modelLimitsAssertLines(seg, step.route, step.alias, step.aliasModelId), cleanupName))));
         break;
       }
       case "assertInference": {
@@ -489,6 +529,45 @@ const GLOBAL_SCENARIOS = [
       { type: "assertModels", empty: true, waitSeconds: 4, label: "wildcard key surfaces nothing without discovery" },
       { type: "addKey", key: key({ id: "k2", models: [PROVIDERS[0].modelB] }) },
       { type: "assertModels", subset: [PROVIDERS[0].modelB], waitSeconds: 2, label: "explicit allow-list still surfaces" },
+      { type: "cleanup" },
+    ],
+  },
+  // An alias whose model_id is an opaque provider id names its model only through
+  // model_name, which list-models enrichment has to resolve as pricing does (#9932).
+  {
+    id: "bedrock-alias-model-name",
+    title: "Model listings report the limits of a Bedrock key alias by its model_name",
+    description:
+      "A bedrock key serves only an alias whose model_id is an application inference profile ARN and whose " +
+      "model_name is anthropic.claude-haiku-4-5-20251001-v1:0. The listing backfills the alias from the key's " +
+      "allow-list, so the placeholder ARN never has to exist and nothing is inferred. GET /v1/models and " +
+      "GET /anthropic/v1/models list the alias with its model_name's context limits; before #9932 neither the " +
+      "alias nor the ARN matched a datasheet row and both listed it without them. Runs on the global standard " +
+      "bedrock provider, since datasheet rows are keyed by standard provider names.",
+    provider: BEDROCK,
+    steps: [
+      {
+        type: "addProvider",
+        keys: [key({
+          id: "k1",
+          models: ["catwiring-bedrock-profile-{{run_id}}"],
+          aliases: {
+            "catwiring-bedrock-profile-{{run_id}}": {
+              model_id: "arn:aws:bedrock:us-east-1:000000000000:application-inference-profile/catwiring0000",
+              model_name: "anthropic.claude-haiku-4-5-20251001-v1:0",
+            },
+          },
+        })],
+      },
+      {
+        type: "assertModelLimits",
+        route: "v1",
+        alias: "catwiring-bedrock-profile-{{run_id}}",
+        aliasModelId: "arn:aws:bedrock:us-east-1:000000000000:application-inference-profile/catwiring0000",
+        waitSeconds: 2,
+        label: "/v1/models lists the alias with its model_name's limits",
+      },
+      { type: "assertModelLimits", route: "anthropic", alias: "catwiring-bedrock-profile-{{run_id}}", label: "/anthropic/v1/models lists the alias with its model_name's limits" },
       { type: "cleanup" },
     ],
   },

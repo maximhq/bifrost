@@ -24,6 +24,10 @@ const routingWiring = JSON.parse(
   readFileSync(join(here, "bifrost-routing-wiring.postman_collection.json"), "utf8"),
 );
 
+const catalogWiring = JSON.parse(
+  readFileSync(join(here, "bifrost-model-catalog-wiring.postman_collection.json"), "utf8"),
+);
+
 // Locate a request by "Folder / Request Name" and return one of its scripts.
 function scriptFor(path, listen, source = collection) {
   const wanted = path.split(" / ");
@@ -1156,6 +1160,41 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
     variables: { replaceIn: (v) => v.split("{{run_id}}").join("run7") },
   };
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
+});
+
+// Each models route names the alias's row and its output limit its own way: /v1/models lists
+// bedrock/<alias> with max_output_tokens and the profile ARN as alias, /anthropic/v1/models lists the
+// bare alias with max_tokens. A check reading the other route's field would pass on neither or both.
+test("catalog-wiring: the Bedrock alias limit checks read each route's own row and fields", () => {
+  const folder = catalogWiring.item.find((item) => item.name.startsWith("Model listings report the limits of a Bedrock key alias"));
+  assert.ok(folder, "no catalog-wiring Bedrock alias scenario");
+  const checks = folder.item.filter((item) => !item.item && / lists the alias /.test(item.name));
+  assert.strictEqual(checks.length, 2);
+  const arn = "arn:aws:bedrock:us-east-1:000000000000:application-inference-profile/catwiring0000";
+  const assertNow = (item, model) => {
+    const src = listenScript(item, "test");
+    const body = src.slice(src.indexOf("function assertNow() {") + "function assertNow() {".length, src.indexOf("\n}\nvar ok = true"));
+    const responseBody = JSON.stringify({ data: [model] });
+    const pm = {
+      response: { code: 200, text: () => responseBody, json: () => JSON.parse(responseBody) },
+      variables: { replaceIn: (v) => v.split("{{run_id}}").join("run7") },
+    };
+    new Function("pm", body)(pm);
+  };
+  const [v1, anthropic] = checks;
+  assert.match(v1.request.url.raw, /\/v1\/models\?provider=bedrock$/);
+  assert.match(anthropic.request.url.raw, /\/anthropic\/v1\/models$/);
+  const v1Row = { id: "bedrock/catwiring-bedrock-profile-run7", alias: arn, context_length: 200000, max_input_tokens: 200000, max_output_tokens: 64000 };
+  assertNow(v1, v1Row);
+  assert.throws(() => assertNow(v1, { ...v1Row, context_length: undefined }), /no context_length/);
+  assert.throws(() => assertNow(v1, { ...v1Row, max_input_tokens: undefined, max_output_tokens: undefined }), /no max_input_tokens/);
+  assert.throws(() => assertNow(v1, { ...v1Row, max_output_tokens: undefined, max_tokens: 64000 }), /no max_output_tokens/);
+  assert.throws(() => assertNow(v1, { ...v1Row, alias: "anthropic.claude-haiku-4-5-20251001-v1:0" }), /alias/);
+  assert.throws(() => assertNow(v1, { ...v1Row, id: "catwiring-bedrock-profile-run7" }), /is not listed/);
+  const anthropicRow = { id: "catwiring-bedrock-profile-run7", max_input_tokens: 200000, max_tokens: 64000 };
+  assertNow(anthropic, anthropicRow);
+  assert.throws(() => assertNow(anthropic, { ...anthropicRow, max_tokens: undefined, max_output_tokens: 64000 }), /no max_tokens/);
+  assert.throws(() => assertNow(anthropic, { ...anthropicRow, max_input_tokens: 0 }), /no max_input_tokens/);
 });
 
 // Execute the collection's own folder scripts, not a copied implementation.
