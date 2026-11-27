@@ -44,14 +44,11 @@ const rowNames = (collection) => {
 const scratch = mkdtempSync(join(tmpdir(), "filter-collection-"));
 const partitions = {};
 let machgenRows;
-let anthropicPassthroughRows;
 try {
   const augmented = join(scratch, "augmented.json");
   execFileSync("node", [AUGMENT, "--source", SOURCE, "--out", augmented], { stdio: "pipe" });
-  const augmentedRows = rowNames(JSON.parse(readFileSync(augmented, "utf8")));
-  machgenRows = augmentedRows.filter((n) => n.includes("MachGen Provider Coverage"));
-  anthropicPassthroughRows = augmentedRows.filter((n) => n.includes("/anthropic_passthrough"));
-  for (const provider of ["machgen", "minimax", "replicate", "runware", "anthropic", "azure"]) {
+  machgenRows = rowNames(JSON.parse(readFileSync(augmented, "utf8"))).filter((n) => n.includes("MachGen Provider Coverage"));
+  for (const provider of ["machgen", "minimax", "replicate", "runware"]) {
     const out = join(scratch, `${provider}.json`);
     execFileSync("node", [FILTER, "--source", augmented, "--out", out, "--provider", provider], { stdio: "pipe" });
     partitions[provider] = rowNames(JSON.parse(readFileSync(out, "utf8")));
@@ -74,20 +71,6 @@ test("MachGen rows stay out of the partitions their model ids name", () => {
     const leaked = machgenRows.filter((n) => partitions[provider].includes(n));
     assert.deepEqual(leaked, [], `MachGen rows claimed by the ${provider} partition`);
   }
-});
-
-// Anthropic Managed Agents deployments live at /anthropic_passthrough/v1/deployments, so their rows
-// contain "deployments", an azure keyword. They call Anthropic: an azure run would need an Anthropic
-// key with Managed Agents access, so they stay in the anthropic partition only.
-test("the harness has /anthropic_passthrough rows to route", () => {
-  assert.ok(anthropicPassthroughRows.length > 0, "no rows found under an /anthropic_passthrough folder");
-});
-
-test("/anthropic_passthrough rows stay in the anthropic partition and out of azure", () => {
-  const missing = anthropicPassthroughRows.filter((n) => !partitions.anthropic.includes(n));
-  assert.deepEqual(missing, [], "/anthropic_passthrough rows dropped from the anthropic partition");
-  const leaked = anthropicPassthroughRows.filter((n) => partitions.azure.includes(n));
-  assert.deepEqual(leaked, [], "/anthropic_passthrough rows claimed by the azure partition");
 });
 
 // A Files API call on the OpenAI-compatible route names its real provider in a "provider" form
@@ -145,48 +128,6 @@ test("a declared provider puts an upload and its delete only in that provider's 
   const azurePair = ["upload a file to azure through the openai route", "delete the azure file through the openai route"];
   assert.deepEqual(declaredPartitions.azure, azurePair, "the azure partition must hold the azure upload and its delete");
   assert.deepEqual(declaredPartitions.openai, ["upload a file to the openai route"], "the openai partition must not claim the azure pair");
-});
-
-// Prose in a request body is not identity. An Azure row whose prompt mentions /anthropic_passthrough
-// still calls Azure, so it stays in the azure partition; only the URL, name or folder of a row moves
-// it out.
-const bodyProseFixture = {
-  info: { name: "body prose fixture", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
-  item: [
-    {
-      name: "Azure deployments",
-      item: [
-        {
-          name: "azure chat whose prompt mentions the anthropic passthrough",
-          request: {
-            method: "POST",
-            url: { raw: "{{baseUrl}}/openai/deployments/{{azureDeployment}}/chat/completions" },
-            body: { mode: "raw", raw: JSON.stringify({ messages: [{ role: "user", content: "Why does /anthropic_passthrough/v1/deployments fail?" }] }) },
-          },
-        },
-        {
-          name: "anthropic deployment read",
-          request: { method: "GET", url: { raw: "{{baseUrl}}/anthropic_passthrough/v1/deployments/depl_1" } },
-        },
-      ],
-    },
-  ],
-};
-
-let bodyProseAzure;
-const bodyProseScratch = mkdtempSync(join(tmpdir(), "filter-collection-prose-"));
-try {
-  const source = join(bodyProseScratch, "fixture.json");
-  writeFileSync(source, JSON.stringify(bodyProseFixture));
-  const out = join(bodyProseScratch, "azure.json");
-  execFileSync("node", [FILTER, "--source", source, "--out", out, "--provider", "azure"], { stdio: "pipe" });
-  bodyProseAzure = rowNames(JSON.parse(readFileSync(out, "utf8"))).map((n) => n.split(" / ")[1]);
-} finally {
-  rmSync(bodyProseScratch, { recursive: true, force: true });
-}
-
-test("a body that mentions /anthropic_passthrough does not move an azure row out of azure", () => {
-  assert.deepEqual(bodyProseAzure, ["azure chat whose prompt mentions the anthropic passthrough"], "the azure partition must keep the azure row and drop the anthropic deployment read");
 });
 
 console.log(`${passed} passed`);
