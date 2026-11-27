@@ -1,0 +1,71 @@
+---
+title: "5dive"
+description: "Route a 5dive team of always-on Claude Code agents through Bifrost, with one command per team."
+icon: "users"
+---
+
+[5dive](https://github.com/5dive-ai/5dive) runs a team of long-running AI agents
+on a server you own: each agent is a Claude Code (or Codex, OpenCode, Pi) seat
+with its own Unix user, chat channel and task queue. Pointing the team at Bifrost
+sends every agent's model traffic through your gateway, so you get one place for
+keys, budgets, failover and logs across the whole team.
+
+5dive is not a CLI you launch per session, so there is nothing for
+`bifrost run` to start. You set Bifrost once, on the 5dive server, and every
+agent bound to that sign-in uses it.
+
+<Note>
+If your Allowed Headers are not `*`, keep `Authorization` and `X-Api-Key`
+allowed: 5dive's Claude Code seats send the key the same way Claude Code does.
+</Note>
+
+## Setup
+
+### 1. Install 5dive
+
+```bash
+curl -fsSL https://install.5dive.ai | sudo bash
+```
+
+### 2. Point a sign-in at Bifrost
+
+5dive keeps credentials in named auth profiles. Create one for Bifrost, giving
+it Bifrost's Anthropic-compatible endpoint (the root URL, no `/v1`) and a Bifrost
+virtual key. The key is read from stdin, so it never shows in `ps` or shell
+history:
+
+```bash
+printf '%s\n' "$BIFROST_VIRTUAL_KEY" | sudo 5dive agent auth set claude \
+  --provider=openai \
+  --base-url=https://bifrost.example.com/anthropic \
+  --api-key=- \
+  --auth-profile=bifrost \
+  --model=anthropic/claude-sonnet-4-6
+```
+
+- `--provider=openai` is 5dive's id for "a custom Anthropic-compatible
+  endpoint". `--base-url` is refused without it.
+- `--model` is required: use any provider-qualified model your Bifrost
+  configuration serves.
+
+The agents already bound to the `bifrost` profile restart on the new settings.
+
+### 3. Move agents onto it
+
+```bash
+sudo 5dive agent config <agent> set auth-profile=bifrost
+```
+
+Each agent can also pin its own model, and that pin wins over the profile's.
+Set it per agent with `sudo 5dive agent config <agent> set model=<id>`.
+
+## Check it works
+
+Send any agent a message (Telegram, the 5dive app, or `5dive agent send <agent> "hi"`),
+then open **Logs** in the Bifrost dashboard: the request shows up with the
+virtual key you gave the profile.
+
+## Learn more
+
+- [5dive on GitHub](https://github.com/5dive-ai/5dive)
+- [Claude Code with Bifrost](/cli-agents/claude-code): the per-session setup this builds on
