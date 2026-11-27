@@ -148,6 +148,7 @@ type ClientConfig struct {
 	EntityAccessProfileMode                 tables.EntityAccessProfileMode        `json:"entity_access_profile_mode,omitempty"`          // Enterprise: "union" (default) or "intersect" combination of team, business unit and customer access profiles with a caller's own access
 	HiddenRequestTypes                      []string                              `json:"hidden_request_types,omitempty"`                // Request types excluded from dashboard and log API reads; logs are still written
 	UsageEstimationTokenizers               []string                              `json:"usage_estimation_tokenizers,omitempty"`         // Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to estimate a cancelled stream's usage; empty uses only o200k_base/cl100k_base
+	DisableUsageEstimation                  bool                                  `json:"disable_usage_estimation,omitempty"`            // Bill a cancelled or timed-out stream only the usage its provider reported, never an estimate
 	RoutingChainMaxDepth                    int                                   `json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                    *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`             // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	MCPClientMetadataURL                    *schemas.SecretVar                    `json:"mcp_client_metadata_url,omitempty"`             // Full URL where Bifrost's Client ID Metadata Document is hosted; empty serves it under mcp_external_client_url
@@ -511,6 +512,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 		hash.Write([]byte("usageEstimationTokenizers:"))
 		hash.Write(data)
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.DisableUsageEstimation {
+		hash.Write([]byte("disableUsageEstimation:true"))
 	}
 
 	// Hash RequiredHeaders (sorted for deterministic hashing)

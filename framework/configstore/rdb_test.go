@@ -3212,6 +3212,77 @@ func TestGenerateClientConfigHash_UsageEstimationTokenizers(t *testing.T) {
 	assert.Equal(t, hash([]string{"anthropic", "llama3"}), hash([]string{"llama3", "anthropic"}), "order must not change the hash")
 }
 
+func TestUpdateClientConfig_DisableUsageEstimationRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	save := func(disable bool) {
+		require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{
+			EnableLogging:          new(true),
+			InitialPoolSize:        100,
+			LogRetentionDays:       30,
+			MaxRequestBodySizeMB:   50,
+			DisableUsageEstimation: disable,
+		}))
+	}
+
+	save(true)
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.DisableUsageEstimation)
+
+	save(false)
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.DisableUsageEstimation, "turning it back off must persist")
+}
+
+// A database whose config_client predates disable_usage_estimation already holds a row. The
+// migration must add the column without touching that row, leave estimation on for it, and
+// be a no-op when run again.
+func TestMigrationAddClientConfigDisableUsageEstimationColumn_ExistingRow(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	db := store.DB()
+	const column = "disable_usage_estimation"
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      137,
+		LogRetentionDays:     45,
+		MaxRequestBodySizeMB: 50,
+	}))
+	require.NoError(t, db.Exec("ALTER TABLE config_client DROP COLUMN "+column).Error)
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, column), "precondition: the old table has no such column")
+
+	require.NoError(t, migrationAddClientConfigDisableUsageEstimationColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, column))
+
+	existing, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, existing, "the pre-migration row is still readable")
+	assert.Equal(t, 137, existing.InitialPoolSize, "the row's other settings survive the migration")
+	assert.False(t, existing.DisableUsageEstimation, "an upgraded row keeps estimation on")
+
+	existing.DisableUsageEstimation = true
+	require.NoError(t, store.UpdateClientConfig(ctx, existing))
+	require.NoError(t, migrationAddClientConfigDisableUsageEstimationColumn(ctx, db, testMigrationLogger), "a second run is a no-op")
+	again, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, again.DisableUsageEstimation, "a second run leaves the stored value")
+}
+
+func TestGenerateClientConfigHash_DisableUsageEstimation(t *testing.T) {
+	hash := func(disable bool) string {
+		h, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, DisableUsageEstimation: disable}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	baseHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, hash(false), "the default must not change existing hashes")
+	assert.NotEqual(t, baseHash, hash(true))
+}
+
 func TestGenerateClientConfigHash_MCPCodeModeLimits(t *testing.T) {
 	hash := func(limits *schemas.MCPCodeModeLimits) string {
 		h, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, MCPCodeModeLimits: limits}).GenerateClientConfigHash()

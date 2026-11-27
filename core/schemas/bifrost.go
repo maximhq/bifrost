@@ -47,6 +47,7 @@ type BifrostConfig struct {
 	MCPPerUserDiscoveryStore MCPDiscoveryStore
 
 	UsageEstimationTokenizers []string // Tokenizer families for cancelled-stream usage estimation; process-wide, see streamusage.Configure
+	DisableUsageEstimation    bool     // If true, a cancelled or timed-out stream is billed only the usage its provider reported, never an estimate
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.

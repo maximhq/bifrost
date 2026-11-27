@@ -23,3 +23,4 @@
 - fix: jobaccounting - Seedance video settlements record output tokens
 - fix: openapimcp - every tool argument gets a name clients accept
 - chore: upgraded Go to 1.27.4 and core to v1.16.0
+- feat: configstore - `disable_usage_estimation` client setting and its `config_client` column

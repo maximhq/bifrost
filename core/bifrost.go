@@ -164,6 +164,7 @@ type Bifrost struct {
 	mcpFactoryMu               sync.Mutex                            // Orders factory registration against lazy MCP manager creation
 	mcpDiscoveryChangeCallback mcpDiscoveryChangeFunc                // Installed on a lazily created or injected manager; guarded by mcpFactoryMu
 	dropExcessRequests         atomic.Bool                           // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	disableUsageEstimation     atomic.Bool                           // If true, a cancelled or timed-out stream is billed only the usage its provider reported.
 	keySelector                schemas.KeySelector                   // Custom key selector function
 	keyPoolFilter              schemas.KeyPoolFilter                 // optional hook to veto keys before selection (nil = all eligible)
 	sessionAffinity            schemas.SessionAffinity               // decides which route and key a session stays on; nil when none is configured
@@ -348,6 +349,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	bifrost.providers.Store(&[]schemas.Provider{})
 
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	bifrost.disableUsageEstimation.Store(config.DisableUsageEstimation)
 	bifrost.configureUsageEstimationTokenizers(config.UsageEstimationTokenizers)
 
 	if bifrost.keySelector == nil {
@@ -525,6 +527,7 @@ func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	bifrost.disableUsageEstimation.Store(config.DisableUsageEstimation)
 	bifrost.configureUsageEstimationTokenizers(config.UsageEstimationTokenizers)
 	return nil
 }
@@ -8620,7 +8623,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						return nil, err
 					}
 					if err != nil {
-						streamusage.Estimate(ctx, &schemas.BifrostRequest{ChatRequest: attemptChat, ResponsesRequest: attemptResponses, TextCompletionRequest: attemptText}, attemptResolvedModel, err)
+						if bifrost.disableUsageEstimation.Load() {
+							streamusage.KeepReported(ctx, err)
+						} else {
+							streamusage.Estimate(ctx, &schemas.BifrostRequest{ChatRequest: attemptChat, ResponsesRequest: attemptResponses, TextCompletionRequest: attemptText}, attemptResolvedModel, err)
+						}
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {
