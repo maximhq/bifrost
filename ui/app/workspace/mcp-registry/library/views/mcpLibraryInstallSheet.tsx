@@ -34,7 +34,9 @@ interface MCPLibraryInstallSheetProps {
 	onInstalled: () => void;
 }
 
-const emptySecretVar: SecretVar = { value: "", ref: "" };
+function emptyHeaders(keys: string[]): Record<string, SecretVar> {
+	return Object.fromEntries(keys.map((key) => [key, { value: "", ref: "" }]));
+}
 
 /**
  * Sanitize a catalog server name into a valid MCP client name. The backend
@@ -61,9 +63,7 @@ function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
 	const isStdio = server.connection_type === "stdio";
 	// A header-auth entry declares which header names it needs; prefill them as
 	// empty rows so the installer only has to fill in values.
-	const declaredHeaders = server.required_header_keys?.length
-		? Object.fromEntries(server.required_header_keys.map((key) => [key, { ...emptySecretVar }]))
-		: { Authorization: { ...emptySecretVar } };
+	const headerKeys = server.required_header_keys?.length ? server.required_header_keys : ["Authorization"];
 
 	return {
 		name: sanitizeServerName(server.name),
@@ -78,7 +78,7 @@ function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
 		// not validate auth_type against connection_type, so an entry can still
 		// declare one; ignore it rather than seeding state nothing can edit.
 		auth_type: isStdio ? "none" : authType,
-		headers: shouldSeedHeaders(authType, isStdio) ? declaredHeaders : undefined,
+		headers: shouldSeedHeaders(authType, isStdio) ? emptyHeaders(headerKeys) : undefined,
 	};
 }
 
@@ -122,7 +122,10 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 
 	const authType = watch("auth_type") || "none";
 	const headers = watch("headers");
-	const headersValidationError = getHeadersValidationError(headers);
+	// Keep untouched suggestions out of form state so switching back to OAuth drops them.
+	const suggestedHeaders =
+		authType === "headers" && !headers && server.required_header_keys?.length ? emptyHeaders(server.required_header_keys) : undefined;
+	const headersValidationError = getHeadersValidationError(headers ?? suggestedHeaders);
 
 	const isStdio = server.connection_type === "stdio";
 	// Only the names the entry declares are editable as values; an entry with no
@@ -309,6 +312,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 								form={methods}
 								satellites={satellites}
 								headersValidationError={headersValidationError}
+								suggestedHeaders={suggestedHeaders}
 								lockConnection
 								stdioEnvKeys={stdioEnvKeys}
 							/>

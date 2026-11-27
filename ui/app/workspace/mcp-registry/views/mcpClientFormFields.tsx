@@ -607,6 +607,7 @@ interface MCPClientFormFieldsProps {
 	form: UseFormReturn<CreateMCPClientRequest>;
 	satellites: MCPClientFormSatellites;
 	headersValidationError: string | null;
+	suggestedHeaders?: CreateMCPClientRequest["headers"];
 	/**
 	 * Renders the transport, target, and STDIO launch command read-only. Set by
 	 * the install sheet, where those values come from the library entry rather
@@ -620,7 +621,14 @@ interface MCPClientFormFieldsProps {
 	stdioEnvKeys?: string[];
 }
 
-export function MCPClientFormFields({ form, satellites, headersValidationError, lockConnection, stdioEnvKeys }: MCPClientFormFieldsProps) {
+export function MCPClientFormFields({
+	form,
+	satellites,
+	headersValidationError,
+	suggestedHeaders,
+	lockConnection,
+	stdioEnvKeys,
+}: MCPClientFormFieldsProps) {
 	const { t } = useTranslation("mcp");
 	const { control, setValue, watch, clearErrors } = form;
 	const connectionType = watch("connection_type");
@@ -1071,7 +1079,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 									render={({ field }) => (
 										<FormItem data-testid="mcp-headers-table">
 											<HeadersTable
-												value={field.value || {}}
+												value={field.value ?? suggestedHeaders ?? {}}
 												onChange={field.onChange}
 												keyPlaceholder={t("registry.form.headerName")}
 												valuePlaceholder={t("registry.form.headerValue")}
