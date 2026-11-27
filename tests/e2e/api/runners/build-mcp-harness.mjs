@@ -7974,6 +7974,52 @@ const FAIL24 = folder("FAIL-24 State filter and failure record shape", "Setup: a
   deleteClient("FAIL-24", "fail-24-h"), deleteClient("FAIL-24", "fail-24-u"),
 ]);
 
+// toolsListMethods is a fleet server's tools/list count, read from its control response.
+const toolsListMethods = "((pm.response.json().counters.methods || {})['tools/list'] || 0)";
+const toolsListAtMost = (varName, n) => A.custom(`at most ${n} tools/list since the fault`, [
+  `pm.expect(${toolsListMethods} - Number(pm.collectionVariables.get(${lit(varName)})), 'body: ' + pm.response.text()).to.be.within(1, ${n});`,
+]);
+const failureMentions = (text) => A.custom(`last_failure.message mentions ${lit(text)}`, [
+  `pm.expect((pm.response.json().clients[0].last_failure || {}).message, 'body: ' + pm.response.text()).to.include(${lit(text)});`,
+]);
+const noLastFailure = A.custom("there is no last_failure", ["pm.expect(pm.response.json().clients[0].last_failure == null, 'body: ' + pm.response.text()).to.equal(true);"]);
+
+// A health check owns its retries: each of its four probe attempts sends one tools/list, so a failing tools/list
+// marks the client unstable a few seconds into the check instead of after the connect-time retry schedule ran
+// inside every attempt (about 23s).
+const FAIL29 = folder("FAIL-29 A failing tools/list in a sticky client's health check", "Setup: alpha (echo_tool, add_tool) as client fail-29-a, sticky, tools_to_execute [\"*\"], tool_sync_interval \"5s\", healthy; then alpha fails every list method (list_fail), then the fault clears.", [
+  ...freshServer("FAIL-29", "alpha", ["echo_tool", "add_tool"]),
+  createClient("FAIL-29", httpClient("fail-29-a", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"], tool_sync_interval: "5s" }), "setup: create the sticky client, checked every 5s"),
+  getClient("FAIL-29", "fail-29-a", "setup: the client is healthy", [clientState("healthy")]),
+  mockGet("FAIL-29", "alpha", "setup: record alpha's tools/list count", [], ["pm.collectionVariables.set('fail29_lists', " + toolsListMethods + ");"]),
+  mockPost("FAIL-29", "alpha", "faults", "setup: alpha fails every tools/list", { faults: { list_fail: true } }),
+  getClient("FAIL-29", "fail-29-a", "the health check marks the client unstable at stage list_tools within 14s, keeping its tools",
+    [clientState("unstable"), clientField("last_failure.stage", "list_tools"), failureMentions("tools/list failed (injected)"), toolNamesAre(["add_tool", "echo_tool"])],
+    { pre: waitForClient("fail-29-a", "c.state === 'unstable'", 56) }),
+  mockGet("FAIL-29", "alpha", "the check sent one tools/list per probe attempt: four, plus at most three from the reconnect it started", [toolsListAtMost("fail29_lists", 7)]),
+  mockPost("FAIL-29", "alpha", "faults/clear", "setup: alpha answers tools/list again"),
+  getClient("FAIL-29", "fail-29-a", "the client recovers within 60s and its failure record is cleared", [clientState("healthy"), noLastFailure, toolNamesAre(["add_tool", "echo_tool"])],
+    { pre: waitForClient("fail-29-a", "c.state === 'healthy'", 240) }),
+  deleteClient("FAIL-29", "fail-29-a"),
+]);
+
+// The same for a per-call client, whose health check dials a fresh connection for each probe attempt.
+const FAIL30 = folder("FAIL-30 A failing tools/list in a per-call client's health check", "Setup: alpha (echo_tool, add_tool) as client fail-30-a, per call, tools_to_execute [\"*\"], tool_sync_interval \"5s\", healthy; then alpha fails every list method (list_fail), then the fault clears.", [
+  ...freshServer("FAIL-30", "alpha", ["echo_tool", "add_tool"]),
+  createClient("FAIL-30", httpClient("fail-30-a", "alpha", "alpha", { tools_to_execute: ["*"], tool_sync_interval: "5s" }), "setup: create the per-call client, checked every 5s"),
+  getClient("FAIL-30", "fail-30-a", "setup: the client is healthy", [clientState("healthy")]),
+  mockGet("FAIL-30", "alpha", "setup: record alpha's tools/list count", [], ["pm.collectionVariables.set('fail30_lists', " + toolsListMethods + ");"]),
+  mockPost("FAIL-30", "alpha", "faults", "setup: alpha fails every tools/list", { faults: { list_fail: true } }),
+  getClient("FAIL-30", "fail-30-a", "the health check marks the client unstable at stage tool_discovery within 14s",
+    [clientState("unstable"), clientField("last_failure.stage", "tool_discovery"), failureMentions("tools/list failed (injected)")],
+    { pre: waitForClient("fail-30-a", "c.state === 'unstable'", 56) }),
+  mockGet("FAIL-30", "alpha", "the check sent one tools/list per probe attempt", [toolsListAtMost("fail30_lists", 5)]),
+  mockPost("FAIL-30", "alpha", "faults/clear", "setup: alpha answers tools/list again"),
+  getClient("FAIL-30", "fail-30-a", "the client recovers within 30s and its failure record is cleared", [clientState("healthy"), noLastFailure],
+    { pre: waitForClient("fail-30-a", "c.state === 'healthy'", 120) }),
+  deleteClient("FAIL-30", "fail-30-a"),
+]);
+
 const SET18 = folder("SET-18 Disable a sticky client", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; then PUT disabled true.", [
   ...setClient("SET-18", { needs_session_stickiness: true }),
   request("SET-18", "PUT disabled true", "PUT", "/api/mcp/client/set-18-a", { body: { disabled: true }, asserts: [A.status(200)] }),
@@ -8032,7 +8078,8 @@ const GO18 = folder("GO-18 Automatic STDIO respawn", "Setup: alpha (echo_tool, a
     "pm.expect(pid, 'body: ' + pm.response.text()).to.be.above(0);",
     "pm.expect(pid).to.not.equal(Number(pm.collectionVariables.get('go18_pid')));",
   ])], waitForNewPid("alpha", "go18_pid")),
-  request("GO-18", "the client is healthy within 30s", "GET", "/api/mcp/clients?server=go18-c", { pre: waitForClient("go18-c", "c.state === 'healthy'", 120), asserts: [A.status(200), clientState("healthy")] }),
+  request("GO-18", "the client is healthy within 30s", "GET", "/api/mcp/clients?server=go18-c", { pre: waitForClient("go18-c", "c.state === 'healthy'", 120), asserts: [A.status(200), clientState("healthy"),
+    A.custom("there is no last_failure", ["pm.expect(pm.response.json().clients[0].last_failure == null, 'body: ' + pm.response.text()).to.equal(true);"])] }),
   execTool("GO-18", "execute over the new child", "go18_c-echo_tool", [A.status(200)]),
   deleteClient("GO-18", "go18-c"),
 ]);
@@ -13592,7 +13639,7 @@ const collection = {
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
-    section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
+    section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28, FAIL29, FAIL30]),
     section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71, PUD72, PUD73, PUD74, PUD75, PUD76, PUD77, PUD78, PUD79, PUD80, PUD81, PUD82, PUD83, PUD84, PUD85, PUD86, PUD87, PUD88, PUD89, PUD90, PUD91, GO37]),
     section("SYNC Tool sync", "Upstream tool changes reaching every client type: the sync interval, a tools/list_changed push and refresh-tools.", SYNC),
     section("BMC Bifrost MCP on /v1/mcp", "Bifrost's own HTTP API as MCP tools on /v1/mcp: protocol, who may call it, what is served and how it is annotated, tool calls, what a call carries, settings, and the required bifrost_url.", [BMC01, BMC02, BMC03, BMC04, BMC05, BMC06, BMC07, BMC08]),
