@@ -72,6 +72,11 @@ func clickhouseModelColumnOverride(model any, column string) (string, bool) {
 	if _, ok := model.(*TraceDirtyMark); ok && column == "marked_at" {
 		return "`marked_at` DateTime64(9)", true
 	}
+	// A span's write time is its row version: at millisecond precision a fold and an enrichment
+	// copy in one millisecond tie, and the later insert wins whichever it is.
+	if _, ok := model.(*TraceSpan); ok && column == "updated_at" {
+		return "`updated_at` DateTime64(9)", true
+	}
 	// Parts are folded in receive order: at millisecond precision two parts received in one
 	// millisecond tie and fall back to id order, so the fold would merge them out of order.
 	if _, ok := model.(*TraceSpanPart); ok && column == "received_at" {
@@ -451,6 +456,8 @@ func migrationClickHouseLogsTable(ctx context.Context, db *gorm.DB, cluster stri
 			"INDEX idx_logs_agent_correlation_id agent_correlation_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_logs_id id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_logs_parent_request_id parent_request_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_logs_trace_id trace_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_logs_provider_response_id provider_response_id TYPE bloom_filter GRANULARITY 1",
 		},
 	}
 	if err := clickhouseCreateTable(ctx, db, &Log{}, opts, cluster); err != nil {
@@ -548,6 +555,7 @@ func migrationClickHouseMCPToolLogsTable(ctx context.Context, db *gorm.DB, clust
 			"INDEX idx_mcp_logs_agent_correlation_id agent_correlation_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_mcp_logs_round_trip_id round_trip_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_mcp_logs_id id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_mcp_logs_trace_id trace_id TYPE bloom_filter GRANULARITY 1",
 		},
 	}
 	if err := clickhouseCreateTable(ctx, db, &MCPToolLog{}, opts, cluster); err != nil {
@@ -757,7 +765,10 @@ func migrationClickHouseTraceTables(ctx context.Context, db *gorm.DB, cluster st
 		// partition on receive time: a retry in a later month would land in another partition
 		// and never replace the first copy.
 		{&TraceSpanPart{}, chTableOpts{table: "trace_span_parts", orderBy: "(project_id, trace_id, span_id, id)", ttl: chTraceRowTTL, version: "`ver` UInt64 DEFAULT 18446744073709551615 - toUnixTimestamp64Nano(now64(9))"}},
-		{&TraceSpan{}, chTableOpts{table: "trace_spans", orderBy: "(project_id, trace_id, span_id)", ttl: chTraceRowTTL}},
+		// A span is versioned by the time of the write it carries. A fold stamps the time of its
+		// commit. The enrichment copy keeps the updated_at it read, so it replaces the version it
+		// read and loses to a fold another instance committed after that read.
+		{&TraceSpan{}, chTableOpts{table: "trace_spans", orderBy: "(project_id, trace_id, span_id)", ttl: chTraceRowTTL, version: "`ver` DateTime64(9) DEFAULT updated_at"}},
 		{&TraceSpanLink{}, chTableOpts{table: "trace_span_links", orderBy: "(project_id, trace_id, span_id, log_kind, log_id)", ttl: chTraceRowTTL}},
 		{&Trace{}, chTableOpts{table: "traces", orderBy: "(project_id, trace_id)", ttl: chTraceRowTTL}},
 		// An id is unique within its project: a client-chosen id from another project is another row.

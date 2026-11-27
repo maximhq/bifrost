@@ -29,6 +29,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/streaming"
+	"github.com/maximhq/bifrost/framework/traceingest"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -7561,4 +7562,96 @@ func (a oneMCPClientAccount) GetConfigForMCPClientByName(name string) (*schemas.
 		return nil, fmt.Errorf("MCP client %s is not configured", name)
 	}
 	return a.client, nil
+}
+
+// TestTraceLinkIsRecordedOnTheGatewayRow pins what the trace matcher reads off a gateway row: the
+// trace position a link header names, a fingerprint of the last user message, and the provider's
+// response id. A request with no link header records no trace id, only the fingerprint.
+func TestTraceLinkIsRecordedOnTheGatewayRow(t *testing.T) {
+	prompt := "What is the capital of France?"
+	data := &InitialLogData{InputHistory: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &prompt}}}}
+	req := &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{Input: data.InputHistory}}
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-bf-trace-id": "trace-1", "x-bf-parent-span-id": "span-1"})
+	data.TraceLink = traceLinkFromContext(ctx, req)
+	entry := buildCompleteLogEntryFromPending(&PendingLogData{RequestID: "req-1", InitialData: data})
+	if entry.TraceID == nil || *entry.TraceID != "trace-1" || entry.ParentSpanID == nil || *entry.ParentSpanID != "span-1" {
+		t.Fatalf("trace link = %v/%v, want trace-1/span-1", entry.TraceID, entry.ParentSpanID)
+	}
+	if entry.InputFingerprint == nil || *entry.InputFingerprint != traceingest.TextFingerprint(prompt) {
+		t.Fatalf("input fingerprint = %v, want the hash of the last user message", entry.InputFingerprint)
+	}
+
+	// traceparent counts only when the request carried it: the middleware mints an id otherwise.
+	minted := schemas.NewBifrostContext(context.Background(), time.Time{})
+	minted.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{})
+	minted.SetValue(schemas.BifrostContextKeyExportTraceID, "minted-by-bifrost")
+	if link := traceLinkFromContext(minted, req); link.TraceID != "" {
+		t.Fatalf("a trace id Bifrost minted was recorded as a link: %q", link.TraceID)
+	}
+	propagated := schemas.NewBifrostContext(context.Background(), time.Time{})
+	propagated.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"})
+	propagated.SetValue(schemas.BifrostContextKeyExportTraceID, "0af7651916cd43dd8448eb211c80319c")
+	propagated.SetValue(schemas.BifrostContextKeyParentSpanID, "b7ad6b7169203331")
+	if link := traceLinkFromContext(propagated, nil); link.TraceID != "0af7651916cd43dd8448eb211c80319c" || link.ParentSpanID != "b7ad6b7169203331" {
+		t.Fatalf("traceparent link = %+v", link)
+	}
+
+	applyProviderResponseID(entry, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "chatcmpl-123"}})
+	if entry.ProviderResponseID == nil || *entry.ProviderResponseID != "chatcmpl-123" {
+		t.Fatalf("provider response id = %v, want chatcmpl-123", entry.ProviderResponseID)
+	}
+
+	mcpEntry := &logstore.MCPToolLog{}
+	applyMCPCorrelationFieldsToEntry(ctx, mcpEntry)
+	if mcpEntry.TraceID == nil || *mcpEntry.TraceID != "trace-1" || mcpEntry.ParentSpanID == nil || *mcpEntry.ParentSpanID != "span-1" {
+		t.Fatalf("mcp trace link = %v/%v, want trace-1/span-1", mcpEntry.TraceID, mcpEntry.ParentSpanID)
+	}
+}
+
+// The input fingerprint is what links a gateway call to an SDK span when no header names
+// the trace. PreLLMHook records it from the request itself, before and whether or not the
+// request's content is captured, so it is there with content logging on and off.
+func TestPreLLMHookRecordsTheInputFingerprint(t *testing.T) {
+	prompt := "What is the capital of France?"
+	want := traceingest.ChatFingerprint([]schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &prompt}}})
+	require.NotEmpty(t, want)
+	for _, contentOff := range []bool{false, true} {
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), newFakeBatchStore(), newInteractionPricingManager(t), nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = plugin.Cleanup() })
+		requestID := fmt.Sprintf("req-fingerprint-%t", contentOff)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		if contentOff {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+		}
+		_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Params: &schemas.ChatParameters{}, Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &prompt}},
+			}},
+		})
+		require.NoError(t, err)
+		pending, ok := plugin.pendingLogsEntries.Load(requestID)
+		require.True(t, ok)
+		require.Equal(t, want, pending.(*PendingLogData).InitialData.TraceLink.InputFingerprint, "content off = %t", contentOff)
+	}
+}
+
+// BenchmarkTraceLinkFromContext is the per-request cost of the trace link: a header lookup and a
+// fingerprint of the last user message, on every LLM request.
+func BenchmarkTraceLinkFromContext(b *testing.B) {
+	prompt := strings.Repeat("What is the capital of France? ", 20)
+	req := &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{Input: []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: new("Be brief.")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &prompt}},
+	}}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"content-type": "application/json"})
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = traceLinkFromContext(ctx, req)
+	}
 }

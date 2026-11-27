@@ -216,11 +216,29 @@ func (p *SpanPart) Span(projectID, source string, stored *logstore.TraceSpan) *l
 		span.ExpiresAt = stored.ExpiresAt
 		span.ContentHidden = stored.ContentHidden
 		span.LinkMethod, span.LinkSnapshotParsed, span.LinkedLogExpired = stored.LinkMethod, stored.LinkSnapshotParsed, stored.LinkedLogExpired
-		if span.Cost == nil && stored.CostEstimated {
+		if span.Cost == nil && stored.CostEstimated && samePricingInputs(span, stored) {
+			// The estimate still prices this usage. When the usage changed it is dropped, the span is
+			// left unpriced, and the next matcher pass prices it again.
 			span.Cost, span.CostEstimated = stored.Cost, true
+			if span.Provider == "" {
+				span.Provider = stored.Provider
+			}
 		}
 	}
 	return span
+}
+
+// samePricingInputs reports whether a refolded span has the usage its stored estimate was priced
+// from. A span with no provider of its own matches the provider the estimate resolved and stored.
+func samePricingInputs(span, stored *logstore.TraceSpan) bool {
+	current, previous := logstore.TraceSpanPricingInputsOf(span), logstore.TraceSpanPricingInputsOf(stored)
+	if current.Provider == "" {
+		current.Provider = previous.Provider
+	}
+	if previous.TotalTokens == 0 {
+		previous.TotalTokens = previous.PromptTokens + previous.CompletionTokens // as Span derives it
+	}
+	return current == previous
 }
 
 // encodeValue stores a span value as JSON. A plain string is stored as it is, so text reads as text.

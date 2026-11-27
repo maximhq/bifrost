@@ -753,6 +753,92 @@ func (s *ClickHouseLogStore) withChildAggregates(ctx context.Context, log Log) *
 	return &rows[0]
 }
 
+// FindGatewayCallsByTraceID overrides the RDB lookup so its trace_id bloom
+// filters prune parts; see chGatewayCalls.
+func (s *ClickHouseLogStore) FindGatewayCallsByTraceID(ctx context.Context, traceID string) ([]*GatewayCall, error) {
+	if traceID == "" {
+		return nil, nil
+	}
+	match := func(db *gorm.DB) *gorm.DB { return db.Where("trace_id = ?", traceID) }
+	calls, err := s.chGatewayCalls(ctx, "logs", gatewayLLMCallColumns, match, true)
+	if err != nil {
+		return nil, err
+	}
+	tools, err := s.chGatewayCalls(ctx, "mcp_tool_logs", gatewayMCPCallColumns, match, true)
+	if err != nil {
+		return nil, err
+	}
+	return append(calls, tools...), nil
+}
+
+// FindGatewayCallsByProviderResponseIDs overrides the RDB lookup so its
+// provider_response_id bloom filter prunes parts; see chGatewayCalls.
+func (s *ClickHouseLogStore) FindGatewayCallsByProviderResponseIDs(ctx context.Context, ids []string) ([]*GatewayCall, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return s.chGatewayCalls(ctx, "logs", gatewayLLMCallColumns, func(db *gorm.DB) *gorm.DB {
+		return db.Where("provider_response_id IN ?", ids)
+	}, false)
+}
+
+// chGatewayCalls runs a trace matcher lookup on a column outside the
+// (timestamp, id) sort key. Under the connection-level FINAL the column's bloom
+// filter is ignored on 24.x and unsafe where honoured, because
+// provider_response_id is filled in by a later version than the one that
+// started the request. So, as in withChildAggregates, a read without FINAL
+// uses the index to find every version that ever matched, including each
+// row's newest, and those rows' ids and timestamp range bound the FINAL read.
+// That read still applies match after dedup, so a row whose newest version no
+// longer matches is dropped, and id and timestamp are immutable, so pruning on
+// them cannot hide a newest version. More candidates than
+// chChildCandidateLimit fall back to the unbounded FINAL read.
+func (s *ClickHouseLogStore) chGatewayCalls(ctx context.Context, table, columns string, match func(*gorm.DB) *gorm.DB, oldestFirst bool) ([]*GatewayCall, error) {
+	var candidates []struct {
+		ID        string
+		Timestamp time.Time
+	}
+	noFinal := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"final": 0}))
+	if err := match(s.db.WithContext(noFinal).Table(table).Select("id, timestamp")).
+		Limit(chChildCandidateLimit + 1).
+		Scan(&candidates).Error; err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	bounded := len(candidates) <= chChildCandidateLimit
+	readCtx := ctx
+	if bounded {
+		readCtx = s.idLookupContext(ctx)
+	}
+	query := match(s.db.WithContext(readCtx).Table(table).Select(columns))
+	if bounded {
+		ids := make([]string, 0, len(candidates))
+		lo, hi := candidates[0].Timestamp, candidates[0].Timestamp
+		for _, c := range candidates {
+			ids = append(ids, c.ID)
+			if c.Timestamp.Before(lo) {
+				lo = c.Timestamp
+			}
+			if c.Timestamp.After(hi) {
+				hi = c.Timestamp
+			}
+		}
+		query = query.Where("id IN ?", ids).
+			// Epoch millis, not time.Time: the driver binds time args at second precision (see chFilterMissing).
+			Where("timestamp BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?)", lo.UnixMilli(), hi.UnixMilli())
+	}
+	if oldestFirst {
+		query = query.Order("timestamp ASC")
+	}
+	var calls []*GatewayCall
+	if err := query.Limit(gatewayCallLimit).Scan(&calls).Error; err != nil {
+		return nil, err
+	}
+	return calls, nil
+}
+
 // --- Updates (read-modify-write + re-insert) ---
 
 // chFindForUpdate loads the row an RMW update patches. logs, mcp_tool_logs,

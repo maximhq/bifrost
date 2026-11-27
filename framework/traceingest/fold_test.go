@@ -112,4 +112,11 @@ func TestFoldAppliesALateMergeOverTheStoredSpan(t *testing.T) {
 	assert.Equal(t, 99, span.LinkSnapshotParsed.TotalTokens)
 	assert.Equal(t, start, span.CreatedAt)
 	assert.Equal(t, "k1", span.TracingKeyID)
+
+	// A merge that changes the usage drops the estimate, which priced the old usage.
+	more := &SpanPart{ID: "m2", ReceivedAt: start.Add(2 * time.Hour), IsMerge: true, TraceID: "t", SpanID: "s", PromptTokens: 100}
+	repriced := Fold(stored, []*SpanPart{late, more}).Span("p1", logstore.TraceSourceBraintrust, stored)
+	assert.Equal(t, 100, repriced.TotalTokens)
+	assert.Nil(t, repriced.Cost, "the stale estimate is not carried over")
+	assert.False(t, repriced.CostEstimated)
 }
