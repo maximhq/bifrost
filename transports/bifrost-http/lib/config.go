@@ -1043,8 +1043,9 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 	}
 	gov := configData.Governance
 	type owner struct {
-		name        string
-		holderLevel bool // covers every model on every provider, see LimitScope.NeedsAllModelsOwner
+		name        string // for error messages
+		declared    int    // 1-based position of an entity declared without an id, 0 for one with an id
+		holderLevel bool   // covers every model on every provider, see LimitScope.NeedsAllModelsOwner
 	}
 	modelConfigOwner := func(mc *configstoreTables.TableModelConfig) owner {
 		return owner{name: "model_config " + mc.ID, holderLevel: mc.IsHolderLevel()}
@@ -1073,32 +1074,34 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 			referenceBudget(*provider.BudgetID, owner{name: "provider " + provider.Name})
 		}
 	}
-	// A customer declared without an id is given one later; until then each declaration is its own owner.
-	customerName := func(i int) string {
+	// A customer declared without an id is given one later; until then each declaration is its own owner,
+	// told apart from every customer with an id by its position.
+	customerOwner := func(i int) owner {
 		if id := gov.Customers[i].ID; id != "" {
-			return "customer " + id
+			return owner{name: "customer " + id, holderLevel: true}
 		}
-		return fmt.Sprintf("customer #%d", i+1)
+		return owner{name: fmt.Sprintf("customer #%d", i+1), declared: i + 1, holderLevel: true}
 	}
 	for i, customer := range gov.Customers {
 		if customer.BudgetID != nil {
-			referenceBudget(*customer.BudgetID, owner{name: customerName(i), holderLevel: true})
+			referenceBudget(*customer.BudgetID, customerOwner(i))
 		}
 	}
 	// A provider-config budget declared at the top level and one declared inline on its virtual key
 	// belong to the same owner, so both resolve to the key and provider before duplicates are judged.
 	providerConfigOwners := make(map[uint]owner)
-	// A key declared without an id is given one later; until then each declaration is its own owner.
-	virtualKeyName := func(i int) string {
+	// A key declared without an id is given one later; until then each declaration is its own owner,
+	// told apart from every key with an id by its position, not by a name an id could also spell.
+	virtualKeyOwner := func(i int, suffix string, holderLevel bool) owner {
 		if id := gov.VirtualKeys[i].ID; id != "" {
-			return "virtual_key " + id
+			return owner{name: "virtual_key " + id + suffix, holderLevel: holderLevel}
 		}
-		return fmt.Sprintf("virtual_key #%d", i+1)
+		return owner{name: fmt.Sprintf("virtual_key #%d%s", i+1, suffix), declared: i + 1, holderLevel: holderLevel}
 	}
 	for i, vk := range gov.VirtualKeys {
 		for _, pc := range vk.ProviderConfigs {
 			if pc.ID != 0 {
-				providerConfigOwners[pc.ID] = owner{name: fmt.Sprintf("%s provider_config %s", virtualKeyName(i), pc.Provider)}
+				providerConfigOwners[pc.ID] = virtualKeyOwner(i, " provider_config "+pc.Provider, false)
 			}
 		}
 	}
@@ -1145,21 +1148,21 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 		}
 	}
 	for i, vk := range gov.VirtualKeys {
-		add(owner{name: virtualKeyName(i), holderLevel: true}, vk.Budgets...)
+		add(virtualKeyOwner(i, "", true), vk.Budgets...)
 		for _, pc := range vk.ProviderConfigs {
-			add(owner{name: fmt.Sprintf("%s provider_config %s", virtualKeyName(i), pc.Provider)}, pc.Budgets...)
+			add(virtualKeyOwner(i, " provider_config "+pc.Provider, false), pc.Budgets...)
 		}
 	}
 	for i, team := range gov.Teams {
 		// A team declared without an id is given one later; until then each declaration is its own owner.
-		name := "team " + team.ID
+		teamOwner := owner{name: "team " + team.ID, holderLevel: true}
 		if team.ID == "" {
-			name = fmt.Sprintf("team #%d", i+1)
+			teamOwner = owner{name: fmt.Sprintf("team #%d", i+1), declared: i + 1, holderLevel: true}
 		}
-		add(owner{name: name, holderLevel: true}, team.Budgets...)
+		add(teamOwner, team.Budgets...)
 	}
 	for i, customer := range gov.Customers {
-		add(owner{name: customerName(i), holderLevel: true}, customer.Budgets...)
+		add(customerOwner(i), customer.Budgets...)
 	}
 	for i := range gov.ModelConfigs {
 		mc := &gov.ModelConfigs[i]
