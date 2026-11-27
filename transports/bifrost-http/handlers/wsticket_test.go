@@ -31,6 +31,28 @@ func TestSignedWSTicketValidatesAcrossStores(t *testing.T) {
 	}
 }
 
+func TestDeriveWSTicketKeyIsHKDFAndPurposeBound(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	sig := deriveWSTicketKey("sig", key)
+	enc := deriveWSTicketKey("enc", key)
+	if len(sig) != 32 || len(enc) != 32 {
+		t.Fatalf("derived key lengths = %d, %d, want 32", len(sig), len(enc))
+	}
+	if hmac.Equal(sig, enc) {
+		t.Fatal("sig and enc subkeys must differ")
+	}
+	// RFC 5869 extract+expand with an empty salt, computed by hand, so the test
+	// pins the construction and not just the crypto/hkdf call.
+	extract := hmac.New(sha256.New, make([]byte, sha256.Size))
+	extract.Write(key)
+	expand := hmac.New(sha256.New, extract.Sum(nil))
+	expand.Write([]byte("bifrost-ws-ticket/sig"))
+	expand.Write([]byte{1})
+	if want := expand.Sum(nil); !hmac.Equal(sig, want) {
+		t.Fatalf("sig subkey = %x, want HKDF-SHA-256 output %x", sig, want)
+	}
+}
+
 func TestSignedWSTicketRejectsWrongKey(t *testing.T) {
 	issuer := signedTicketsForTest(t, []byte("0123456789abcdef0123456789abcdef"))
 	consumer := signedTicketsForTest(t, []byte("abcdef0123456789abcdef0123456789"))
