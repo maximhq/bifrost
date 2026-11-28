@@ -419,12 +419,12 @@ func (response *CohereChatResponse) ToBifrostChatResponse(model string) *schemas
 			if response.Usage.Tokens.OutputTokens != nil {
 				usage.CompletionTokens = *response.Usage.Tokens.OutputTokens
 			}
-			if response.Usage.CachedTokens != nil {
-				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-					CachedReadTokens: *response.Usage.CachedTokens,
-				}
-			}
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		}
+		if response.Usage.CachedTokens != nil {
+			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+				CachedReadTokens: *response.Usage.CachedTokens,
+			}
 		}
 
 		bifrostResponse.Usage = usage
@@ -714,6 +714,11 @@ func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifros
 						usage.CompletionTokens = *chunk.Delta.Usage.Tokens.OutputTokens
 					}
 					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				}
+				if chunk.Delta.Usage.CachedTokens != nil {
+					usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+						CachedReadTokens: *chunk.Delta.Usage.CachedTokens,
+					}
 				}
 			}
 

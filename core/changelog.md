@@ -68,3 +68,4 @@
 - fix: streams cancelled before the upstream's first byte run their terminal post-hooks
 - chore: brotli 1.2.8 and dependency updates
 - chore: upgraded Go to 1.27.4
+- fix: cohere - chat completion streams report cached prompt tokens in usage.prompt_tokens_details.cached_read_tokens (#8672)
