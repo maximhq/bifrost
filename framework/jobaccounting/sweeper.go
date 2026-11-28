@@ -11,6 +11,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
@@ -24,12 +25,15 @@ const (
 )
 
 type SweeperConfig struct {
-	Interval   time.Duration
-	Limit      int
-	ClaimedBy  string
-	Provider   schemas.ModelProvider
-	Scopes     *modelcatalog.PricingLookupScopes
-	KVStore    schemas.KVStore
+	Interval  time.Duration
+	Limit     int
+	ClaimedBy string
+	Provider  schemas.ModelProvider
+	Scopes    *modelcatalog.PricingLookupScopes
+	// Leases is the table this sweeper's poll leases live in, named by PollLeaseTable for its
+	// kind, with keys under PollLeaseKeyPrefix, so one sweeper polls a job at a time.
+	// Nil polls without a lease.
+	Leases     *livestore.Table[string, PollLease]
 	KVLeaseTTL time.Duration
 	Logger     schemas.Logger
 }
@@ -221,34 +225,48 @@ func (s *Sweeper) markTerminalAsUnpriceable(ctx context.Context, job *cstables.T
 	}
 }
 
+// PollLease is what a sweeper writes to hold a job's poll for the lease TTL. Nothing reads it
+// back; its presence is what keeps other sweepers off the job.
+type PollLease struct {
+	ClaimedBy string `json:"claimed_by"`
+	JobID     string `json:"job_id"`
+}
+
+// PollLeaseTable is the name of the table a sweeper of kind keeps its poll leases in.
+func PollLeaseTable(kind ProviderJobKind) string {
+	return "job_accounting_" + string(kind) + "_poll_leases"
+}
+
+// PollLeaseKeyPrefix is the prefix of every lease key a sweeper of kind writes. Batch keeps its
+// historical prefix, so a lease an earlier version wrote still holds.
+func PollLeaseKeyPrefix(kind ProviderJobKind) string {
+	if kind == ProviderJobKindBatch {
+		return "batch-accounting:poll:"
+	}
+	return string(kind) + ":poll:"
+}
+
+// acquireProviderPollLease claims job's poll for this sweeper, reporting whether it holds it.
+// The error is always nil; the table always answers.
 func (s *Sweeper) acquireProviderPollLease(job *cstables.TableProviderJob) (bool, error) {
-	if s.config.KVStore == nil {
+	if s.config.Leases == nil {
 		return true, nil
 	}
-	value := map[string]string{
-		"claimed_by": s.config.ClaimedBy,
-		"job_id":     job.ID,
-	}
-	return s.config.KVStore.SetNXWithTTL(s.pollLeaseKey(job), value, s.config.KVLeaseTTL)
+	lease := PollLease{ClaimedBy: s.config.ClaimedBy, JobID: job.ID}
+	return s.config.Leases.PutIfAbsent(s.pollLeaseKey(job), lease, s.config.KVLeaseTTL), nil
 }
 
+// deletePollLease releases job's poll lease.
 func (s *Sweeper) deletePollLease(job *cstables.TableProviderJob) {
-	if s.config.KVStore == nil {
+	if s.config.Leases == nil {
 		return
 	}
-	if _, err := s.config.KVStore.Delete(s.pollLeaseKey(job)); err != nil {
-		s.warn("%s accounting sweeper failed to release poll lease provider=%s job=%s job_id=%s: %v", s.settler.Kind(), job.Provider, job.JobID, job.ID, err)
-	}
+	s.config.Leases.Delete(s.pollLeaseKey(job))
 }
 
-// pollLeaseKey keeps the batch kind's historical key prefix so a rolling deploy
-// does not let an old and a new node poll the same batch concurrently.
+// pollLeaseKey is job's lease key, under its kind's table name.
 func (s *Sweeper) pollLeaseKey(job *cstables.TableProviderJob) string {
-	prefix := string(s.settler.Kind())
-	if s.settler.Kind() == ProviderJobKindBatch {
-		prefix = "batch-accounting"
-	}
-	return fmt.Sprintf("%s:poll:%s:%s", prefix, job.Provider, job.JobID)
+	return PollLeaseKeyPrefix(s.settler.Kind()) + job.Provider + ":" + job.JobID
 }
 
 func (s *Sweeper) nextCheckAt(job *cstables.TableProviderJob, now time.Time) time.Time {

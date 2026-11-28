@@ -97,7 +97,7 @@ export default function VirtualKeyDetailSheet({
 }: VirtualKeyDetailSheetProps) {
 	const { t, i18n } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
-	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit } =
+	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit, isExhausted } =
 		useVirtualKeyUsage(virtualKey);
 	const canUpdateVirtualKeys = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
@@ -152,20 +152,9 @@ export default function VirtualKeyDetailSheet({
 
 	const entityInfo = getEntityInfo();
 
-	const isExhausted =
-		// Budget exhausted (AP-mirrored when managed, VK-own otherwise)
-		displayBudgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ||
-		// Rate limits exhausted
-		(displayRateLimit?.token_current_usage &&
-			displayRateLimit?.token_max_limit &&
-			displayRateLimit.token_current_usage >= displayRateLimit.token_max_limit) ||
-		(displayRateLimit?.request_current_usage &&
-			displayRateLimit?.request_max_limit &&
-			displayRateLimit.request_current_usage >= displayRateLimit.request_max_limit);
-
 	return (
 		<Sheet open onOpenChange={onClose}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
+			<SheetContent resizeKey="virtual-key-details" className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
 				<SheetHeader
 					className="flex flex-row items-center justify-between px-0 py-4"
 					headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8"

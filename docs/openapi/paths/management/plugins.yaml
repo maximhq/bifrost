@@ -14,6 +14,8 @@ plugins-builtins:
     description: |
       Returns the canonical list of built-in plugin names available in this Bifrost build.
       Use this to discover which plugins can be enabled without supplying a custom binary.
+      Of these, `governance`, `routing`, `logging`, `prompts`, `compat` and `model-catalog-resolver` are configured by
+      Bifrost itself and cannot be created, changed or deleted through the plugins API.
     tags:
       - Plugins
     security:
@@ -34,6 +36,8 @@ plugins-builtins:
                     type: string
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 plugins-loaded:
   get:
@@ -104,6 +108,8 @@ plugins:
               $ref: '../../schemas/management/plugins.yaml#/ListPluginsResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createPlugin
@@ -119,6 +125,9 @@ plugins:
     summary: Create a new plugin
     description: |
       Creates a new plugin with the specified configuration.
+      The built-in plugins Bifrost configures itself (`governance`, `routing`, `logging`,
+      `prompts`, `compat` and `model-catalog-resolver`) cannot be created, changed or deleted through this API; a request
+      naming one is refused with 400.
       Setting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the
       gateway process and requires genuine admin authentication - it is refused with 403 if
       dashboard authentication is disabled or unconfigured, even though other management
@@ -159,6 +168,8 @@ plugins:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 /plugins/{name}:
   get:
@@ -207,6 +218,8 @@ plugins:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updatePlugin
@@ -222,6 +235,9 @@ plugins:
     summary: Update a plugin
     description: |
       Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.
+      The built-in plugins Bifrost configures itself (`governance`, `routing`, `logging`,
+      `prompts`, `compat` and `model-catalog-resolver`) cannot be created, changed or deleted through this API; a request
+      naming one is refused with 400.
       The response `actualName` field shows the plugin name from GetName() (used as the map key),
       which may differ from the display name (`name`).
       Setting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the
@@ -271,6 +287,8 @@ plugins:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deletePlugin
@@ -286,6 +304,9 @@ plugins:
     summary: Delete a plugin
     description: |
       Removes a plugin from the configuration and stops it if running.
+      The built-in plugins Bifrost configures itself (`governance`, `routing`, `logging`,
+      `prompts`, `compat` and `model-catalog-resolver`) cannot be created, changed or deleted through this API; a request
+      naming one is refused with 400.
     tags:
       - Plugins
     parameters:
@@ -315,3 +336,5 @@ plugins:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'

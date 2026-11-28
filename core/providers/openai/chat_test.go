@@ -3607,43 +3607,163 @@ func TestInlineChatMidConversationSystem_NilContent(t *testing.T) {
 	require.Nil(t, out[2].Content)
 }
 
-// A tool result's explicit prompt-cache breakpoint survives the media in it being named instead of
-// sent: the tool message stays a part array carrying the breakpoint.
+// Hoisting keeps the cache boundary on the tool's text or attachment note,
+// never on an image part whose Chat wire has no breakpoint carrier.
 func TestToOpenAIChatRequest_ToolResultBreakpointSurvivesMediaPlaceholder(t *testing.T) {
-	req := &schemas.BifrostChatRequest{
-		Provider: schemas.OpenAI,
-		Model:    "gpt-5.6-sol",
-		Input: []schemas.ChatMessage{
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Plot it.")}},
-			{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
-				ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"),
-				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("plot"), Arguments: `{}`},
-			}}}},
-			{
-				Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
-				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
-					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below"), PromptCacheBreakpoint: &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}},
-					{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
-				}},
-			},
-		},
-		Params: &schemas.ChatParameters{},
+	const imageURL = "data:image/png;base64,iVBORw0KGgo="
+	for _, tt := range []struct {
+		name      string
+		provider  schemas.ModelProvider
+		block     int
+		ephemeral bool
+	}{
+		{"explicit on text", schemas.OpenAI, 0, false},
+		{"explicit on image", schemas.OpenAI, 1, false},
+		{"ephemeral on image", schemas.OpenAI, 1, true},
+		{"OpenRouter ephemeral on image", schemas.OpenRouter, 1, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.provider == schemas.OpenRouter {
+				// OpenRouter has no image default; a vision record opts the model in.
+				schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+					return &schemas.ModelCapabilities{SupportsVision: new(true)}
+				})
+				t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+			}
+			blocks := []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageURL}},
+			}
+			if tt.ephemeral {
+				blocks[tt.block].CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+			} else {
+				blocks[tt.block].PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit"), TTL: schemas.Ptr("12h")}
+			}
+			req := &schemas.BifrostChatRequest{
+				Provider: tt.provider,
+				Model:    "gpt-5.6-sol",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Plot it.")}},
+					{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("plot"), Arguments: `{}`},
+					}}}},
+					{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")}, Content: &schemas.ChatMessageContent{ContentBlocks: blocks}},
+				},
+				Params: &schemas.ChatParameters{},
+			}
+			before, err := schemas.MarshalSorted(req)
+			require.NoError(t, err)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			out := ToOpenAIChatRequest(ctx, req)
+			wire, err := out.MarshalJSON()
+			require.NoError(t, err)
+			var body struct{ Messages []OpenAIMessage }
+			require.NoError(t, schemas.Unmarshal(wire, &body), string(wire))
+			require.Len(t, body.Messages, 4, string(wire))
+			tool := body.Messages[2]
+			require.Equal(t, schemas.ChatMessageRoleTool, tool.Role)
+			require.Len(t, tool.Content.ContentBlocks, 2)
+			marked := tool.Content.ContentBlocks[tt.block]
+			require.Equal(t, schemas.ChatContentBlockTypeText, marked.Type)
+			if tt.provider == schemas.OpenRouter {
+				require.NotNil(t, marked.CacheControl)
+				require.Nil(t, marked.PromptCacheBreakpoint)
+			} else {
+				require.NotNil(t, marked.PromptCacheBreakpoint)
+				require.Nil(t, marked.PromptCacheBreakpoint.TTL, "Chat does not accept breakpoint TTL")
+				require.Nil(t, marked.CacheControl)
+			}
+			user := body.Messages[3]
+			require.Equal(t, schemas.ChatMessageRoleUser, user.Role)
+			require.Len(t, user.Content.ContentBlocks, 2)
+			image := user.Content.ContentBlocks[1]
+			require.Equal(t, schemas.ChatContentBlockTypeImage, image.Type)
+			require.Equal(t, imageURL, image.ImageURLStruct.URL)
+			require.Nil(t, image.CacheControl)
+			require.Nil(t, image.PromptCacheBreakpoint)
+			require.Equal(t, 1, strings.Count(string(wire), imageURL))
+			after, err := schemas.MarshalSorted(req)
+			require.NoError(t, err)
+			require.Equal(t, string(before), string(after), "caller markers were mutated")
+			repeated, err := ToOpenAIChatRequest(ctx, req).MarshalJSON()
+			require.NoError(t, err)
+			require.Equal(t, string(wire), string(repeated))
+		})
 	}
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
-	defer cancel()
-	out := ToOpenAIChatRequest(ctx, req)
-	require.NotNil(t, out)
-	b, err := out.MarshalJSON()
-	require.NoError(t, err)
-	var m map[string]any
-	require.NoError(t, sonic.Unmarshal(b, &m), string(b))
-	msgs, _ := m["messages"].([]any)
-	require.Len(t, msgs, 3, string(b))
-	tool, _ := msgs[2].(map[string]any)
-	parts, ok := tool["content"].([]any)
-	require.True(t, ok, "the tool message must stay a part array; raw=%s", string(b))
-	first, _ := parts[0].(map[string]any)
-	require.NotNil(t, first["prompt_cache_breakpoint"], "raw=%s", string(b))
+}
+
+// A tool's image moves into user content only for a model that accepts images.
+// Every other OpenAI-compatible destination keeps the placeholder and gets no
+// extra user turn, since a text-only model rejects an image_url part with a 400.
+func TestToOpenAIChatRequest_ToolImagesFollowVisionSupport(t *testing.T) {
+	const imageURL = "data:image/png;base64,iVBORw0KGgo="
+	for _, tt := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		base     schemas.ModelProvider // custom provider's base type, when set
+		vision   *bool                 // datasheet supports_vision; nil means no record
+		hoisted  bool
+	}{
+		{name: "OpenAI without record", provider: schemas.OpenAI, hoisted: true},
+		{name: "Azure without record", provider: schemas.Azure, hoisted: true},
+		{name: "custom on OpenAI without record", provider: "my-openai", base: schemas.OpenAI, hoisted: true},
+		{name: "OpenAI text-only record", provider: schemas.OpenAI, vision: new(false)},
+		{name: "Groq without record", provider: schemas.Groq},
+		{name: "Cerebras without record", provider: schemas.Cerebras},
+		{name: "DeepSeek without record", provider: schemas.DeepSeek},
+		{name: "Mistral without record", provider: schemas.Mistral},
+		{name: "Ollama without record", provider: schemas.Ollama},
+		{name: "OpenRouter without record", provider: schemas.OpenRouter},
+		{name: "custom on Groq without record", provider: "my-groq", base: schemas.Groq},
+		{name: "Groq vision record", provider: schemas.Groq, vision: new(true), hoisted: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.vision != nil {
+				vision := *tt.vision
+				schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+					return &schemas.ModelCapabilities{SupportsVision: &vision}
+				})
+				t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+			}
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			if tt.base != "" {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tt.base)
+			}
+			req := &schemas.BifrostChatRequest{
+				Provider: tt.provider,
+				Model:    "some-model",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Take a screenshot.")}},
+					{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("screenshot"), Arguments: `{}`},
+					}}}},
+					{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("captured")},
+						{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageURL}},
+					}}},
+				},
+			}
+			wire, err := ToOpenAIChatRequest(ctx, req).MarshalJSON()
+			require.NoError(t, err)
+			messages := gjson.GetBytes(wire, "messages").Array()
+			tool := messages[2]
+			require.Equal(t, "tool", tool.Get("role").String(), string(wire))
+			require.Equal(t, gjson.String, tool.Get("content").Type, "an unmarked text-only tool result is sent as a string: %s", wire)
+			if tt.hoisted {
+				require.Len(t, messages, 4, string(wire))
+				require.Equal(t, "captured\nImage attached below.", tool.Get("content").String())
+				require.Equal(t, "user", messages[3].Get("role").String())
+				require.Equal(t, imageURL, messages[3].Get("content.1.image_url.url").String(), string(wire))
+				return
+			}
+			require.Len(t, messages, 3, "no user turn may be added: %s", wire)
+			require.Equal(t, "captured\n[image/png, 9 bytes returned by the tool, not shown]", tool.Get("content").String())
+			require.NotContains(t, string(wire), "image_url")
+		})
+	}
 }
 
 // Measure decoding, presence capture and the Responses-to-Chat wire conversion together.
@@ -3740,4 +3860,83 @@ func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
 	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
 	require.NoError(t, err)
 	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
+}
+
+func zeroCostUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(`data: {"id":"chatcmpl-zero","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}` + "\n\n" +
+				`data: {"id":"chatcmpl-zero","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
+				`data: {"id":"chatcmpl-zero","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0}}` + "\n\n" +
+				"data: [DONE]\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-zero","object":"chat.completion","created":1,"model":"deepseek-v4.1-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0}}`))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func newZeroCostProvider(baseURL string) *OpenAIProvider {
+	return NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: baseURL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, CustomProviderKey: "opencode-go"},
+	}, testNoopLogger{})
+}
+
+func zeroCostRequest() *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: "opencode-go",
+		Model:    "deepseek-v4.1-flash",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	}
+}
+
+func assertZeroCostOnWire(t *testing.T, usage *schemas.BifrostLLMUsage) {
+	t.Helper()
+	if usage == nil || usage.Cost == nil {
+		t.Fatalf("provider-reported zero cost was dropped on decode: %+v", usage)
+	}
+	out, err := sonic.ConfigStd.Marshal(usage)
+	require.NoError(t, err)
+	if !strings.Contains(string(out), `"cost":{"total_cost":0}`) {
+		t.Fatalf(`want "cost":{"total_cost":0}, got usage %s`, out)
+	}
+}
+
+func TestCustomProviderZeroCostReachesTheClient(t *testing.T) {
+	server := zeroCostUpstream(t)
+	provider := newZeroCostProvider(server.URL)
+
+	t.Run("non-streaming", func(t *testing.T) {
+		resp, bErr := provider.ChatCompletion(newStreamTestContext(), testKey(), zeroCostRequest())
+		if bErr != nil {
+			t.Fatalf("ChatCompletion: %+v", bErr.Error)
+		}
+		assertZeroCostOnWire(t, resp.Usage)
+	})
+
+	t.Run("streaming", func(t *testing.T) {
+		stream, bErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), zeroCostRequest())
+		if bErr != nil {
+			t.Fatalf("ChatCompletionStream: %+v", bErr.Error)
+		}
+		var usage *schemas.BifrostLLMUsage
+		for _, chunk := range collectChunks(t, stream) {
+			if chunk.BifrostError != nil {
+				t.Fatalf("stream error: %+v", chunk.BifrostError.Error)
+			}
+			if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+				usage = chunk.BifrostChatResponse.Usage
+			}
+		}
+		assertZeroCostOnWire(t, usage)
+	})
 }

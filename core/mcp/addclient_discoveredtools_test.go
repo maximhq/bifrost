@@ -80,7 +80,7 @@ func TestAddClient_PerUserHeaders_StateSelection(t *testing.T) {
 			// nil credStore: NewMCPManager defaults to a real credstore.CredStore,
 			// whose RequiresPerCallConnection is what production AddClient calls
 			// resolve against for per_user_headers clients.
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
 
 			config := &schemas.MCPClientConfig{
@@ -94,7 +94,7 @@ func TestAddClient_PerUserHeaders_StateSelection(t *testing.T) {
 				PendingVerification: tt.pending,
 			}
 
-			require.NoError(t, m.AddClient(context.Background(), config))
+			require.NoError(t, addClient(context.Background(), m, config))
 
 			state, ok := snapshotAddClientState(m, config.ID)
 			require.True(t, ok)
@@ -115,7 +115,7 @@ func TestAddClient_PerUserHeaders_StateSelection(t *testing.T) {
 // revisits a client whose DiscoveredTools was empty/nil at add time — it
 // would sit at Healthy/0-tools forever.
 func TestAddClient_PerCallConnection_StartsConnectionChecker(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := &schemas.MCPClientConfig{
@@ -128,7 +128,7 @@ func TestAddClient_PerCallConnection_StartsConnectionChecker(t *testing.T) {
 		DiscoveredTools:   map[string]schemas.ChatTool{},
 	}
 
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 
 	m.checkerManager.mu.RLock()
 	_, hasChecker := m.checkerManager.checkers[config.ID]
@@ -148,7 +148,7 @@ func TestAddClient_PerCallConnection_StartsConnectionChecker(t *testing.T) {
 func TestAddClient_PerCallConnection_SharedType_DiscoversToolsSynchronously(t *testing.T) {
 	ts, _ := buildAdminDiscoveryHTTPServer(t)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := &schemas.MCPClientConfig{
@@ -163,7 +163,7 @@ func TestAddClient_PerCallConnection_SharedType_DiscoversToolsSynchronously(t *t
 		// synchronous-discovery path this test targets.
 	}
 
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 
 	state, ok := snapshotAddClientState(m, config.ID)
 	require.True(t, ok)
@@ -182,7 +182,7 @@ func TestAddClient_PerCallConnection_FailedFirstDiscoveryIsUnstable(t *testing.T
 	}))
 	t.Cleanup(ts.Close)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := &schemas.MCPClientConfig{
@@ -194,7 +194,7 @@ func TestAddClient_PerCallConnection_FailedFirstDiscoveryIsUnstable(t *testing.T
 		Headers:          map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer BAD")},
 	}
 
-	require.NoError(t, m.AddClient(context.Background(), config), "the add stands; only its first discovery failed")
+	require.NoError(t, addClient(context.Background(), m, config), "the add stands; only its first discovery failed")
 
 	state, ok := snapshotAddClientState(m, config.ID)
 	require.True(t, ok)

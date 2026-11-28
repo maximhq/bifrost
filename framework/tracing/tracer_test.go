@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1250,7 +1251,7 @@ func TestPopulateLLMResponseAttributes_ErrorPathHonorsIgnoreProviderCost(t *test
 		{name: "provider cost ignored", ignore: true, wantCost: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog := catalogForTest(t, nil)
 			catalog.SetIgnoreProviderCost("cortecs", tc.ignore)
 			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, nil)
 
@@ -1320,6 +1321,36 @@ func streamProviderCostChunks(t *testing.T, tracer *Tracer, ctx *schemas.Bifrost
 	return result
 }
 
+// A chat stream with n>1 must come out of the tracer with every choice kept apart, so the plugins that rebuild a
+// response from the accumulated result (Maxim) see each one instead of a single merged message.
+func TestProcessStreamingChunk_CarriesEveryChoiceOfAnNStream(t *testing.T) {
+	tracer := NewTracer(NewTraceStore(time.Hour, nil), nil, bifrost.NewNoOpLogger())
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	traceID := "trace-stream-n-choices"
+	tracer.GetAccumulator().CreateStreamAccumulator(traceID, time.Now())
+	t.Cleanup(func() { tracer.ForceCleanupStreamAccumulator(traceID) })
+
+	chunk := func(index, choice int, content string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{
+				Index:                    choice,
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content}},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionStreamRequest, ChunkIndex: index},
+		}}
+	}
+	tracer.ProcessStreamingChunk(ctx, traceID, false, chunk(0, 0, "Hello "), nil)
+	tracer.ProcessStreamingChunk(ctx, traceID, false, chunk(1, 1, "SECRET "), nil)
+	tracer.ProcessStreamingChunk(ctx, traceID, false, chunk(2, 0, "world"), nil)
+	result := tracer.ProcessStreamingChunk(ctx, traceID, true, chunk(3, 1, "PASSWORD"), nil)
+
+	require.NotNil(t, result)
+	require.Len(t, result.OutputChoices, 2)
+	require.Equal(t, "Hello world", *result.OutputChoices[0].Message.Content.ContentStr)
+	require.Equal(t, "SECRET PASSWORD", *result.OutputChoices[1].Message.Content.ContentStr)
+	require.Equal(t, "Hello world", *result.OutputMessage.Content.ContentStr, "the top-level output stays choice 0")
+}
+
 // When the catalog cannot price a streamed model, the accumulated result falls back
 // to the provider's reported cost, unless the provider is configured with
 // ignore_provider_cost.
@@ -1333,7 +1364,7 @@ func TestProcessStreamingChunk_HonorsIgnoreProviderCost(t *testing.T) {
 		{name: "provider cost ignored", ignore: true, wantCost: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog := catalogForTest(t, nil)
 			catalog.SetIgnoreProviderCost("cortecs", tc.ignore)
 			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, bifrost.NewNoOpLogger())
 
@@ -1376,7 +1407,7 @@ func TestProcessStreamingChunk_PricesWithRequestUserScope(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog := catalogForTest(t, nil)
 			catalog.SetIgnoreProviderCost("cortecs", true)
 			uid := userID
 			require.NoError(t, catalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
@@ -1405,7 +1436,7 @@ func TestProcessStreamingChunk_PricesWithRequestUserScope(t *testing.T) {
 // stream finishes, so an off-peak request keeps its discount however late its
 // final chunk lands.
 func TestProcessStreamingChunk_PricesAtRequestStartTime(t *testing.T) {
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.SetIgnoreProviderCost("cortecs", true)
 	providerID := "cortecs"
 	// Peak covers every day except the 6-hour gap from 00:00 to 06:00 UTC, so
@@ -1647,9 +1678,9 @@ func TestTracer_CancelledStreamEstimatedFromAccumulator(t *testing.T) {
 func TestPopulateLLMResponseAttributes_PricesEstimatedCancelledUsage(t *testing.T) {
 	abs, err := filepath.Abs("../modelcatalog/datasheet/testdata/pricing.json")
 	require.NoError(t, err)
-	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
+	ds := datasheetForTest(t, nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
-	tracer := NewTracer(NewTraceStore(time.Hour, nil), modelcatalog.NewTestCatalogWithDatasheet(ds), bifrost.NewNoOpLogger())
+	tracer := NewTracer(NewTraceStore(time.Hour, nil), catalogWithDatasheetForTest(t, ds), bifrost.NewNoOpLogger())
 	defer tracer.Stop()
 
 	_, ctx := newHandleTestCtx(tracer)
@@ -1672,3 +1703,30 @@ func TestPopulateLLMResponseAttributes_PricesEstimatedCancelledUsage(t *testing.
 	// gpt-4o testdata: 2.5e-6 input, 1e-5 output.
 	require.InDelta(t, float64(120)*2.5e-6+float64(40)*1e-5, got, 1e-12)
 }
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New

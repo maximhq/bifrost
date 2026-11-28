@@ -18,7 +18,7 @@ interface BudgetDisplayProps {
 	sharedNote?: string;
 }
 
-const formatResetDuration = (t: TFunction<"common">, duration?: string | null, calendarAligned?: boolean) => {
+export const formatResetDuration = (t: TFunction<"common">, duration?: string | null, calendarAligned?: boolean) => {
 	if (!duration) return "";
 	const label = resetDurationLabels[duration] || duration;
 	return calendarAligned && supportsCalendarAlignment(duration) ? t("calendarAlignedLabel", { label }) : label;

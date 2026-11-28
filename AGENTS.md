@@ -219,6 +219,30 @@ Client HTTP Request
 - **Object pooling everywhere**: `sync.Pool` wrappers reduce GC pressure. Pools exist for: channel messages, response channels, error channels, stream channels, plugin pipelines, MCP requests, HTTP request/response objects, scanner buffers.
 - **Plugin pipeline symmetry**: Pre-hooks execute in registration order, post-hooks in **reverse** order (LIFO). For every pre-hook executed, the corresponding post-hook is guaranteed to run.
 - **Streaming**: SSE chunks flow through `chan chan *schemas.BifrostStreamChunk`. Accumulated into full response for post-hooks via `framework/streaming/accumulator.go`.
+- **Data lives in the live store**: every piece of data a process keeps (configuration, runtime state, caches) goes in `framework/livestore`. Components keep only handles (connections, goroutines, locks, compiled programs), per-request buffers and in-flight working state: state for one request, stream or run, keyed by its ID and removed on every path that ends it (stream accumulators, pending log entries, traces being built), listed under `inflight` in `tests/rawmaps/allowlist.txt`. Anything that outlives the request belongs in the store. Pick the structure by what a miss means:
+  - **Collection**: every row of one config-database kind, loaded at boot and refreshed after every write. A miss means the row does not exist.
+  - **Cache**: only the values someone asked for, fetched by a loader on a miss from wherever they live (the config store included) and dropped by expiry or eviction. A miss means "go fetch".
+  - **Table**: what the process itself writes, with no loader. A miss means nothing was written yet. State tables keyed by an entity ID and tables with a generation are tables.
+  - **Where each lives**: `Store.Collections` holds config-store collections only, with no methods that merge records or hide state; `Store.Views` holds the tables derived from them that several packages read, rebuilt by a subscriber once per publish; a table only one component uses stays with that component. Follow `.claude/skills/live-store/SKILL.md` when adding or changing anything the live store holds.
+- **Adding a config.json section**: Settings (client, server, websocket, framework, auth, proxy and the like) stay fields on `lib.Config`; everything that becomes live-store data waits in `bootConfig` (`transports/bifrost-http/lib/livestore.go`) until `loadLiveStore`, the one place collections are filled, loads it; a table its owning component fills is the exception (step 5). To add a content section:
+  1. Add the section to `transports/config.schema.json` (the source of truth, rule 16).
+  2. Add the field to `ConfigData`.
+  3. Add a field for it to `bootConfig`, saying what fills it and whether a gateway without a config store loads it.
+  4. Write its loader in three steps: parse and validate the section into that `bootConfig` field; with a config store, sync it into the database; for a collection, never write the live store.
+  5. Give it a collection and the database loader `LoadAll` uses, or, for content its owning component applies itself, a table that component fills during its own setup, in both modes. Feature flags and datasheet overrides work this way: their owners fill their tables, the feature flag store from `initFeatureFlags` and the model catalog from `loadDatasheetOverridesFromFile`.
+  6. For a collection, on a gateway without a config store, add its records to `bootConfig.records`, or say there that it is skipped and keep the loader's early return and warning.
+  7. Extend `TestConfigJSONContentPerMode` (`lib/configcontent_test.go`), which pins what each mode loads for every kind `bootConfig` holds.
+
+  `TestRepositoryKeepsDataInTheLiveStore` (`tests/rawmaps`, a module of its own; run it with `cd tests/rawmaps && GOWORK=off go test -count=1 ./...`; without `-count=1` Go reports a cached pass, since it does not notice changed files outside the test module) fails on a new `sync.Map` field or package-level `sync.Map`, a map on a struct with a mutex, maps behind an atomic pointer, or a package-level map a function writes; when one genuinely cannot go in the store, add it to `tests/rawmaps/allowlist.txt` with its group and reason.
+
+- **Writes reach memory the same way for every entity**: after a database write, the live store is updated by one of three rules, whatever the entity:
+  1. **Delete**: read the records that refer to the entity (its holders) and delete it in one transaction; a failed read refuses the delete and changes nothing. Then remove the entity's record with a `Remove` ref, which reads nothing and cannot fail (its children cascade in the same publish), evict the caches bound to it, and re-read the holders with retries. If that re-read still fails, answer 500, saying the delete was saved but not loaded.
+  2. **Create or update**: re-read the written rows with retries, bounded by the request's deadline or by a small fixed budget when it has none. If the read still fails, keep the previous record and answer 500, saying the write was saved but not loaded.
+  3. **Never write configuration to the database from live-store contents**: a partial update merges onto a database read, not onto the live record. State the process owns (usage, last reset, reset epochs, discovery status) is exempt.
+
+  Only an explicit delete removes a record without reading it. A reload or reconcile that finds a held record missing from a list it read earlier re-reads that record instead of removing it, since the list may be older than the record.
+
+  A change applied on behalf of another process follows the same rules with `lib.DBLookupRetry()`. Every write path that re-reads (a collection's rows, or a deleted entity's holders) needs a test where that re-read fails, showing which of these outcomes it gives.
 
 ### Every change states its cost on the request flow
 
@@ -406,6 +430,15 @@ type CompletionHandler struct {
 ```
 
 **Route registration:** Each handler implements `RegisterRoutes(router, middlewares...)` — routes get middleware chains applied per-route via `lib.ChainMiddlewares()`.
+
+**Audit changes:** A management handler that writes config records the change with `lib.RecordAuditChange` right after the write commits, before any step that can still fail (an in-memory reload, a read-back, a client rebuild, a cluster broadcast). The enterprise audit layer writes a recorded change even when the request then fails, so recording later loses the event for a change that is already saved. Never record before the write: a failed write must leave no event.
+
+- Snapshot the row as written. When the response comes from a reload or read-back, call `rec.SetAfter(...)` with it once that step succeeds, so a successful request records what it serves.
+- On a branch whose rollback undid the write, call `rec.Discard()`, also when the rollback committed and then returned `lib.SavedNotAppliedError`. Keep the event only when the rollback write itself failed, because the change is still stored.
+- A loop of writes records one change per write as it commits.
+- Snapshots never carry secrets: pass redacted values (`Redacted()`, `configstore.RedactedKey`).
+- `TestCommitPointRule` in `handlers/auditchange_test.go` fails when a handler sends a saved-then-failed 500 ("... in database but failed to ...") before its first `RecordAuditChange`. Fix the handler; don't reword the message to get past it.
+- When a lower layer commits and then fails, return `lib.SavedNotAppliedError` so the handler can tell a saved change from a failed write (`lib.IsSavedNotApplied`).
 
 **SDK integration layers** (`transports/bifrost-http/integrations/`) provide request/response converters between provider-native SDK formats and Bifrost's internal format. This enables drop-in replacement of OpenAI SDK, Anthropic SDK, AWS Bedrock SDK, Google GenAI SDK, LangChain, and LiteLLM.
 
@@ -595,13 +628,16 @@ Any issue fix or code change lands together with regression tests that pin the n
 
 - **Unit tests wherever possible**, added to the existing test file per the convention below.
 - **A provider-harness case for every wire-visible change** (next sections).
+- **MCP harness cases for every MCP behaviour change** ("Every MCP change ships with MCP harness cases" below). MCP cases go in the MCP harness, not the provider harness.
+- **Semantic cache wiring cases for every semantic cache behaviour change** ("Every semantic cache change ships with semantic cache wiring cases" below). Semantic cache cases go in the semantic cache wiring suite, not the provider harness.
+- **Routing harness cases for every routing behaviour change** ("Every routing change ships with routing harness cases" below). Routing cases go in the routing harness, not the provider harness.
 - **E2E coverage for `ui/` changes** (`tests/e2e/`) - the harness cannot see the UI.
 
 The only exemptions: no wire-visible effect AND no testable behavior change (comments, internal renames, log lines). An exempt change must say so explicitly in the PR.
 
 ### Bug fixes: red before green
 
-Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
+Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development. For MCP bugs, the end-to-end pin is an MCP harness case instead (`.claude/skills/mcp-harness/SKILL.md`), run red and green with `TESTS=<ID> make run-mcp-harness-test`. For semantic cache bugs, it is a semantic cache wiring row (`.claude/skills/semantic-cache-wiring/SKILL.md`): check it with the generator and the suite's library tests while coding, and hand the user its live run. For routing bugs, it is a routing harness scenario (`.claude/skills/routing-harness/SKILL.md`): check it with the generators and the collection script tests while coding, and hand the user its live run.
 
 ### Add tests to existing test files, never new ones
 
@@ -609,7 +645,7 @@ Do not create a new `_test.go` file for a package that already has one. Put the 
 
 ### Every wire-visible change ships with a provider-harness case
 
-Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one.
+Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one. MCP behaviour is the exception: its cases go in the MCP harness ("Every MCP change ships with MCP harness cases"); only a change to how a provider converts tool definitions or tool calls also needs a provider-harness case. Semantic cache behaviour is another exception: its cases go in the semantic cache wiring suite ("Every semantic cache change ships with semantic cache wiring cases"); only a change that also alters what a provider receives or returns on a request the cache does not answer needs a provider-harness case too. Routing behaviour is a third: its cases go in the routing harness ("Every routing change ships with routing harness cases"); only a change that also alters how a provider converts the request it was routed to or the response it returns needs a provider-harness case too.
 
 These layers all sit on the request path, so any of them can change the bytes a client sees - and that end-to-end behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
 
@@ -626,6 +662,57 @@ Insert into the collection surgically (a script that splices the new object in, 
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
 
+### Every MCP change ships with MCP harness cases
+
+Any change to MCP behaviour a client can observe lands together with cases in the MCP harness, `tests/e2e/api/runners/build-mcp-harness.mjs` (see `.claude/skills/mcp-harness/SKILL.md`). MCP behaviour covers MCP clients and their upstream auth, connection types, `/mcp` and `/mcp/<slug>`, `/v1/mcp/tool/execute`, MCP tools in inference and code mode, tool filtering at every level, virtual keys' MCP grants and Virtual MCPs, per-user discovery and the sessions API, MCP logs and pricing, the MCP library, Bifrost's OAuth server and the Bifrost MCP on `/v1/mcp`. These cases never go in `provider-harness.json`.
+
+The skill lists, for each kind of MCP change, every case it needs: a new upstream auth type is checked on every connection type that can carry it, on each inbound auth mode, through expiry and refresh, per caller and shared, and on every surface that calls tools; a filtering change is checked at each level and on every surface that lists or calls tools. Cover every value the change reaches, not only the one named in the issue, and state in the PR any the change cannot reach.
+
+The MCP harness is hermetic: it boots its own Bifrost and an mcpchaos fleet and calls nothing outside the machine. Run it yourself, scoped to your cases, and report the IDs and results (new or changed cases red before the change and green after, the existing tests the change reaches green before and after):
+
+```bash
+TESTS=<ID>,<ID> make run-mcp-harness-test
+```
+
+The same harness rules as above apply: never skip an error status in a test script, assert exact statuses and messages, and never assert a 500 as the expected answer; a known bug is asserted with `A.skip(...)` until its fix lands.
+
+### Every semantic cache change ships with semantic cache wiring cases
+
+Any change to semantic cache behaviour a client can observe lands together with cases in the semantic cache wiring suite, `tests/e2e/api/runners/build-semantic-cache-wiring.mjs` (see `.claude/skills/semantic-cache-wiring/SKILL.md`). Semantic cache behaviour covers the `semantic_cache` plugin and its config, what a request writes, hits or misses and what a hit replays, direct and semantic mode on every cacheable request type and route, streams, the `x-bf-cache-*` request headers, `extra_fields.cache_debug` and the `x-bifrost-cache-*` response headers, identity scoping, the `/api/cache` clear endpoints, the vector stores the plugin runs on, and the cache fields on log rows, logs filters and stats. These cases never go in `provider-harness.json`.
+
+The skill lists, for each kind of semantic cache change, every case it needs: a new input to the cache key is checked with a hit and a miss in direct and semantic mode, streamed and not; a new request type with a write, a hit, a replay equal to the original, the response headers and the log row; a config field with its default, its exact 400s and its effect. Cover every value the change reaches, not only the one named in the issue, and state in the PR any the change cannot reach.
+
+The suite is generated: edit the generator, regenerate the committed collection with `node tests/e2e/api/runners/build-semantic-cache-wiring.mjs`, and commit both. Its run is live and paid (it boots a clean Bifrost on Redis and on Weaviate and calls real providers), so, like the provider harness, it is the user's to trigger. Run the offline checks yourself: unit tests written on the plugin's fake stores, the transport tests, and `node tests/e2e/api/runners/lib/semantic-cache-wiring.test.mjs`. Most of the plugin package's existing tests call OpenAI through `env.OPENAI_API_KEY` and a running Weaviate, and skip themselves when either is missing, so `go test ./...` there prints `ok` without proving anything; report every `--- SKIP` as skipped, never as passed. Then end the report with the whole plugin package and the suite's run scoped to the folders the change reaches (`--folder`, repeatable), every placeholder filled in:
+
+```bash
+docker compose -f tests/docker-compose.yml up -d
+(cd plugins/semanticcache && set -o pipefail && go test -count=1 -v ./... 2>&1 | grep -E -- '--- (FAIL|SKIP)|^(ok|FAIL)')
+# build from the local modules: a plain `make build` sets GOWORK=off and uses the published plugin
+[ -f go.work ] || make setup-workspace
+make build LOCAL=1
+tests/e2e/api/runners/individual/run-newman-semantic-cache-wiring-tests.sh --binary tmp/bifrost-http --port <port> --store both --folder "<folder>"
+```
+
+The same harness rules as above apply: never skip an error status in a test script, assert exact statuses and messages, and never assert a 500 as the expected answer. The suite has no skip, so a known bug's row lands with its fix.
+
+### Every routing change ships with routing harness cases
+
+Any change to how a request is routed that a client can observe lands together with cases in the routing harness: `tests/e2e/api/runners/build-routing-wiring.mjs` for the routing path and `tests/e2e/api/runners/build-model-catalog-wiring.mjs` for the model catalog (see `.claude/skills/routing-harness/SKILL.md`). Routing covers routing rules, model routers and the complexity router, the model catalog and key aliases, a model named without a provider, virtual key provider configs and governance load balancing, key selection and key pins, direct keys, session affinity, fallbacks and retries, `extra_fields.routing_info`, the `x-bifrost-routing-info-*` headers and the routing log trail. These cases never go in `provider-harness.json`. Its existing routing folders stay where they are, and a change that alters what one of them pins updates it there too.
+
+The skill lists, for each kind of routing change, every case it needs: a rule change is checked on each scope, CEL input and target shape it reaches, with its fallbacks and chains; a load balancing change on weighted, zero and allow-list-only configs and on a candidate that cannot serve; a fallback change on every fallback source. Cover every value the change reaches, not only the one named in the issue, and state in the PR any the change cannot reach. When the generator has no step for a case (streams, sessions, direct keys, rule scopes, model routers, a scripted upstream), extend the generator in the same PR; never put the case anywhere else.
+
+The suites are generated: edit the generator, regenerate the committed collection, and commit both. Their runs are live and paid (each runner boots a clean Bifrost and calls real providers), so, like the provider harness, they are the user's to trigger. Run the Go unit tests, both generators and `node tests/e2e/api/collections/collection-scripts.test.mjs` yourself, then end the report with the runs the change reaches, every placeholder filled in:
+
+```bash
+# build from the local modules: a plain `make build` sets GOWORK=off and uses the published core, framework and plugins
+[ -f go.work ] || make setup-workspace
+make build LOCAL=1
+tests/e2e/api/runners/individual/run-newman-routing-wiring-tests.sh --binary tmp/bifrost-http --port <port>
+tests/e2e/api/runners/individual/run-newman-model-catalog-wiring-tests.sh --binary tmp/bifrost-http --port <port>
+```
+
+The same harness rules as above apply: never skip an error status in a test script, assert exact statuses and messages, and never assert a 500 as the expected answer. The generators have no skip, so a known bug's case lands with its fix.
+
 ### Provider-native features are tested on every route that reaches the provider
 
 A provider is reachable through more than its own SDK endpoint, and a fix that only looks at the route named in the issue is incomplete. Before calling a provider-native feature (a content block type, a beta header, a request parameter) fixed or added, enumerate every inbound route that can carry it to that provider and cover each one:
@@ -641,7 +728,7 @@ For each route the change reaches: a unit test that drives that route's ingress 
 
 Unit tests and `make test-core` are the finish line for the agent. Run the Go-level red/green loop and the regression reruns, and report what passed and what failed.
 
-The live provider harness is the user's to run, not the agent's. Do not launch it. Instead, end the report with both final commands in a plain code block, ready to paste: the `make dev` line that starts Bifrost from the code under test, and the single-line `make run-provider-harness-test` line that runs against it. No box drawing around them, since border characters make the commands impossible to select. Naming the scope is the agent's job; spending the money is the user's call.
+The live provider harness is the user's to run, not the agent's. Do not launch it. Instead, end the report with both final commands in a plain code block, ready to paste: the `make dev` line that starts Bifrost from the code under test, and the single-line `make run-provider-harness-test` line that runs against it. No box drawing around them, since border characters make the commands impossible to select. Naming the scope is the agent's job; spending the money is the user's call. A semantic cache change hands over the semantic cache wiring run instead ("Every semantic cache change ships with semantic cache wiring cases"), and both when it also changes what a provider receives or returns on a request the cache does not answer. A routing change hands over the routing harness runs instead ("Every routing change ships with routing harness cases"), and the provider harness as well when it also changes what a provider receives or returns, or touches an existing routing folder there.
 
 **RUN THE PROVIDER HARNESS.** Unit tests are green. The live run is yours to trigger.
 
@@ -729,6 +816,8 @@ Categories: `agent_*_test.go`, `tool_*_test.go`, `connection_*_test.go`, `codemo
 
 Run: `make test-mcp TESTCASE=<TestName>`
 
+These prove the logic; the end-to-end MCP cases live in the MCP harness ("Every MCP change ships with MCP harness cases").
+
 ### E2E Tests (`tests/e2e/`)
 
 Playwright tests with page objects, data factories, fixtures:
@@ -763,6 +852,15 @@ Variants:
 ### `/harness-test-writer <PR# | issue# | URL>`
 Add regression test cases to the provider harness (`tests/e2e/api/collections/provider-harness.json`) from a merged PR or GitHub issue. Traces the affected wire path, checks existing coverage, designs cases per harness conventions, inserts them surgically without reformatting the file, and validates via the augment and filter scripts. This is the skill the Testing section's harness-case rule points at.
 
+### `mcp-harness`
+Which MCP harness cases each kind of MCP change needs (upstream auth, connection types, inbound auth on `/mcp`, filtering and Virtual MCPs, tool execution, MCP tools in inference, per-user discovery, logs, the library, the Bifrost MCP), where they go in `tests/e2e/api/runners/build-mcp-harness.mjs`, how to write them and how to run them. This is the skill the Testing section's MCP harness rule points at.
+
+### `semantic-cache-wiring`
+Which semantic cache wiring cases each kind of semantic cache change needs (config fields, cache key inputs, request types and routes, streams, per-request headers, semantic matching, identity scoping, the plugin and clear APIs, vector stores, `cache_debug`, response headers and logs), where they go in `tests/e2e/api/runners/build-semantic-cache-wiring.mjs`, how to write them and how to run them. This is the skill the Testing section's semantic cache rule points at.
+
+### `routing-harness`
+Which routing harness cases each kind of routing change needs (routing rules, model routers and the complexity router, the model catalog and key aliases, virtual key routing and governance load balancing, key selection, key pins and direct keys, session affinity, fallbacks and retries, entry points, `routing_info` and the routing log), where they go in `tests/e2e/api/runners/build-routing-wiring.mjs` and `build-model-catalog-wiring.mjs`, how to write them and how to run them. This is the skill the Testing section's routing rule points at.
+
 ### `/investigate-issue <issue-id>`
 Investigate a GitHub issue from `maximhq/bifrost`. Fetches issue details, classifies by type/area, searches codebase, traces dependencies, analyzes side effects, plans the required regression tests (unit/harness/LLM/MCP/E2E), and presents an implementation plan with per-change approval gates.
 
@@ -794,7 +892,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 3. Add to `go.work`
 4. Register in transport layer or Bifrost config
 5. Add test targets to `Makefile`
-6. Add unit tests; add a provider-harness regression case if the plugin's behavior is wire-visible
+6. Add unit tests, plus the end-to-end cases its wire-visible behaviour needs: MCP harness cases for MCP behaviour (an `MCPPlugin`, tool filtering, MCP logs), otherwise a provider-harness regression case (see the Testing section)
 
 ### Modify a UI feature
 1. Find workspace page: `ui/app/workspace/<feature>/`
@@ -844,6 +942,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 - **Pool names**: Descriptive string passed to `pool.New()` (e.g., `"channel-message"`, `"response-stream"`).
 - **Context keys**: Use `BifrostContextKey` type. Custom plugins should define their own key types to avoid collisions.
 - **Struct comments**: Keep struct field comments to a short trailing one-liner (or none). Long multi-line explanations do not belong inside struct definitions; put the rationale in the doc comment of the function that uses the field, or in the package doc.
+- **Comments describe the code, not the issue that prompted it**: a comment or godoc says what the code does and why, in terms that hold for every input it handles. Never quote the bug report, PR or review thread, the customer, client, test prompt or values that exposed the problem, and never write "fixes the X issue" or "previously this did Y". That history belongs in the commit message and PR. Test names and test comments name the behaviour they check, not the incident that reproduced it.
 - **Go filenames**: No underscores. The only permitted underscore is the `_test.go` suffix. Examples: `pluginpipeline.go`, `pluginpipeline_test.go` — never `plugin_pipeline.go` or `plugin_pipeline_race_test.go`. Concatenate words (lowercase, no separators) for multi-word filenames.
 
 # Frontend Code Guidelines & Patterns

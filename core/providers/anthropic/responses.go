@@ -4511,7 +4511,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					StopReason:   schemas.Ptr(reason),
 					StopSequence: stopSequence,
 				}
-			} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.Response.IncompleteDetails); reason != "" {
+			} else if reason := AnthropicStopReasonFromIncompleteDetails(bifrostResp.Response.IncompleteDetails); reason != "" {
 				// A truncated turn carrying only incomplete_details must not report end_turn.
 				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
 					StopReason:   schemas.Ptr(reason),
@@ -5931,7 +5931,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	// Stop reason precedence: StopReason > IncompleteDetails > tool_use inference > end_turn.
 	if bifrostResp.StopReason != nil {
 		anthropicResp.StopReason, anthropicResp.StopSequence = anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason), bifrostResp.StopSequence)
-	} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.IncompleteDetails); reason != "" {
+	} else if reason := AnthropicStopReasonFromIncompleteDetails(bifrostResp.IncompleteDetails); reason != "" {
 		// OpenAI-shaped providers never send stop_reason; a turn truncated by the
 		// output cap or a content filter carries only incomplete_details. Reporting
 		// end_turn there hides the truncation from the client (#6782).
@@ -6237,6 +6237,16 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		appendOrphanToolResultsAsUserText(orphaned)
 	}
 
+	// openGroupCallIDs returns the call ids of the latest tool call group whose results are not yet flushed.
+	openGroupCallIDs := func() map[string]bool {
+		for i := len(toolCallGroups) - 1; i >= 0; i-- {
+			if !toolCallGroups[i].flushed {
+				return toolCallGroups[i].toolCallIDs
+			}
+		}
+		return nil
+	}
+
 	// Helper to flush pending tool calls with tool call ID tracking
 	flushPendingToolCallsWithTracking := func() {
 		if len(pendingToolCalls) > 0 && currentAssistantMessage != nil {
@@ -6293,6 +6303,26 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 
 		switch msgType {
 		case schemas.ResponsesMessageTypeMessage:
+			// A user message between the outputs of one turn's parallel calls (a client attaching a
+			// file the first call read) waits for the outputs still to come: Anthropic needs every
+			// tool_use answered in the next message, so the results lead and the user content follows.
+			if (msg.Role == nil || *msg.Role == schemas.ResponsesInputMessageRoleUser) &&
+				len(pendingToolResultBlocks) > 0 && openCallAnsweredLater(bifrostMessages[i+1:], pendingToolResultBlocks, openGroupCallIDs()) {
+				// Reasoning still pending goes out as its own assistant message ahead of the held
+				// content, the same place it takes when the user message follows the last output.
+				if len(pendingReasoningContentBlocks) > 0 {
+					pendingToolOutputTexts = append(pendingToolOutputTexts, AnthropicMessage{
+						Role:    AnthropicMessageRoleAssistant,
+						Content: AnthropicContent{ContentBlocks: pendingReasoningContentBlocks},
+					})
+					pendingReasoningContentBlocks = nil
+				}
+				if held := convertBifrostMessageToAnthropicMessage(caps, &msg, &pendingReasoningContentBlocks); held != nil {
+					pendingToolOutputTexts = append(pendingToolOutputTexts, *held)
+					seenConversation = true
+				}
+				continue
+			}
 			// Flush any pending tool results before processing other message types
 			flushPendingToolResults()
 
@@ -10909,7 +10939,10 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 		anthropicTool.Strict = tool.ResponsesToolFunction.Strict
 	}
 	if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
-		anthropicTool.InputSchema = tool.ResponsesToolFunction.Parameters
+		// Anthropic requires `"type":"object"` at the input_schema root; a
+		// typeless root gets it on a copy (a root composition was already
+		// rewritten into an object schema by the caller).
+		anthropicTool.InputSchema = withAnthropicObjectRootType(tool.ResponsesToolFunction.Parameters)
 	} else {
 		// Anthropic requires input_schema for custom tools, provide empty object schema if missing
 		anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
@@ -11175,6 +11208,8 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 
 	// Handle different source types
 	switch src.Type {
+	case "content", "content_block":
+		resultBlock.ResponsesInputMessageContentBlockFile.FileContent = src.Content
 	case "url":
 		// URL source
 		if src.URL != nil {
@@ -11921,4 +11956,35 @@ func rawCaptureExtraFields(extra schemas.BifrostResponseExtraFields) *schemas.Bi
 	}
 	echo := extra
 	return &echo
+}
+
+// openCallAnsweredLater reports whether a later input item carries the output of a call in group that has no
+// result among pending yet, so the turn's results are still incomplete at this point of the input.
+func openCallAnsweredLater(rest []schemas.ResponsesMessage, pending []AnthropicContentBlock, group map[string]bool) bool {
+	if len(group) == 0 {
+		return false
+	}
+	answered := make(map[string]bool, len(pending))
+	open := len(group)
+	for _, block := range pending {
+		if block.ToolUseID != nil && group[*block.ToolUseID] && !answered[*block.ToolUseID] {
+			answered[*block.ToolUseID] = true
+			open--
+		}
+	}
+	// The ordinary turn: every call is answered, so nothing is still to come and the input is not scanned.
+	if open == 0 {
+		return false
+	}
+	for _, item := range rest {
+		if item.Type == nil || (*item.Type != schemas.ResponsesMessageTypeFunctionCallOutput && *item.Type != schemas.ResponsesMessageTypeComputerCallOutput) ||
+			item.ResponsesToolMessage == nil || item.ResponsesToolMessage.CallID == nil {
+			continue
+		}
+		// Group and pending ids are sanitized tool_use ids, so the raw call id is sanitized to match them.
+		if id := providerUtils.SanitizeAnthropicToolUseID(*item.ResponsesToolMessage.CallID); group[id] && !answered[id] {
+			return true
+		}
+	}
+	return false
 }

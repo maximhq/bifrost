@@ -521,7 +521,6 @@
 				"allowed": "Permitido",
 				"blocked": "Bloqueado",
 				"redacted": "Ocultado",
-				"transformed": "Transformado",
 				"monitored": "Monitorizado",
 				"detected": "Detetado"
 			},
@@ -577,11 +576,9 @@
 			"toolTypeCount_other": "{{type}} · {{count}} ferramentas",
 			"guardrailHints": {
 				"blocked": "A regra interrompeu o pedido.",
-				"redacted": "A regra removeu o conteúdo correspondente e o pedido prosseguiu.",
-				"transformed": "A regra reescreveu o conteúdo correspondente e o pedido prosseguiu.",
+				"redacted": "A regra mascarou ou reescreveu o conteúdo correspondente e o pedido prosseguiu.",
 				"monitoredWouldBlock": "A regra apenas monitoriza: teria bloqueado isto, mas o pedido prosseguiu sem alterações.",
 				"monitoredWouldRedact": "A regra apenas monitoriza: teria ocultado isto, mas o pedido prosseguiu sem alterações.",
-				"monitoredWouldTransform": "A regra apenas monitoriza: teria transformado isto, mas o pedido prosseguiu sem alterações.",
 				"monitored": "A regra apenas monitoriza: o pedido prosseguiu sem alterações.",
 				"detected": "A regra sinalizou o pedido e deixou-o prosseguir sem alterações."
 			},

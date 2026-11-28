@@ -59,9 +59,10 @@ func seedPendingFlow(store *mockOAuth2Store, id string, expires time.Time) {
 	}
 }
 
-func newConsentHandler(store *mockOAuth2Store, resolver OAuth2IdentityResolver, enforceAuth bool) *OAuth2ConsentHandler {
+func newConsentHandler(t testing.TB, store *mockOAuth2Store, resolver OAuth2IdentityResolver, enforceAuth bool) *OAuth2ConsentHandler {
+	t.Helper()
 	SetLogger(&mockLogger{})
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, enforceAuth)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeBoth, enforceAuth)
 	return NewOAuth2ConsentHandler(cfg, nil, resolver)
 }
 
@@ -78,7 +79,7 @@ func TestConsentFlowDetail(t *testing.T) {
 	t.Run("pending flow returns client and modes", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-1", "")
 		h.flowDetail(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
@@ -101,7 +102,7 @@ func TestConsentFlowDetail(t *testing.T) {
 		seedPendingFlow(store, "flow-cimd", time.Now().Add(time.Minute))
 		store.authReqs["flow-cimd"].ClientID = clientID
 		store.authReqs["flow-cimd"].RedirectURI = "http://127.0.0.1:3000/callback"
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		h.clientMetadata = newOAuth2ClientMetadataResolver(host.server.Client())
 
 		// The document fetch uses ctx as its context.
@@ -124,7 +125,7 @@ func TestConsentFlowDetail(t *testing.T) {
 		seedPendingFlow(store, "flow-cimd", time.Now().Add(time.Minute))
 		store.authReqs["flow-cimd"].ClientID = "https://client.example.com/oauth/client.json"
 		seedPendingFlow(store, "flow-dcr", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		h.store.ClientConfig.MCPServerMaxProtocolVersion = schemas.MCPProtocolVersion20250618
 
 		detail := consentCtx("flow-cimd", "")
@@ -156,7 +157,7 @@ func TestConsentFlowDetail(t *testing.T) {
 	t.Run("registered client has no published host", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-dcr", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-dcr", "")
 		h.flowDetail(ctx)
 		var resp consentFlowDetailResponse
@@ -166,14 +167,14 @@ func TestConsentFlowDetail(t *testing.T) {
 	})
 
 	t.Run("missing flow returns 404", func(t *testing.T) {
-		h := newConsentHandler(newConsentStore(), nil, false)
+		h := newConsentHandler(t, newConsentStore(), nil, false)
 		ctx := consentCtx("nope", "")
 		h.flowDetail(ctx)
 		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
 	})
 
 	t.Run("empty flow id returns 400", func(t *testing.T) {
-		h := newConsentHandler(newConsentStore(), nil, false)
+		h := newConsentHandler(t, newConsentStore(), nil, false)
 		ctx := consentCtx("", "")
 		h.flowDetail(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
@@ -182,7 +183,7 @@ func TestConsentFlowDetail(t *testing.T) {
 	t.Run("expired flow returns 410", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(-time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-1", "")
 		h.flowDetail(ctx)
 		assert.Equal(t, fasthttp.StatusGone, ctx.Response.StatusCode())
@@ -192,7 +193,7 @@ func TestConsentFlowDetail(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
 		store.authReqs["flow-1"].Status = configtables.OAuth2AuthorizeRequestStatusConsented
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-1", "")
 		h.flowDetail(ctx)
 		assert.Equal(t, fasthttp.StatusGone, ctx.Response.StatusCode())
@@ -218,7 +219,7 @@ func TestConsentAvailableModes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newConsentHandler(newConsentStore(), tc.resolver, tc.enforceAuth)
+			h := newConsentHandler(t, newConsentStore(), tc.resolver, tc.enforceAuth)
 			h.store.ClientConfig.OAuth2ServerConfig.DisableVKIdentity = tc.disableVK
 			// Session is only offered to an authenticated consenter, so the table
 			// runs as a signed-in dashboard user; anonymous callers are covered by
@@ -236,7 +237,7 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 		store := newConsentStore()
 		store.vksByValue["sk-bf-active"] = activeVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-active"}`)
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -254,7 +255,7 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 		store := newConsentStore()
 		store.vksByValue[inactiveVK.Value.GetValue()] = inactiveVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-inactive"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
@@ -266,7 +267,7 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 		store := newConsentStore()
 		store.vksByValue["sk-bf-expired"] = expiredVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-expired"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -277,7 +278,7 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 	t.Run("unknown VK is rejected", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-missing"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
@@ -286,7 +287,7 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 	t.Run("empty VK value is rejected", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":""}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
@@ -302,7 +303,7 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 		store.vksByValue["sk-bf-retired"] = rotatedVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
 		seedPendingFlow(store, "flow-2", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 
 		retired := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-retired"}`)
 		h.flowSubmit(retired)
@@ -319,7 +320,7 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 		store := newConsentStore()
 		store.vksByValue[activeVK.Value.GetValue()] = activeVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 
 		first := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-active"}`)
 		h.flowSubmit(first)
@@ -335,7 +336,7 @@ func TestConsentFlowSubmit_Session(t *testing.T) {
 	t.Run("session mode mints a server-side token when auth not enforced", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := signedInConsentCtx("flow-1", `{"mode":"session"}`)
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -346,7 +347,7 @@ func TestConsentFlowSubmit_Session(t *testing.T) {
 	t.Run("session mode is unavailable when auth is enforced", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, true)
+		h := newConsentHandler(t, store, nil, true)
 		ctx := signedInConsentCtx("flow-1", `{"mode":"session"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
@@ -373,7 +374,7 @@ func TestConsentFlowSubmit_DeviceFlowNeedsUserCode(t *testing.T) {
 			ID: "flow-device", ClientID: claudeCodeClientID, Status: configtables.OAuth2AuthorizeRequestStatusPending,
 			DeviceCodeHash: &deviceHash, UserCodeHash: new(testDeviceUserCodeHash()), ExpiresAt: time.Now().Add(time.Minute),
 		}
-		return store, newConsentHandler(store, nil, false)
+		return store, newConsentHandler(t, store, nil, false)
 	}
 	for name, body := range map[string]string{
 		"no code":    `{"mode":"vk","value":"sk-bf-active"}`,
@@ -414,7 +415,7 @@ func TestConsentFlowSubmit_DeviceFlow(t *testing.T) {
 		DeviceCodeHash: &deviceHash, UserCodeHash: new(testDeviceUserCodeHash()),
 		ExpiresAt: time.Now().Add(time.Minute),
 	}
-	h := newConsentHandler(store, nil, false)
+	h := newConsentHandler(t, store, nil, false)
 
 	// The consent page names the built-in client even if its registration was swept.
 	detail := consentCtx("flow-device", "")
@@ -471,7 +472,7 @@ func TestConsentFlowSubmit_DeviceFlowUserWithoutAccess(t *testing.T) {
 	t.Run("no access is refused with guidance and the sign-in stays pending", func(t *testing.T) {
 		store := newConsentStore()
 		seedDevice(store)
-		h := newConsentHandler(store, &accessCheckingResolver{fakeResolver: signedIn, hasAccess: false}, false)
+		h := newConsentHandler(t, store, &accessCheckingResolver{fakeResolver: signedIn, hasAccess: false}, false)
 		ctx := consentCtx("flow-device", `{"mode":"user","user_code":"`+testDeviceUserCode+`"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -482,7 +483,7 @@ func TestConsentFlowSubmit_DeviceFlowUserWithoutAccess(t *testing.T) {
 	t.Run("access lookup failure is retriable", func(t *testing.T) {
 		store := newConsentStore()
 		seedDevice(store)
-		h := newConsentHandler(store, &accessCheckingResolver{fakeResolver: signedIn, accessErr: errors.New("store unavailable")}, false)
+		h := newConsentHandler(t, store, &accessCheckingResolver{fakeResolver: signedIn, accessErr: errors.New("store unavailable")}, false)
 		ctx := consentCtx("flow-device", `{"mode":"user","user_code":"`+testDeviceUserCode+`"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -492,7 +493,7 @@ func TestConsentFlowSubmit_DeviceFlowUserWithoutAccess(t *testing.T) {
 	t.Run("a user with access signs in", func(t *testing.T) {
 		store := newConsentStore()
 		seedDevice(store)
-		h := newConsentHandler(store, &accessCheckingResolver{fakeResolver: signedIn, hasAccess: true}, false)
+		h := newConsentHandler(t, store, &accessCheckingResolver{fakeResolver: signedIn, hasAccess: true}, false)
 		ctx := consentCtx("flow-device", `{"mode":"user","user_code":"`+testDeviceUserCode+`"}`)
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -503,7 +504,7 @@ func TestConsentFlowSubmit_DeviceFlowUserWithoutAccess(t *testing.T) {
 		store := newConsentStore()
 		seedDevice(store)
 		resolver := signedIn
-		h := newConsentHandler(store, &resolver, false)
+		h := newConsentHandler(t, store, &resolver, false)
 		ctx := consentCtx("flow-device", `{"mode":"user","user_code":"`+testDeviceUserCode+`"}`)
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -512,7 +513,7 @@ func TestConsentFlowSubmit_DeviceFlowUserWithoutAccess(t *testing.T) {
 	t.Run("an /mcp authorization-code flow is not checked", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, &accessCheckingResolver{fakeResolver: signedIn, hasAccess: false}, false)
+		h := newConsentHandler(t, store, &accessCheckingResolver{fakeResolver: signedIn, hasAccess: false}, false)
 		ctx := consentCtx("flow-1", `{"mode":"user"}`)
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -543,14 +544,14 @@ func TestConsentFlowSubmit_DeviceFlowAudit(t *testing.T) {
 	store.vksByValue["sk-bf-active"] = &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
 	seed(store)
 	approve := consentCtx("flow-device", `{"mode":"vk","value":"sk-bf-active","user_code":"`+testDeviceUserCode+`"}`)
-	newConsentHandler(store, nil, false).flowSubmit(approve)
+	newConsentHandler(t, store, nil, false).flowSubmit(approve)
 	require.Equal(t, fasthttp.StatusOK, approve.Response.StatusCode(), string(approve.Response.Body()))
 	assert.Equal(t, []string{"oauth2_consent.granted"}, events(approve))
 
 	store = newConsentStore()
 	seed(store)
 	deny := consentCtx("flow-device", `{"deny":true}`)
-	newConsentHandler(store, nil, false).flowSubmit(deny)
+	newConsentHandler(t, store, nil, false).flowSubmit(deny)
 	require.Equal(t, fasthttp.StatusOK, deny.Response.StatusCode(), string(deny.Response.Body()))
 	assert.Equal(t, []string{"oauth2_consent.denied"}, events(deny))
 }
@@ -561,7 +562,7 @@ func TestConsentFlowSubmit_DeviceFlowAudit(t *testing.T) {
 func TestConsentFlowSubmit_DenyIsDeviceOnly(t *testing.T) {
 	store := newConsentStore()
 	seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-	h := newConsentHandler(store, nil, false)
+	h := newConsentHandler(t, store, nil, false)
 	ctx := consentCtx("flow-1", `{"deny":true}`)
 	h.flowSubmit(ctx)
 	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -572,7 +573,7 @@ func TestConsentFlowSubmit_User(t *testing.T) {
 	t.Run("user mode rejected when no resolver (mode not offered)", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-1", `{"mode":"user"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
@@ -581,7 +582,7 @@ func TestConsentFlowSubmit_User(t *testing.T) {
 	t.Run("resolved session yields user mode", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, &fakeResolver{userModeAvailable: true, userID: "user-1", name: "Alice"}, false)
+		h := newConsentHandler(t, store, &fakeResolver{userModeAvailable: true, userID: "user-1", name: "Alice"}, false)
 		ctx := consentCtx("flow-1", `{"mode":"user"}`)
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -592,7 +593,7 @@ func TestConsentFlowSubmit_User(t *testing.T) {
 	t.Run("user mode without a session is rejected", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, &fakeResolver{userModeAvailable: true, userID: ""}, false)
+		h := newConsentHandler(t, store, &fakeResolver{userModeAvailable: true, userID: ""}, false)
 		ctx := consentCtx("flow-1", `{"mode":"user"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
@@ -606,7 +607,7 @@ func TestConsentFlowSubmit_VKUserBinding(t *testing.T) {
 		store := newConsentStore()
 		store.vksByValue[boundVK.Value.GetValue()] = boundVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, &fakeResolver{userModeAvailable: true, userID: "owner-1", vkBoundUserID: "owner-1"}, false)
+		h := newConsentHandler(t, store, &fakeResolver{userModeAvailable: true, userID: "owner-1", vkBoundUserID: "owner-1"}, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-bound"}`)
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -618,7 +619,7 @@ func TestConsentFlowSubmit_VKUserBinding(t *testing.T) {
 		store := newConsentStore()
 		store.vksByValue[boundVK.Value.GetValue()] = boundVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, &fakeResolver{userModeAvailable: true, userID: "intruder", vkBoundUserID: "owner-1"}, false)
+		h := newConsentHandler(t, store, &fakeResolver{userModeAvailable: true, userID: "intruder", vkBoundUserID: "owner-1"}, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-bound"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
@@ -628,7 +629,7 @@ func TestConsentFlowSubmit_VKUserBinding(t *testing.T) {
 		store := newConsentStore()
 		store.vksByValue[boundVK.Value.GetValue()] = boundVK
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, &fakeResolver{userModeAvailable: true, userID: "", vkBoundUserID: "owner-1"}, false)
+		h := newConsentHandler(t, store, &fakeResolver{userModeAvailable: true, userID: "", vkBoundUserID: "owner-1"}, false)
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-bound"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
@@ -667,7 +668,7 @@ func TestConsentSessionModeRequiresIdentity(t *testing.T) {
 	t.Run("flow detail offers session only to an authenticated consenter", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 
 		anon := consentCtx("flow-1", "")
 		h.flowDetail(anon)
@@ -687,7 +688,7 @@ func TestConsentSessionModeRequiresIdentity(t *testing.T) {
 	t.Run("anonymous session-mode submit is refused with 401", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := consentCtx("flow-1", `{"mode":"session"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -698,7 +699,7 @@ func TestConsentSessionModeRequiresIdentity(t *testing.T) {
 	t.Run("auth-disabled bypass is not an identity", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := bypassedConsentCtx("flow-1", `{"mode":"session"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -708,7 +709,7 @@ func TestConsentSessionModeRequiresIdentity(t *testing.T) {
 	t.Run("verified dashboard session may grant session mode", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, nil, false)
+		h := newConsentHandler(t, store, nil, false)
 		ctx := signedInConsentCtx("flow-1", `{"mode":"session"}`)
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -718,7 +719,7 @@ func TestConsentSessionModeRequiresIdentity(t *testing.T) {
 	t.Run("identity-provider user may grant session mode", func(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
-		h := newConsentHandler(store, &fakeResolver{userModeAvailable: true, userID: "user-1"}, false)
+		h := newConsentHandler(t, store, &fakeResolver{userModeAvailable: true, userID: "user-1"}, false)
 		ctx := consentCtx("flow-1", `{"mode":"session"}`)
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -730,7 +731,7 @@ func TestConsentRechecksCallbackPolicy(t *testing.T) {
 	store := newConsentStore()
 	seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
 	store.authReqs["flow-1"].RedirectURI = "https://removed.example/cb"
-	h := newConsentHandler(store, nil, false)
+	h := newConsentHandler(t, store, nil, false)
 	for _, submit := range []bool{false, true} {
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-unused"}`)
 		if submit {

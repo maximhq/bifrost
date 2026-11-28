@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
@@ -131,9 +132,10 @@ type complexitySuggestions struct {
 
 	// next is this node's view of each router's schedule: the next run of the
 	// settings hash names. With a schedule store it only saves reading the
-	// row before the run is due; without one it is the schedule.
-	nextMu sync.Mutex
-	next   map[string]complexitySuggestionNext
+	// row before the run is due; without one it is the schedule. It is state
+	// of the model router kind in the live store, so a removed router's entry
+	// goes with it.
+	next *livestore.Table[string, *complexitySuggestionNext]
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -148,16 +150,21 @@ type complexitySuggestionNext struct {
 	at   time.Time
 }
 
+// complexitySuggestionScheduleTable is the live-store table of each router's next scheduled
+// run. Routing is a fixed built-in plugin, so one instance runs per process and the name is fixed.
+const complexitySuggestionScheduleTable = "routing_complexity_suggestion_next"
+
+// cachedNext returns this process's view of a router's next run: zero when it has none.
 func (cs *complexitySuggestions) cachedNext(routerID string) complexitySuggestionNext {
-	cs.nextMu.Lock()
-	defer cs.nextMu.Unlock()
-	return cs.next[routerID]
+	if next, ok := cs.next.Get(routerID); ok {
+		return *next
+	}
+	return complexitySuggestionNext{}
 }
 
+// rememberNext records the next run of the settings hash names for a router.
 func (cs *complexitySuggestions) rememberNext(routerID, hash string, at time.Time) {
-	cs.nextMu.Lock()
-	cs.next[routerID] = complexitySuggestionNext{hash: hash, at: at}
-	cs.nextMu.Unlock()
+	cs.next.Put(routerID, &complexitySuggestionNext{hash: hash, at: at})
 }
 
 // errSuggestionsClosing is a run that reached a plugin being cleaned up.
@@ -255,15 +262,19 @@ func complexitySuggestionPartition(routerID string) string {
 	return ComplexitySuggestionsJobKind + ":" + routerID
 }
 
-// startComplexitySuggestions starts the schedule check. tick <= 0 starts no
-// ticker, for tests that drive the check themselves.
-func (p *RoutingPlugin) startComplexitySuggestions(ctx context.Context, tick time.Duration) {
+// startComplexitySuggestions starts the schedule check, its schedule view in the plugin's live
+// store. tick <= 0 starts no ticker, for tests that drive the check themselves.
+func (p *RoutingPlugin) startComplexitySuggestions(ctx context.Context, tick time.Duration) error {
+	next, err := p.live.RegisterState[complexitySuggestionNext](ctx, complexitySuggestionScheduleTable, livestore.KindModelRouter)
+	if err != nil {
+		return err
+	}
 	cs := &complexitySuggestions{inline: map[string]bool{}, inlineCancels: map[string]context.CancelFunc{}, cancelled: map[string]bool{},
-		next: map[string]complexitySuggestionNext{}}
+		next: next}
 	cs.ctx, cs.cancel = context.WithCancel(ctx)
 	p.suggestions = cs
 	if tick <= 0 {
-		return
+		return nil
 	}
 	cs.wg.Go(func() {
 		timer := time.NewTimer(tick + rand.N(suggestionScheduleJitter))
@@ -280,6 +291,7 @@ func (p *RoutingPlugin) startComplexitySuggestions(ctx context.Context, tick tim
 			}
 		}
 	})
+	return nil
 }
 
 // closeComplexitySuggestions stops the schedule check and every run in
@@ -295,6 +307,7 @@ func (p *RoutingPlugin) closeComplexitySuggestions() {
 	cs.cancel()
 	cs.mu.Unlock()
 	cs.wg.Wait()
+	_ = p.live.DropTable(context.Background(), complexitySuggestionScheduleTable)
 }
 
 // SetComplexitySuggestionStore supplies where suggestions and runs are kept

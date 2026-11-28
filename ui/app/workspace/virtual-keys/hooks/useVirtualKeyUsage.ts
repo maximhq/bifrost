@@ -5,7 +5,14 @@ import { useGetUserAccessProfilesQuery } from "@enterprise/lib/store/apis/access
 import { useGetVirtualKeyUsersQuery } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { UserAccessProfile } from "@enterprise/lib/types/accessProfile";
 import { User } from "@enterprise/lib/types/user";
-import { hasProfileRateLimit, resolveDisplayRateLimit, virtualKeyManagement } from "./useVirtualKeyUsage.utils";
+import {
+	allProfilesSpent,
+	hasProfileRateLimit,
+	payingProfiles,
+	profileBudgetLines,
+	resolveDisplayRateLimit,
+	virtualKeyManagement,
+} from "./useVirtualKeyUsage.utils";
 
 /**
  * The assignee fields every caller actually reads. Narrower than User on purpose: the
@@ -39,8 +46,10 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	/** A user's managed key: locked except for its name and description. */
 	isUserProfileManaged: boolean;
 	managingProfile: UserAccessProfile | undefined;
+	/** The active profiles that list the key; any of them can pay for its requests. */
+	managingProfiles: UserAccessProfile[];
 	hasApRateLimit: boolean;
-	displayBudgets: Budget[] | undefined;
+	displayBudgets: (Budget & { label?: string })[] | undefined;
 	displayRateLimit: RateLimit | undefined;
 	isExhausted: boolean;
 } {
@@ -65,7 +74,8 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 
 	// Only treat the VK as AP-managed when an AP explicitly lists this VK in its virtual_key_ids.
 	// No fallback to "first active" / "first AP" — that misattributed budgets in multi-AP setups.
-	const managingProfile = vk ? userAPs.find((p) => p.virtual_key_ids?.includes(vk.id)) : undefined;
+	const managingProfiles = payingProfiles(userAPs, vk?.id);
+	const managingProfile = managingProfiles[0] ?? (vk ? userAPs.find((p) => p.virtual_key_ids?.includes(vk.id)) : undefined);
 	// The server-computed flag is the sole source of truth for "is this managed": the
 	// access-profile call above is RBAC-gated and skipped for callers without AccessProfiles:View,
 	// which would leave the VK looking unmanaged (and editable) if it decided this. managingProfile is now
@@ -76,17 +86,8 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	// governs is still the owner's to edit, unassign and delete (see virtualKeyManagement).
 	const { isOwnerGoverned, isUserProfileManaged } = virtualKeyManagement(vk);
 
-	const displayBudgets: Budget[] | undefined = managingProfile
-		? (managingProfile.budgets ?? []).map((line) => ({
-				id: line.id,
-				max_limit: line.max_limit,
-				reset_duration: line.reset_duration,
-				current_usage: line.current_usage,
-				last_reset: line.last_reset,
-				override_amount: line.override_amount,
-				override_mode: line.override_mode,
-				override_cycles_remaining: line.override_cycles_remaining,
-			}))
+	const displayBudgets: (Budget & { label?: string })[] | undefined = managingProfile
+		? profileBudgetLines(managingProfiles.length > 0 ? managingProfiles : [managingProfile])
 		: vk?.budgets;
 
 	const apRL = managingProfile?.rate_limit;
@@ -102,7 +103,7 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 		vkRateLimit: vk?.rate_limit,
 	});
 
-	const isExhausted =
+	const ownLimitSpent =
 		(displayBudgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ?? false) ||
 		(displayRateLimit?.token_current_usage != null &&
 			displayRateLimit?.token_max_limit != null &&
@@ -110,6 +111,7 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 		(displayRateLimit?.request_current_usage != null &&
 			displayRateLimit?.request_max_limit != null &&
 			displayRateLimit.request_current_usage >= displayRateLimit.request_max_limit);
+	const isExhausted = managingProfiles.length > 1 ? allProfilesSpent(managingProfiles) : ownLimitSpent;
 
 	return {
 		assignedUsers,
@@ -117,6 +119,7 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 		isOwnerGoverned,
 		isUserProfileManaged,
 		managingProfile,
+		managingProfiles,
 		hasApRateLimit,
 		displayBudgets,
 		displayRateLimit,

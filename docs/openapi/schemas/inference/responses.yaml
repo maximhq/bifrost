@@ -1,5 +1,22 @@
 # Responses API schemas
 
+AccessPrograms:
+  type: object
+  description: >
+    OpenAI trusted-access programs (Daybreak). On a request, selects the program the
+    request runs under; it is forwarded only to OpenAI and dropped for every other
+    provider. Members other than cyber, and a cyber that is not one of the listed
+    values, are forwarded to OpenAI as sent, so a misspelled member is rejected with a
+    400 instead of silently running the model's default program. On a response, records
+    the program that served the request; absent when OpenAI applied standard safeguards
+    implicitly.
+  additionalProperties: true
+  properties:
+    cyber:
+      type: string
+      enum: [standard, daybreak_blue, daybreak_red]
+      description: Cyber trusted-access program. Use the value OpenAI lists for the model.
+
 ContextManagement:
   description: >
     Automatic context window management. The wire shape depends on the
@@ -47,6 +64,8 @@ ResponsesRequest:
         type: string
     stream:
       type: boolean
+    access_programs:
+      $ref: "#/AccessPrograms"
     background:
       type: boolean
     conversation:
@@ -528,6 +547,8 @@ ResponsesResponse:
   properties:
     id:
       type: string
+    access_programs:
+      $ref: "#/AccessPrograms"
     background:
       type: boolean
     conversation:

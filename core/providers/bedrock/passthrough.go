@@ -137,6 +137,13 @@ func IsPassthroughStreamPath(method, path string) bool {
 	return ok && route.streaming
 }
 
+// IsPassthroughAgentPath reports whether a passthrough request is InvokeAgent, the one forwarded operation that runs a
+// conversation turn.
+func IsPassthroughAgentPath(method, path string) bool {
+	route, ok := matchBedrockPassthroughRoute(method, path)
+	return ok && route.operation == "InvokeAgent"
+}
+
 // buildPassthroughRequest checks the request against the allow-list, resolves the service host from the
 // key's region (or its endpoint overrides), and authenticates it.
 func (provider *BedrockProvider) buildPassthroughRequest(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*http.Request, bedrockPassthroughRoute, *schemas.BifrostError) {

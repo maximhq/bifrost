@@ -24,17 +24,15 @@ import (
 // instructions, which is the minimum needed to exercise aggregation and scoping together.
 func newManagerWithInstructions(t *testing.T) *MCPManager {
 	t.Helper()
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	for _, c := range []struct{ id, name, tool, instructions string }{
 		{"alpha-id", "alpha", "alpha-echo", "Alpha rule: always check permissions first."},
 		{"beta-id", "beta", "beta-echo", "Beta rule: update the doc on relevant changes."},
 	} {
-		m.clientMap[c.id] = &schemas.MCPClientState{
+		putClient(m, &schemas.MCPClientState{
 			Name:            c.name,
 			ExecutionConfig: &schemas.MCPClientConfig{ID: c.id, Name: c.name, ToolsToExecute: []string{"*"}},
-		}
+		})
 		m.discoveryStore.SetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: c.id}, &schemas.MCPDiscovery{
 			Tools:        map[string]schemas.ChatTool{c.tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: c.tool}}},
 			Instructions: c.instructions,
@@ -71,9 +69,9 @@ func TestCallerDiscoveryInstructionsWithheldForClientsTheCallerCannotSee(t *test
 // contributes nothing — not even a bare heading.
 func TestCallerDiscoveryInstructionsSkipsClientsWithNoVisibleTools(t *testing.T) {
 	m := newManagerWithInstructions(t)
-	m.mu.Lock()
-	m.clientMap["beta-id"].ExecutionConfig.ToolsToExecute = []string{}
-	m.mu.Unlock()
+	beta := *m.config("beta-id")
+	beta.ToolsToExecute = []string{}
+	accountOf(m).set(&beta)
 
 	got := m.GetCallerDiscovery(context.Background(), true).Instructions
 
@@ -90,7 +88,7 @@ func TestCallerDiscoveryInstructionsSkipsClientsThatAdvertiseNone(t *testing.T) 
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "beta", got[0].ClientName)
-	assert.Equal(t, "", NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil).
+	assert.Equal(t, "", NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil).
 		GetAggregatedServerInstructions(context.Background()))
 }
 
@@ -310,15 +308,13 @@ func TestAggregateServerInstructionsEscapesClientNameAttribute(t *testing.T) {
 // Instructions write-back, used by the on-demand refresh.
 
 func TestWriteBackInstructionsReplacesAndFiresCallback(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c", ToolsToExecute: []string{"*"}}
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config})
 	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{
 		Tools:        map[string]schemas.ChatTool{"c-echo": {Type: "function"}},
 		Instructions: "v1",
 	})
-	m.mu.Unlock()
 
 	var seen []string
 	m.SetDiscoveryChangeCallback(func(_, _ string, discovery *schemas.MCPDiscovery) {
@@ -334,12 +330,10 @@ func TestWriteBackInstructionsReplacesAndFiresCallback(t *testing.T) {
 
 // An operator can press refresh repeatedly; an unchanged text must not re-persist.
 func TestWriteBackInstructionsNoOpWhenUnchanged(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config})
 	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{Instructions: "same"})
-	m.mu.Unlock()
 
 	fired := false
 	m.SetDiscoveryChangeCallback(func(_, _ string, _ *schemas.MCPDiscovery) { fired = true })
@@ -351,12 +345,10 @@ func TestWriteBackInstructionsNoOpWhenUnchanged(t *testing.T) {
 
 // A reconnect during the read makes the result describe a connection that is gone.
 func TestWriteBackInstructionsDropsStaleGeneration(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ConnGeneration: 7}
+	putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ConnGeneration: 7})
 	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{Instructions: "installed"})
-	m.mu.Unlock()
 
 	m.writeBackInstructions(config.ID, 3, "from-a-replaced-connection")
 
@@ -366,17 +358,15 @@ func TestWriteBackInstructionsDropsStaleGeneration(t *testing.T) {
 // A refresh re-reads instructions only, so the discovery it replaces keeps the tools and
 // discovery time it was written with.
 func TestWriteBackInstructionsKeepsTheToolsItWasDiscoveredWith(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c", ToolsToExecute: []string{"*"}}
 	discoveredAt := time.Now().Add(-time.Hour)
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config})
 	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{
 		Tools:        map[string]schemas.ChatTool{"c-echo": {Type: "function"}},
 		Instructions: "v1",
 		DiscoveredAt: discoveredAt,
 	})
-	m.mu.Unlock()
 
 	m.writeBackInstructions(config.ID, 0, "v2")
 
@@ -410,7 +400,7 @@ func TestCallerDiscoveryInstructionsComesFromTheCallersDiscovery(t *testing.T) {
 
 // A second STDIO subprocess would read the current config, not the running one's.
 func TestRefreshServerInstructionsSkipsNonRemoteTransports(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	for _, connType := range []schemas.MCPConnectionType{schemas.MCPConnectionTypeSTDIO, schemas.MCPConnectionTypeInProcess} {
 		t.Run(string(connType), func(t *testing.T) {
 			ok := m.refreshServerInstructions(context.Background(),
@@ -492,15 +482,13 @@ func TestInstructionsCommentBlockTruncatesOnRuneBoundary(t *testing.T) {
 // addCodeModeClient installs a code-mode client with one visible tool and its own instructions.
 func addCodeModeClient(t *testing.T, m *MCPManager, name string) {
 	t.Helper()
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	tool := name + "-run"
-	m.clientMap[name+"-id"] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name: name,
 		ExecutionConfig: &schemas.MCPClientConfig{
 			ID: name + "-id", Name: name, ToolsToExecute: []string{"*"}, IsCodeModeClient: true,
 		},
-	}
+	})
 	m.discoveryStore.SetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: name + "-id"}, &schemas.MCPDiscovery{
 		Tools:        map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
 		Instructions: name + " rule: read the stub first.",
@@ -533,7 +521,7 @@ func TestCallerDiscoveryInstructionsFollowServerTypeOnSlug(t *testing.T) {
 
 // Code-mode-only: the aggregate is empty, which callers must render as an absent field.
 func TestCallerDiscoveryInstructionsEmptyWhenEveryClientIsCodeMode(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	addCodeModeClient(t, m, "codey")
 	addCodeModeClient(t, m, "scripty")
 
@@ -556,7 +544,7 @@ func TestCallerDiscoveryInstructionsKeepsNonCodeModeClientsAlongsideCodeMode(t *
 // caller's discovery with the instructions the request-injection path
 // (addServerInstructionsToRequest) adds: 20 visible clients, half with instructions.
 func BenchmarkGetCallerDiscovery_WithInstructions(b *testing.B) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	for i := range 20 {
 		name, tool := fmt.Sprintf("client%02d", i), fmt.Sprintf("client%02d-echo", i)
 		instructions := ""
@@ -564,7 +552,7 @@ func BenchmarkGetCallerDiscovery_WithInstructions(b *testing.B) {
 			instructions = "Check permissions first."
 		}
 		config := &schemas.MCPClientConfig{ID: name, Name: name, ToolsToExecute: []string{"*"}}
-		m.clientMap[name] = &schemas.MCPClientState{Name: name, ExecutionConfig: config}
+		putClient(m, &schemas.MCPClientState{Name: name, ExecutionConfig: config})
 		m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{
 			Tools:        map[string]schemas.ChatTool{tool: {Type: "function", Function: &schemas.ChatToolFunction{Name: tool}}},
 			Instructions: instructions,
@@ -617,7 +605,7 @@ func TestRefreshServerInstructions_RereadsAStickyClient(t *testing.T) {
 				before.ServeHTTP(w, r)
 			}))
 			t.Cleanup(ts.Close)
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
 			config := tc.config
 			config.ID, config.Name = "sticky-instructions", "sticky_instructions"
@@ -625,7 +613,7 @@ func TestRefreshServerInstructions_RereadsAStickyClient(t *testing.T) {
 			if tc.sse {
 				config.ConnectionString = schemas.NewSecretVar(ts.URL + "/sse")
 			}
-			require.NoError(t, m.AddClient(context.Background(), &config))
+			require.NoError(t, addClient(context.Background(), m, &config))
 			state, ok := snapshotAddClientState(m, config.ID)
 			require.True(t, ok)
 			require.Equal(t, "v1", state.ServerInstructions)

@@ -32,7 +32,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUT = join(HERE, "..", "collections", "bifrost-model-catalog-wiring.postman_collection.json");
 
-// Each entry generates the full six-scenario suite against a custom provider
+// Each entry generates every per-provider scenario against a custom provider
 // whose base_provider_type is `type`. Key values use Bifrost's `env.<NAME>`
 // resolution: the credential is read from the Bifrost process env at request
 // time, so the collection carries no secret and the runner injects nothing.

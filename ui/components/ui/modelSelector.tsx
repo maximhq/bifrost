@@ -44,6 +44,8 @@ interface ModelSelectorBaseProps {
 	vks?: string[];
 	/** Bypasses the provider-level model pool, matching the /api/models `unfiltered` flag. */
 	unfiltered?: boolean;
+	/** Adds key alias names to an `unfiltered` listing, for fields whose value is a requested model name. */
+	includeAliases?: boolean;
 	/** Lists only models that serve decisions natively, matching the /api/models `decisions` flag. */
 	decisions?: boolean;
 	/**
@@ -142,6 +144,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 		keys,
 		vks,
 		unfiltered = false,
+		includeAliases = false,
 		decisions = false,
 		serverSearch = true,
 		pageSize = DEFAULT_PAGE_SIZE,
@@ -196,7 +199,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 	const effectiveSearch = serverSearch ? (search === seededSearch ? search : (debouncedSearch as string)) : "";
 	useEffect(() => {
 		setPages(1);
-	}, [effectiveSearch, provider, unfiltered, decisions]);
+	}, [effectiveSearch, provider, unfiltered, includeAliases, decisions]);
 
 	// Base models are the same catalog with the provider dimension collapsed, so only one of
 	// the two ever runs; the rest of the component works off whichever answered.
@@ -211,6 +214,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 			vks: vks && vks.length > 0 ? vks : undefined,
 			limit: pageSize * pages,
 			unfiltered,
+			includeAliases,
 			decisions,
 		},
 		{ skip: idle || useBaseModels },

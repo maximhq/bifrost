@@ -19,6 +19,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -53,9 +55,14 @@ type Config struct {
 	// ComplexityAnalyzerConfig overrides the analyzer defaults. When nil, the persisted
 	// config is used, falling back to the built-in defaults.
 	ComplexityAnalyzerConfig *complexity.AnalyzerConfig `json:"complexity_analyzer_config,omitempty"`
-	// KVStore is the runtime-only shared store used for complexity
-	// session state. It is injected by the host and is never serialized.
-	KVStore schemas.KVStore `json:"-"`
+	// Sessions is the table complexity session tiers live in, beside core's session
+	// bindings: the host passes the same table it builds core's session affinity over.
+	// Keys are strings the plugin builds, values are strings, and an entry expires
+	// after its TTL (zero never expires). Runtime only; never serialized.
+	Sessions *livestore.Table[string, string] `json:"-"`
+	// Warm is the table exemplar warming is coordinated through (see
+	// ComplexityWarmTable). Runtime only; never serialized.
+	Warm *livestore.Table[string, string] `json:"-"`
 }
 
 // chainMaxDepthOrDefault resolves the configured chain depth, falling back to the default.
@@ -70,14 +77,14 @@ func (c *Config) chainMaxDepthOrDefault() *int {
 
 // RoutingPlugin evaluates routing rules for every request.
 type RoutingPlugin struct {
-	rules              rules.Store
+	rules              *rules.Store
+	ownsRules          bool // Init built the rule store, so Cleanup closes it
 	engine             *rules.Engine
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 	complexityConfig   atomic.Pointer[complexity.AnalyzerConfig]
 	semanticClassifier *complexity.SemanticClassifier
 	llmClassifier      *complexity.LLMClassifier
-	sessionStore       *complexitySessionStore
-	turnTierStore      *complexityTurnTierStore
+	sessions           *livestore.Table[string, string] // session tiers and continuation tiers
 	sessionEnabled     atomic.Bool
 	// capture samples classified requests' vectors for phrase suggestions;
 	// see complexitycapture.go.
@@ -88,10 +95,16 @@ type RoutingPlugin struct {
 
 	routers         atomic.Pointer[map[string]*modelRouterRuntime] // model routers by id, replaced whole under routersMu; see modelrouters.go
 	routersMu       sync.Mutex
-	routerMatcher   *rules.ModelRouterMatcher // enabled routers' routing; picks the one that takes a request
-	runtimeCtx      context.Context           // with warmCoordinator and dimensionStore: what routers built later reuse
+	routerMatcher   *rules.ModelRouterMatcher                   // enabled routers' routing; picks the one that takes a request
+	routerRecords   *livestore.Collection[registry.ModelRouter] // saved routers: name, targets and routing
+	runtimeCtx      context.Context                             // with warmCoordinator and dimensionStore: what routers built later reuse
 	warmCoordinator complexity.WarmCoordinator
 	dimensionStore  complexity.EmbeddingDimensionStore
+	// widths is dimensionStore's concrete store, whose table Cleanup drops; nil without a config
+	// store, like dimensionStore.
+	widths *persistentEmbeddingDimensionStore
+	// live holds the plugin's runtime state tables.
+	live *livestore.Store
 
 	// governance supplies the virtual key, its live budget/rate-limit usage, and the provider
 	// materialization that runs once rules have decided. Required: rules address budgets and
@@ -131,39 +144,46 @@ type RoutingPlugin struct {
 
 // Init initializes and returns a routing plugin instance.
 //
-// The rule cache is built internally, loaded from configStore.
+// The rule store serves the routing rules live holds and is closed with the plugin.
 //
 // Parameters:
-//   - ctx: base context, used for the initial rule load.
+//   - ctx: base context, used for the plugin's background work.
 //   - config: plugin flags; may be nil, in which case defaults apply.
 //   - logger: logger used by the engine and the rule store.
-//   - configStore: configuration store rules are read from; may be nil.
+//   - configStore: configuration store model routers are read from; may be nil.
+//   - live: the live store holding the routing rules and the plugin's runtime state; must not be nil.
 //   - governancePlugin: virtual key state and provider materialization; must not be nil.
 func Init(
 	ctx context.Context,
 	config *Config,
 	logger schemas.Logger,
 	configStore configstore.ConfigStore,
+	live *livestore.Store,
 	governancePlugin Governance,
 ) (*RoutingPlugin, error) {
-	ruleStore, err := rules.NewLocalStore(ctx, logger, configStore)
+	ruleStore, err := rules.NewStore(live, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize routing rule store: %w", err)
 	}
-	return InitFromStore(ctx, config, logger, configStore, ruleStore, governancePlugin)
+	plugin, err := InitFromStore(ctx, config, logger, configStore, ruleStore, governancePlugin)
+	if err != nil {
+		ruleStore.Close()
+		return nil, err
+	}
+	plugin.ownsRules = true
+	return plugin, nil
 }
 
-// InitFromStore initializes and returns a routing plugin instance with a custom rule store.
-//
-// Use this to supply a rule store implementation other than LocalRuleStore, for example one
-// backed by a shared cache. Parameters are the same as Init, plus the rule store itself,
-// which must not be nil.
+// InitFromStore initializes and returns a routing plugin instance over a rule store the caller
+// built and keeps: the plugin does not close it. Parameters are the same as Init, with the rule
+// store, which must not be nil, in place of the live store; the plugin keeps its runtime state in
+// the rule store's live store.
 func InitFromStore(
 	ctx context.Context,
 	config *Config,
 	logger schemas.Logger,
 	configStore configstore.ConfigStore,
-	ruleStore rules.Store,
+	ruleStore *rules.Store,
 	governancePlugin Governance,
 ) (*RoutingPlugin, error) {
 	if logger == nil {
@@ -173,6 +193,7 @@ func InitFromStore(
 		return nil, fmt.Errorf("rule store cannot be nil")
 	}
 
+	live := ruleStore.LiveStore()
 	chainMaxDepth := config.chainMaxDepthOrDefault()
 
 	engine, err := rules.NewEngine(ruleStore, governancePlugin, logger, chainMaxDepth)
@@ -189,28 +210,36 @@ func InitFromStore(
 		semanticClassifier: complexity.NewSemanticClassifier(ctx, logger),
 		llmClassifier:      complexity.NewLLMClassifier(logger),
 		runtimeCtx:         ctx,
+		live:               live,
 	}
-	if config != nil && config.KVStore != nil {
-		plugin.sessionStore = newComplexitySessionStore(config.KVStore, complexitySessionInactivityTTL)
-		plugin.turnTierStore = &complexityTurnTierStore{store: config.KVStore}
+	if config != nil {
+		plugin.sessions = config.Sessions
+	}
+	if config != nil && config.Warm != nil {
 		// Peers sharing a vector store otherwise embed the same phrases against
 		// the same namespace at the same time, because a configuration change
 		// reaches every node at once and the marker that would let a late node
-		// skip the work is written last. Absent a KVStore this stays nil and each
-		// node warms independently, exactly as before.
-		if coordinator := newKVComplexityWarmCoordinator(config.KVStore, newRoutingNodeID()); coordinator != nil {
+		// skip the work is written last. Absent a warm table this stays nil and
+		// each process warms independently, exactly as before.
+		if coordinator := newComplexityWarmCoordinator(config.Warm, newRoutingNodeID()); coordinator != nil {
 			plugin.semanticClassifier.SetWarmCoordinator(coordinator)
 			plugin.warmCoordinator = coordinator
 		}
 	}
 	// Remembering the measured embedding width is what lets a restart adopt an
 	// already-complete generation without calling the provider at all. It is
-	// persisted rather than held in the KVStore because it has to survive every
+	// persisted rather than held in a live-store table because it has to survive every
 	// node restarting at once, which is exactly when nothing is left in memory
 	// to ask.
-	if dimensions := newPersistentEmbeddingDimensionStore(ctx, configStore, logger); dimensions != nil {
+	dimensions, err := newPersistentEmbeddingDimensionStore(ctx, configStore, live, logger)
+	if err != nil {
+		_ = plugin.semanticClassifier.Close()
+		return nil, fmt.Errorf("failed to initialize embedding width memory: %w", err)
+	}
+	if dimensions != nil {
 		plugin.semanticClassifier.SetEmbeddingDimensionStore(dimensions)
 		plugin.dimensionStore = dimensions
+		plugin.widths = dimensions
 	}
 	// Retired generations are reclaimed in the background. A node-local store
 	// drops its own immediately, but on a shared one a peer may still be serving
@@ -234,7 +263,10 @@ func InitFromStore(
 	// Before the first config is stored, so the suggestions block it carries
 	// turns capture on.
 	plugin.startComplexityCapture(ctx, captureUpkeepInterval, captureUpkeepFirstDelay)
-	plugin.startComplexitySuggestions(ctx, suggestionScheduleTick)
+	if err := plugin.startComplexitySuggestions(ctx, suggestionScheduleTick); err != nil {
+		_ = plugin.Cleanup()
+		return nil, fmt.Errorf("failed to start complexity suggestions: %w", err)
+	}
 
 	var analyzerOverride *complexity.AnalyzerConfig
 	if config != nil {
@@ -244,24 +276,20 @@ func InitFromStore(
 		_ = plugin.Cleanup()
 		return nil, err
 	}
-	routerMatcher, err := rules.NewModelRouterMatcher()
+	plugin.routerRecords = ruleStore.LiveStore().Collections.ModelRouters
+	routerMatcher, err := rules.NewModelRouterMatcher(ruleStore.LiveStore())
 	if err != nil {
 		_ = plugin.Cleanup()
 		return nil, fmt.Errorf("failed to initialize model router matching: %w", err)
 	}
 	plugin.routerMatcher = routerMatcher
-	plugin.loadModelRouters(ctx, configStore)
+	plugin.loadModelRouters()
 	return plugin, nil
 }
 
 // GetName implements schemas.BasePlugin.
 func (p *RoutingPlugin) GetName() string {
 	return PluginName
-}
-
-// GetRuleStore returns the rule cache backing this plugin.
-func (p *RoutingPlugin) GetRuleStore() rules.Store {
-	return p.rules
 }
 
 // ReloadComplexityAnalyzerConfig swaps the analyzer used by complexity_tier routing.
@@ -339,8 +367,8 @@ func (p *RoutingPlugin) ValidateComplexityAnalyzerConfig(config *complexity.Anal
 	if resolved.Classifier == complexity.ClassifierLLM && p.chatExecutor() == nil {
 		return fmt.Errorf("llm complexity classifier executor is unavailable")
 	}
-	if resolved.SessionRoutingEnabled() && p.sessionStore == nil {
-		return fmt.Errorf("complexity session routing requires a KV store")
+	if resolved.SessionRoutingEnabled() && p.sessions == nil {
+		return fmt.Errorf("complexity session routing requires a session store")
 	}
 	return nil
 }
@@ -691,7 +719,7 @@ func (p *RoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.B
 
 // persistComplexityTurnTier refreshes session tier state only after a served turn.
 func (p *RoutingPlugin) persistComplexityTurnTier(ctx *schemas.BifrostContext) {
-	if p.turnTierStore == nil || ctx == nil {
+	if p.sessions == nil || ctx == nil {
 		return
 	}
 	sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
@@ -706,8 +734,8 @@ func (p *RoutingPlugin) persistComplexityTurnTier(ctx *schemas.BifrostContext) {
 		if entry.result == nil || entry.result.Tier == "" {
 			continue
 		}
-		if err := p.turnTierStore.save(complexityTurnTierKeyFor(ctx, routerID), entry.result.Tier, complexityTurnTierTTL(ctx)); err != nil {
-			p.logComplexitySessionStoreError("persist continuation tier", err)
+		if err := p.saveTurnTier(complexityTurnTierKeyFor(ctx, routerID), entry.result.Tier, complexityTurnTierTTL(ctx)); err != nil {
+			p.logComplexitySessionError("persist continuation tier", err)
 		}
 	}
 }
@@ -725,11 +753,16 @@ func (p *RoutingPlugin) Cleanup() error {
 		p.closeComplexitySuggestions()
 		p.closeComplexityCapture()
 		p.closeModelRouters()
+		p.routerMatcher.Close()
+		if p.ownsRules {
+			p.rules.Close()
+		}
 		if p.semanticClassifier != nil {
 			if err := p.semanticClassifier.Close(); err != nil {
 				p.logger.Warn("[Routing] failed to close semantic classifier: %v", err)
 			}
 		}
+		p.widths.close()
 		p.logger.Debug("[Routing] plugin cleaned up")
 	})
 	return nil

@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 )
@@ -23,10 +24,12 @@ import (
 // Request capture and phrase suggestions are a model router's only: each
 // captures its own classified requests (see complexitycapture.go).
 type modelRouterRuntime struct {
-	id             string // "" for the Complexity Router page's config
-	name           *atomic.Pointer[string]
+	id string // "" for the Complexity Router page's config
+	// record reads the router as saved: its name, targets and routing come from the live store,
+	// so the runtime keeps only what it derives (the resolved config) and its classifiers. nil
+	// for the Complexity Router page's config.
+	record         func() (*registry.ModelRouter, bool)
 	config         *atomic.Pointer[complexity.AnalyzerConfig]
-	targets        *atomic.Pointer[[]configstoreTables.TableModelRouterTarget]
 	sessionEnabled *atomic.Bool
 	semantic       *complexity.SemanticClassifier
 	llm            *complexity.LLMClassifier
@@ -36,9 +39,7 @@ type modelRouterRuntime struct {
 
 // modelRouterState is the state a model router owns.
 type modelRouterState struct {
-	name           atomic.Pointer[string]
 	config         atomic.Pointer[complexity.AnalyzerConfig]
-	targets        atomic.Pointer[[]configstoreTables.TableModelRouterTarget]
 	sessionEnabled atomic.Bool
 }
 
@@ -61,33 +62,23 @@ func (rt *modelRouterRuntime) publishProposal(ctx *schemas.BifrostContext, propo
 	}
 }
 
-// loadTargets returns the model each of the router's tiers gets; nil when it
-// has none.
+// loadTargets returns the model each of the router's tiers gets, as saved; nil when it has none.
+// The record is shared: callers must not change what it returns.
 func (rt *modelRouterRuntime) loadTargets() []configstoreTables.TableModelRouterTarget {
-	if rt.targets == nil {
+	if rt.record == nil {
 		return nil
 	}
-	if targets := rt.targets.Load(); targets != nil {
-		return *targets
+	if record, ok := rt.record(); ok {
+		return record.Router.Targets
 	}
 	return nil
 }
 
-// storeTargets replaces the router's targets. The slice is copied, so the
-// caller's later edits never reach a request in flight.
-func (rt *modelRouterRuntime) storeTargets(targets []configstoreTables.TableModelRouterTarget) {
-	if rt.targets == nil {
-		return
-	}
-	copied := append([]configstoreTables.TableModelRouterTarget(nil), targets...)
-	rt.targets.Store(&copied)
-}
-
 // displayName is the router's name for logs and context, its id until it has one.
 func (rt *modelRouterRuntime) displayName() string {
-	if rt.name != nil {
-		if name := rt.name.Load(); name != nil && *name != "" {
-			return *name
+	if rt.record != nil {
+		if record, ok := rt.record(); ok && record.Router.Name != "" {
+			return record.Router.Name
 		}
 	}
 	return rt.id
@@ -143,7 +134,7 @@ func (p *RoutingPlugin) allClassifiers() []*modelRouterRuntime {
 
 // resolveRouterConfig validates a router's config for serving. An invalid
 // one falls back to the defaults with a warning, as the single router always
-// did, but session routing without a KV store is an error, since no fallback
+// did, but session routing without a session store is an error, since no fallback
 // can serve it.
 func (p *RoutingPlugin) resolveRouterConfig(config *complexity.AnalyzerConfig) (*complexity.AnalyzerConfig, error) {
 	resolved, err := complexity.ValidateAndNormalize(config)
@@ -154,8 +145,8 @@ func (p *RoutingPlugin) resolveRouterConfig(config *complexity.AnalyzerConfig) (
 		defaults := complexity.DefaultAnalyzerConfig()
 		resolved = &defaults
 	}
-	if resolved.SessionRoutingEnabled() && p.sessionStore == nil {
-		return nil, fmt.Errorf("complexity session routing requires a KV store")
+	if resolved.SessionRoutingEnabled() && p.sessions == nil {
+		return nil, fmt.Errorf("complexity session routing requires a session store")
 	}
 	return resolved, nil
 }
@@ -216,11 +207,16 @@ func (p *RoutingPlugin) newModelRouterRuntime(id string) *modelRouterRuntime {
 	if p.chatExecutor() != nil {
 		llm.SetChatFunc(p.classifyComplexityTextViaLLM)
 	}
+	records := p.routerRecords
 	return &modelRouterRuntime{
-		id:             id,
-		name:           &state.name,
+		id: id,
+		record: func() (*registry.ModelRouter, bool) {
+			if records == nil {
+				return nil, false
+			}
+			return records.Get(id)
+		},
 		config:         &state.config,
-		targets:        &state.targets,
 		sessionEnabled: &state.sessionEnabled,
 		semantic:       semantic,
 		llm:            llm,
@@ -273,9 +269,6 @@ func (p *RoutingPlugin) serveModelRouterLocked(router *configstore.ModelRouter, 
 		rt = p.newModelRouterRuntime(router.ID)
 	}
 	applyRouterConfig(rt, resolved)
-	name := router.Name
-	rt.name.Store(&name)
-	rt.storeTargets(router.Targets)
 	if !exists {
 		next := make(map[string]*modelRouterRuntime, len(current)+1)
 		for id, existing := range current {
@@ -314,18 +307,6 @@ func (p *RoutingPlugin) SetModelRouterRouting(id string, routing configstore.Mod
 	return p.setModelRouterRoutingLocked(id, rt.displayName(), &routing)
 }
 
-// SetModelRouterTargets replaces the model each tier of a served router gets,
-// leaving its classifiers as they are. configstore.ErrNotFound means the
-// plugin does not serve the router.
-func (p *RoutingPlugin) SetModelRouterTargets(id string, targets []configstoreTables.TableModelRouterTarget) error {
-	rt, ok := p.modelRouter(id)
-	if !ok {
-		return configstore.ErrNotFound
-	}
-	rt.storeTargets(targets)
-	return nil
-}
-
 // RemoveModelRouter stops serving a deleted router, closes its classifiers
 // and drops what it captured. Removing one not served still drops its
 // captures, which another node may have written.
@@ -353,25 +334,21 @@ func (p *RoutingPlugin) RemoveModelRouter(id string) error {
 	return nil
 }
 
-// loadModelRouters serves every stored router at startup. A router that
-// cannot be served, or whose routing condition no longer compiles, is logged
-// and left out of matching, so one bad router cannot keep the gateway from
-// starting.
-func (p *RoutingPlugin) loadModelRouters(ctx context.Context, configStore configstore.ConfigStore) {
-	if configStore == nil {
-		return
-	}
-	routers, err := configStore.GetModelRouters(ctx)
-	if err != nil {
-		if p.logger != nil {
-			p.logger.Warn("[Routing] failed to load model routers: %v", err)
-		}
-		return
-	}
+// loadModelRouters serves every saved router at startup, as the live store holds them. A router
+// that cannot be served, or whose routing condition no longer compiles, is logged and left out of
+// matching. One stored in a form this version cannot read never gets here: it fails the live
+// store's load.
+func (p *RoutingPlugin) loadModelRouters() {
+	var records []*registry.ModelRouter
+	p.routerRecords.Range(func(r *registry.ModelRouter) bool {
+		records = append(records, r)
+		return true
+	})
+	sort.Slice(records, func(i, j int) bool { return records[i].Router.ID < records[j].Router.ID })
 	p.routersMu.Lock()
 	defer p.routersMu.Unlock()
-	for i := range routers {
-		router := &routers[i]
+	for _, record := range records {
+		router := &record.Router
 		resolved, err := p.resolveRouterConfig(&router.ComplexityAnalyzerConfig)
 		if err != nil {
 			if p.logger != nil {
