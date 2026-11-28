@@ -206,6 +206,30 @@ func drainRequestBodyStream(ctx *fasthttp.RequestCtx) bool {
 	return err == nil
 }
 
+// streamedRequestBodyPool reuses buffers when RequestBodyMiddleware materializes
+// known-length streamed request bodies instead of calling Request.Body() directly.
+var streamedRequestBodyPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+// initialStreamedBodyReserve bounds the upfront bytes.Buffer.Grow reservation
+// before reading a known-length streamed request body. fasthttp dispatches
+// streamed handlers after pre-reading at most 8 KiB, so capping the initial
+// reservation prevents a client declaring a huge Content-Length and stalling
+// from forcing a multi-megabyte allocation before bytes arrive; larger bodies
+// grow incrementally as BodyWriteTo reads chunks from the stream.
+const initialStreamedBodyReserve = 8 << 10
+
+// releaseStreamedBodyBuffer resets and returns buf to streamedRequestBodyPool unless
+// its capacity exceeds poolLimit.
+func releaseStreamedBodyBuffer(buf *bytes.Buffer, poolLimit int) {
+	if poolLimit != lib.BodyBufferPoolLimitDisabled && buf.Cap() > poolLimit {
+		return
+	}
+	buf.Reset()
+	streamedRequestBodyPool.Put(buf)
+}
+
 // RequestBodyMiddleware enforces the request body limit and decides which bodies stay streamed
 // when the server streams request bodies (fasthttp StreamRequestBody, which the gateway turns on
 // so multipart uploads are not buffered). On a server that does not stream it does nothing.
@@ -230,6 +254,11 @@ func drainRequestBodyStream(ctx *fasthttp.RequestCtx) bool {
 // drained; the response closes the connection, as the buffering server's 413 did.
 func RequestBodyMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	limit := requestBodyCap(config)
+	var serverCfg *lib.ServerConfig
+	if config != nil {
+		serverCfg = config.ServerConfig
+	}
+	poolLimit := lib.ResolveBodyBufferPoolLimit(serverCfg, limit)
 	tooLarge := lib.RequestErrorHandler(limit>>20, func(format string, args ...any) {
 		if logger != nil {
 			logger.Warn(format, args...)
@@ -269,12 +298,33 @@ func RequestBodyMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 					return
 				}
 				ctx.Request.SetBodyRaw(body)
-			} else if body := ctx.Request.Body(); len(body) != contentLength {
-				// Body() reads the stream into the pooled body buffer; a short read means
-				// the connection failed mid-body.
-				SendError(ctx, fasthttp.StatusBadRequest, "failed to read request body: incomplete body")
-				ctx.SetConnectionClose()
-				return
+			} else {
+				// Materialize via BodyWriteTo into a pooled buffer instead of calling Request.Body()
+				// on an active stream (which logs a fasthttp warning and masks read errors), then
+				// hand ownership of the buffer slice to ctx.Request so handlers/streams may retain
+				// Request.Body() slices after next(ctx) returns.
+				buf := streamedRequestBodyPool.Get().(*bytes.Buffer)
+				buf.Reset()
+				buf.Grow(min(contentLength, initialStreamedBodyReserve))
+				if err := ctx.Request.BodyWriteTo(buf); err != nil {
+					releaseStreamedBodyBuffer(buf, poolLimit)
+					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to read request body: %v", err))
+					ctx.SetConnectionClose()
+					return
+				}
+				if buf.Len() != contentLength {
+					releaseStreamedBodyBuffer(buf, poolLimit)
+					SendError(ctx, fasthttp.StatusBadRequest, "failed to read request body: incomplete body")
+					ctx.SetConnectionClose()
+					return
+				}
+				body := buf.Bytes()
+				if body == nil {
+					body = []byte{}
+				}
+				old := ctx.Request.SwapBody(body)
+				*buf = *bytes.NewBuffer(old[:0])
+				releaseStreamedBodyBuffer(buf, poolLimit)
 			}
 			next(ctx)
 		}
