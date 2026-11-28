@@ -37,11 +37,26 @@ func ToOpenAIImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	return req
 }
 
+// filterXAISpecificParameters drops parameters xAI rejects. quality is kept only for
+// grok-imagine-image-2.0 with low, medium or auto, the values xAI documents for that model.
 func filterXAISpecificParameters(req *OpenAIImageGenerationRequest) {
-	req.ImageGenerationParameters.Quality = nil
+	if !xaiSupportsImageQuality(req.Model, req.ImageGenerationParameters.Quality) {
+		req.ImageGenerationParameters.Quality = nil
+	}
 	req.ImageGenerationParameters.Style = nil
 	req.ImageGenerationParameters.Size = nil
 	req.ImageGenerationParameters.OutputCompression = nil
+}
+
+func xaiSupportsImageQuality(model string, quality *string) bool {
+	if model != "grok-imagine-image-2.0" || quality == nil {
+		return false
+	}
+	switch *quality {
+	case "low", "medium", "auto":
+		return true
+	}
+	return false
 }
 
 func filterOpenAISpecificParameters(req *OpenAIImageGenerationRequest) {
