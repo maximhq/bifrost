@@ -101,8 +101,8 @@ const (
 )
 
 // internalPrefix starts the name of every table the store creates for itself, such as the misses
-// a collection's Load remembers. NewTable, NewStateTable and DropTable refuse such names, so no
-// component can create one ahead of the store or drop one from under it.
+// a collection's Load remembers. NewTable and DropTable refuse such names, so no component can
+// create one ahead of the store or drop one from under it.
 const internalPrefix = "internal:"
 
 // now is the clock every expiry and grace period reads. Tests replace it.
@@ -1161,7 +1161,7 @@ func (s *Store) addTable(name string, t tableHandle, of Kind) error {
 		return errors.New("livestore: empty table name")
 	}
 	if of != "" && !s.kindKnown(of) {
-		return fmt.Errorf("livestore: state %q of unknown kind %q", name, of)
+		return fmt.Errorf("livestore: table %q is keyed by unknown kind %q", name, of)
 	}
 	s.tablesMu.Lock()
 	defer s.tablesMu.Unlock()

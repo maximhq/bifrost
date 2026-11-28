@@ -477,7 +477,7 @@ func TestRegistrationErrors(t *testing.T) {
 	if _, err := s.NewTable[string, int](context.Background(), "t"); err == nil {
 		t.Fatal("a duplicate table name must fail")
 	}
-	if _, err := s.NewStateTable[int](context.Background(), "st", Kind("nope")); err == nil {
+	if _, err := s.NewTable[string, *int](context.Background(), "st", KeyedBy(Kind("nope"))); err == nil {
 		t.Fatal("state of an unknown kind must fail")
 	}
 	if err := s.Refresh(ctx, []Ref{{Kind: "a", ID: "x"}}); !errors.Is(err, ErrNotLoaded) {
@@ -819,7 +819,7 @@ func TestParentRefreshKeepsAChildThatMovedToAnotherParent(t *testing.T) {
 	f := newFixture(t)
 	f.seed(t)
 	f.load(t)
-	usage, err := f.s.NewStateTable[int](context.Background(), "usage", Kind("item"))
+	usage, err := f.s.NewTable[string, *int](context.Background(), "usage", KeyedBy(Kind("item")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1617,7 +1617,7 @@ func TestSubscriberCannotChangeTheStore(t *testing.T) {
 	f.groups.Subscribe(func(ctx context.Context, _ []Change[group]) {
 		var r result
 		_, r.newTable = f.s.NewTable[string, int](ctx, "from-subscriber")
-		_, r.state = f.s.NewStateTable[int](ctx, "state-from-subscriber", Kind("group"))
+		_, r.state = f.s.NewTable[string, *int](ctx, "state-from-subscriber", KeyedBy(Kind("group")))
 		r.drop = f.s.DropTable(ctx, "from-subscriber")
 		_, r.register = f.s.Register(Kind("late"), nil, emptyLoader[owner]())
 		_, r.interned = f.s.RegisterInterned(Kind("late_set"), func(ts *tagSet) Hash { return Hash{} })
@@ -1653,7 +1653,7 @@ func TestSubscriberCannotChangeTheStore(t *testing.T) {
 	case <-deadline:
 		t.Fatal("the subscriber never ran")
 	}
-	for name, err := range map[string]error{"NewTable": r.newTable, "NewStateTable": r.state, "DropTable": r.drop, "Load": r.load, "RefreshKind": r.refreshKind} {
+	for name, err := range map[string]error{"NewTable": r.newTable, "NewTable KeyedBy": r.state, "DropTable": r.drop, "Load": r.load, "RefreshKind": r.refreshKind} {
 		if !errors.Is(err, ErrInSubscriber) {
 			t.Errorf("%s from a subscriber = %v, want ErrInSubscriber", name, err)
 		}
@@ -1916,8 +1916,8 @@ func TestInternalTablesAreReserved(t *testing.T) {
 	if _, err := f.s.NewTable[string, int](ctx, "internal:mine"); err == nil {
 		t.Fatal("NewTable must refuse an internal: name")
 	}
-	if _, err := f.s.NewStateTable[int](ctx, "internal:mine", Kind("group")); err == nil {
-		t.Fatal("NewStateTable must refuse an internal: name")
+	if _, err := f.s.NewTable[string, *int](ctx, "internal:mine", KeyedBy(Kind("group"))); err == nil {
+		t.Fatal("NewTable KeyedBy a kind must refuse an internal: name")
 	}
 	if err := f.s.DropTable(ctx, "internal:negative_item"); err == nil {
 		t.Fatal("DropTable must refuse an internal: name")

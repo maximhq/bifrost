@@ -73,7 +73,7 @@ func NewSharedStore(configStore configstore.ConfigStore, live *livestore.Store, 
 	if live == nil {
 		return nil, fmt.Errorf("shared discovery store: %w", livestore.ErrNoLiveStore)
 	}
-	discoveries, err := live.NewStateTable[schemas.MCPDiscovery](context.Background(), sharedDiscoveriesTable, livestore.KindMCPClient)
+	discoveries, err := live.NewTable[string, *schemas.MCPDiscovery](context.Background(), sharedDiscoveriesTable, livestore.KeyedBy(livestore.KindMCPClient))
 	if err != nil {
 		return nil, fmt.Errorf("shared discovery store: %w", err)
 	}
