@@ -160,8 +160,19 @@ func (c ModelCaps) NormalizeReasoningEffort(effort string, fallback *EffortContr
 	if renamed, ok := renames[effort]; ok {
 		return renamed
 	}
+	return c.ClampReasoningEffort(effort, fallback)
+}
+
+// ClampReasoningEffort snaps effort onto the model's published levels without
+// applying the rename table, for values an earlier pass already renamed.
+func (c ModelCaps) ClampReasoningEffort(effort string, fallback *EffortControl) string {
 	levels := c.ReasoningEffortLevels(fallback)
 	if slices.Contains(levels, effort) {
+		return effort
+	}
+	// A rename target is the row's own spelling of a valid value; a ladder
+	// without it is the wrong oracle, not the value.
+	if c.renamesToEffort(effort) {
 		return effort
 	}
 	// Snap onto the nearest rung the model actually publishes. Hard-coding
@@ -175,8 +186,15 @@ func (c ModelCaps) NormalizeReasoningEffort(effort string, fallback *EffortContr
 	if rank < 0 {
 		return effort
 	}
+	// A row publishing a single level accepts only that label; it cannot be ranked.
+	if len(levels) == 1 && c.activeEffortLabel(levels[0]) {
+		return levels[0]
+	}
 	best, bestDistance := "", 0
 	for _, candidate := range levels {
+		if !c.activeEffortLabel(candidate) {
+			continue
+		}
 		idx := slices.Index(effortLadder, candidate)
 		if idx < 0 {
 			continue
@@ -190,9 +208,59 @@ func (c ModelCaps) NormalizeReasoningEffort(effort string, fallback *EffortContr
 		}
 	}
 	if best == "" {
+		// No published rung is rankable: fall back to the row's first active
+		// label, so the value sent belongs to the row's published levels.
+		for _, candidate := range levels {
+			if c.activeEffortLabel(candidate) {
+				return candidate
+			}
+		}
 		return effort
 	}
 	return best
+}
+
+// renamesToEffort reports whether effort is a target of the row's rename map —
+// the wire label the row itself publishes for some canonical value.
+func (c ModelCaps) renamesToEffort(effort string) bool {
+	if c.record == nil {
+		return false
+	}
+	for _, label := range c.record.ReasoningEffortRenames {
+		if label == effort {
+			return true
+		}
+	}
+	return false
+}
+
+// activeEffortLabel reports whether a published label is an active rung: the
+// disabled spelling only counts when the row cannot disable reasoning.
+func (c ModelCaps) activeEffortLabel(label string) bool {
+	if !c.disabledEffortLabel(label) {
+		return true
+	}
+	return c.record != nil && c.record.SupportsReasoningDisable != nil && !*c.record.SupportsReasoningDisable
+}
+
+// disabledEffortLabel reports whether label is the row's spelling of the
+// disabled state: "none", or the row's rename target for it.
+func (c ModelCaps) disabledEffortLabel(label string) bool {
+	if label == ReasoningEffortNone {
+		return true
+	}
+	target, ok := c.EffortLabelFor(ReasoningEffortNone)
+	return ok && target == label
+}
+
+// EffortLabelFor returns the row's wire label for a canonical effort value
+// when reasoning_effort_renames translates it.
+func (c ModelCaps) EffortLabelFor(canonical string) (string, bool) {
+	if c.record == nil {
+		return "", false
+	}
+	label, ok := c.record.ReasoningEffortRenames[canonical]
+	return label, ok
 }
 
 // ReasoningBudgetRange returns the model's allowed thinking-budget range. ok is

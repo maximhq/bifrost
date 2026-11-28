@@ -1,6 +1,9 @@
 package openai
 
 import (
+	"bytes"
+	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 
@@ -25,6 +28,134 @@ func defaultSupportsReasoningContentBlocks(provider schemas.ModelProvider, model
 
 // isGPTOSS reports whether model is gpt-oss, which accepts sampling params at any effort.
 func isGPTOSS(model string) bool { return strings.Contains(strings.ToLower(model), "gpt-oss") }
+
+// reasoningEffortUnsupported reports whether the row says the model takes no
+// reasoning effort: the unsupported_fields entry wins, then the boolean flag.
+func reasoningEffortUnsupported(caps schemas.ModelCaps) bool {
+	if caps.FieldUnsupported(schemas.FieldReasoningEffort, false) {
+		return true
+	}
+	return !caps.SupportsReasoningEffort(true)
+}
+
+// withoutReasoningEffort removes the effort from caller-supplied passthrough
+// params, in both the nested reasoning.effort and the flat reasoning_effort
+// spelling: a row that rejects reasoning_effort must keep the field out of the
+// merged body too. Returns the map unchanged when it carries neither.
+func withoutReasoningEffort(extra map[string]interface{}) map[string]interface{} {
+	if extra == nil {
+		return nil
+	}
+	_, dropFlat := extra["reasoning_effort"]
+	dropNested, dropReasoning := false, false
+	var reasoning interface{}
+	switch r := extra["reasoning"].(type) {
+	case map[string]interface{}:
+		if _, ok := r["effort"]; ok {
+			stripped := maps.Clone(r)
+			delete(stripped, "effort")
+			dropNested, dropReasoning, reasoning = true, len(stripped) == 0, stripped
+		}
+	case map[string]string:
+		if _, ok := r["effort"]; ok {
+			remaining := make(map[string]interface{}, len(r))
+			for k, v := range r {
+				if k != "effort" {
+					remaining[k] = v
+				}
+			}
+			dropNested, dropReasoning, reasoning = true, len(remaining) == 0, remaining
+		}
+	case json.RawMessage:
+		// Edited as bytes: decoding would round an unrelated integer past 2^53.
+		if stripped, drop := stripRawEffort(r); drop {
+			dropNested, dropReasoning, reasoning = true, stripped == nil, stripped
+		}
+	default:
+		// Any other value (a Go struct, a typed map) reaches the wire through
+		// its own marshal, so it is marshaled here and edited as bytes, which
+		// keeps the shape the caller wrote. The marshal is the sorted one the
+		// passthrough merge uses, so the filter inspects the same representation
+		// it sends. A value carrying no effort, or failing to marshal, is left
+		// untouched.
+		if r == nil {
+			break
+		}
+		encoded, err := utils.MarshalSorted(r)
+		if err != nil {
+			break
+		}
+		if stripped, drop := stripRawEffort(encoded); drop {
+			dropNested, dropReasoning, reasoning = true, stripped == nil, stripped
+		}
+	}
+	if !dropFlat && !dropNested {
+		return extra
+	}
+	clone := maps.Clone(extra)
+	if dropFlat {
+		delete(clone, "reasoning_effort")
+	}
+	if dropNested {
+		if dropReasoning {
+			delete(clone, "reasoning")
+		} else {
+			clone["reasoning"] = reasoning
+		}
+	}
+	return clone
+}
+
+// stripRawEffort removes effort from a raw reasoning object without decoding it,
+// so every other value keeps its exact bytes. It reports whether effort was
+// there; a nil result means the object held nothing else and must be dropped
+// whole. Every occurrence of the key is removed, so a document that repeats it
+// cannot leave an effort behind, and the leftover object is compared compacted,
+// so a formatted one that only held the effort counts as empty too. A value that
+// is not a JSON object, or does not parse, is left alone.
+func stripRawEffort(raw json.RawMessage) (json.RawMessage, bool) {
+	if !utils.JSONFieldExists(raw, "effort") {
+		return raw, false
+	}
+	// One delete removes one member, so the loop is what makes a duplicate key
+	// safe: a single pass would leave the last one on the wire.
+	current := []byte(raw)
+	for utils.JSONFieldExists(current, "effort") {
+		stripped, err := utils.DeleteJSONField(current, "effort")
+		if err != nil || len(stripped) == len(current) {
+			// The key could not be removed, so the value is left as it came rather
+			// than reported stripped while still carrying an effort.
+			return raw, false
+		}
+		current = stripped
+	}
+	if len(bytes.TrimSpace(current)) == 0 {
+		return nil, true
+	}
+	var compacted bytes.Buffer
+	if err := json.Compact(&compacted, current); err == nil && compacted.String() == "{}" {
+		return nil, true
+	}
+	return json.RawMessage(current), true
+}
+
+// rowlessCustomProvider reports whether the request targets a custom provider
+// that has no capability row for its model. With no row there is nothing to
+// normalize an effort against, so the name-based fallback ladder must not be
+// applied to it. The custom-provider marker alone misses a custom hosted on a
+// standard base family, which bifrost marks false, so the base identity is
+// checked too.
+func rowlessCustomProvider(ctx *schemas.BifrostContext, provider schemas.ModelProvider, caps schemas.ModelCaps) bool {
+	if caps.Record() != nil {
+		return false
+	}
+	if ctx != nil {
+		if custom, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && custom {
+			return true
+		}
+	}
+	return schemas.ResolveBaseProvider(ctx, provider) != provider
+}
 
 // joinReasoningBlocks collapses reasoning text blocks into one, in order, joined by "\n" as
 // vLLM's harmony reader does; vLLM's general reader keeps only content[0]. Blocks holding
@@ -151,8 +282,42 @@ func defaultReasoningEffort(model string) string {
 // reasoning.effort is omitted: the datasheet's default_reasoning_effort, else
 // the name-based default.
 func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
+	record := caps.Record()
+	// A row saying outright that the model does not reason outranks the name-based
+	// default: no default effort can make an omitted effort count as reasoning.
+	if record != nil && record.SupportsReasoning != nil && !*record.SupportsReasoning {
+		return false
+	}
+	// An explicit empty default means the model never reasons; only an absent
+	// default falls through to ladder inference.
+	if record != nil && record.DefaultReasoningEffort != nil && *record.DefaultReasoningEffort == "" {
+		return false
+	}
 	effort := caps.DefaultReasoningEffort(defaultReasoningEffort(model))
-	return effort != "" && effort != schemas.ReasoningEffortNone
+	if effort == "" {
+		// No declared default: a row that can never disable reasoning still
+		// reasons when the caller omits effort. A row that leaves
+		// supports_reasoning unset answers from its effort ladder.
+		supports := caps.SupportsReasoning(false)
+		if record != nil && record.SupportsReasoning == nil {
+			supports = caps.SupportsReasoningEffort(false)
+		}
+		return supports && !caps.CanDisableReasoning(true)
+	}
+	if effort == schemas.ReasoningEffortNone {
+		// A row that cannot disable reasoning keeps reasoning on when effort is
+		// omitted, even when its name-based default is "none".
+		return !caps.CanDisableReasoning(defaultCanDisableReasoning(model))
+	}
+	// A row can spell its disabled default in its own dialect (none → off);
+	// omitted effort then agrees with an explicit disabled label. Only on a
+	// model that can disable reasoning — an always-reasoning row maps "none"
+	// onto its lowest rung, which is not the disabled state.
+	if label, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && label == effort &&
+		caps.CanDisableReasoning(defaultCanDisableReasoning(model)) {
+		return false
+	}
+	return true
 }
 
 // defaultEffortControl widens the base low/medium/high ladder with the effort
@@ -169,10 +334,21 @@ func defaultEffortControl(provider schemas.ModelProvider, model string) *schemas
 		levels = append(levels, schemas.ReasoningEffortXHigh)
 	}
 	// MiniMax accepts "max" on every chat model (and defaults to it); M2.x ignores effort entirely.
-	if acceptsMaxEffort(model) || provider == schemas.MiniMax || provider == schemas.Baseten {
+	if (acceptsMaxEffort(model) && provider != schemas.BytePlus) || provider == schemas.MiniMax || provider == schemas.Baseten {
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
 	return &schemas.EffortControl{Levels: levels}
+}
+
+// defaultEffortControlFor applies the base family's provider-keyed ladder rules
+// (BytePlus, MiniMax, Baseten) to a custom provider; OpenAI/Azure/xAI stay
+// name-based on the hosted catalog, so a custom key keeps the client's xhigh.
+func defaultEffortControlFor(provider, base schemas.ModelProvider, model string) *schemas.EffortControl {
+	switch base {
+	case schemas.BytePlus, schemas.MiniMax, schemas.Baseten:
+		provider = base
+	}
+	return defaultEffortControl(provider, model)
 }
 
 // includeXHighInDefaultLadder reports whether the OpenAI-dialect fallback
@@ -200,7 +376,7 @@ func normalizeReasoningEffort(provider schemas.ModelProvider, caps schemas.Model
 	if provider == "" {
 		provider = caps.Provider()
 	}
-	return caps.NormalizeReasoningEffort(effort, defaultEffortControl(provider, caps.Model()))
+	return caps.NormalizeReasoningEffort(effort, defaultEffortControlFor(provider, caps.Provider(), caps.Model()))
 }
 
 // acceptsXHighEffort reports models that natively accept "xhigh" effort. The
