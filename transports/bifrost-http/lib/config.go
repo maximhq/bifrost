@@ -1302,6 +1302,13 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	initVault(&configData)
 	// 1b. Bootstrap setup token (from config file or BIFROST_SETUP_TOKEN env var)
 	config.SetupToken = resolveSetupToken(&configData)
+	// LoadConfig owns opened resources until it returns a complete config.
+	loaded := false
+	defer func() {
+		if !loaded {
+			config.Close(ctx)
+		}
+	}()
 	// 2. Stores (config, logs, vector) — creates defaults for absent configs
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
@@ -1438,6 +1445,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		return nil, err
 	}
 	config.MCPSharedDiscoveryStore = sharedDiscoveries
+	loaded = true
 	return config, nil
 }
 
@@ -4665,6 +4673,11 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 						configData.Governance.VirtualKeys[i].Metadata = existingVirtualKey.Metadata
 					}
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
+					// Leave an omitted state on the queued write so UpdateVirtualKey
+					// reads it under the row lock. The boot snapshot needs its value now.
+					if newVirtualKey.IsActive == nil {
+						configData.Governance.VirtualKeys[i].IsActive = existingVirtualKey.IsActive
+					}
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
 				} else {
 					logger.Debug("config hash matches for virtual key %s, keeping DB config", newVirtualKey.ID)
@@ -4674,6 +4687,9 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 		if !found {
 			configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
+			if newVirtualKey.IsActive == nil {
+				configData.Governance.VirtualKeys[i].IsActive = schemas.Ptr(true)
+			}
 			if configData.Governance.VirtualKeys[i].ID == "" {
 				configData.Governance.VirtualKeys[i].ID = uuid.NewString()
 			}

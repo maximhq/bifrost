@@ -375,6 +375,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -382,11 +383,13 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/featureflags"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/framework/postgresconn"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
@@ -3083,6 +3086,29 @@ func TestValidateClientConfig_IssuerURLRequiredForClaudeCodeGateway(t *testing.T
 			}
 		})
 	}
+}
+
+func TestLoadConfig_ClosesConfigStoreOnLogsInitFailure(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	tempDir := createTempDir(t)
+	// The config store can open normally, but the default logs database cannot
+	// open a directory as its file.
+	require.NoError(t, os.Mkdir(filepath.Join(tempDir, "logs.db"), 0700))
+	var store configstore.ConfigStore
+	RegisterConfigStoreReadyHook(func(_ context.Context, opened configstore.ConfigStore) {
+		store = opened
+		t.Cleanup(func() { _ = opened.Close(ctx) })
+	})
+	defer RegisterConfigStoreReadyHook(nil)
+
+	cfg, err := LoadConfig(ctx, tempDir)
+	require.ErrorContains(t, err, "failed to initialize logs store")
+	require.Nil(t, cfg)
+	require.NotNil(t, store, "the config store must open before the logs store fails")
+	sqlDB, err := store.DB().DB()
+	require.NoError(t, err)
+	require.ErrorContains(t, sqlDB.PingContext(ctx), "database is closed")
 }
 
 // TestLoadConfig_OAuthDiscoveryWithoutIssuerURLFailsBoot verifies OAuth
@@ -10303,6 +10329,214 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 	if memVK == nil || memVK.Metadata["cost_center"] != "cc-42" {
 		t.Errorf("Expected API-set metadata to survive the sync in memory, got %+v", memVK)
 	}
+}
+
+// TestVirtualKeyConfigSyncOmittedIsActive reproduces issue #9810 through config.json
+// reloads on temporary SQLite or a private schema on BIFROST_REPRO_POSTGRES_PORT.
+func TestVirtualKeyConfigSyncOmittedIsActive(t *testing.T) {
+	const repairMigration = "normalize_virtual_key_is_active"
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+	id := uuid.NewString()
+	expiry := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	data := makeConfigDataWithVirtualKeysAndDir(nil, []tables.TableVirtualKey{{
+		ID: id, Name: "repro-9810-" + id,
+		Value: *schemas.NewSecretVar("sk-bf-9810-" + id), ExpiresAt: &expiry,
+	}}, tempDir)
+	if port := os.Getenv("BIFROST_REPRO_POSTGRES_PORT"); port != "" {
+		storage := &configstore.PostgresConfig{
+			Host: schemas.NewSecretVar("127.0.0.1"), Port: schemas.NewSecretVar(port),
+			User: schemas.NewSecretVar("bifrost"), Password: schemas.NewSecretVar("bifrost_password"),
+			DBName: schemas.NewSecretVar("bifrost"), SSLMode: schemas.NewSecretVar("disable"),
+		}
+		schema := "vk_sync_" + strings.ReplaceAll(id, "-", "")
+		// LoadConfig opens separate migration and runtime pools on every restart.
+		// pgx applies PGOPTIONS to each of them and to the independent seed pool.
+		t.Setenv("PGOPTIONS", "-c search_path="+schema)
+		db, err := postgresconn.Open(postgresconn.BuildDSN(storage), storage, nil)
+		require.NoError(t, err)
+		pool, err := db.DB()
+		require.NoError(t, err)
+		t.Cleanup(func() { assert.NoError(t, pool.Close()) })
+		require.NoError(t, db.Exec("CREATE SCHEMA "+schema).Error)
+		t.Cleanup(func() { assert.NoError(t, db.Exec("DROP SCHEMA "+schema+" CASCADE").Error) })
+		var currentSchema string
+		require.NoError(t, db.Raw("SELECT current_schema()").Scan(&currentSchema).Error)
+		require.Equal(t, schema, currentSchema)
+		data.ConfigStoreConfig = &configstore.Config{
+			Enabled: true, Type: configstore.ConfigStoreTypePostgres, Config: storage,
+		}
+	}
+	var cfg *Config
+	closeConfig := func() {
+		if cfg != nil {
+			cfg.Close(ctx)
+			cfg = nil
+		}
+	}
+	t.Cleanup(closeConfig)
+	load := func() {
+		t.Helper()
+		closeConfig()
+		createConfigFile(t, tempDir, data)
+		var err error
+		cfg, err = LoadConfig(ctx, tempDir)
+		require.NoError(t, err)
+	}
+	check := func(cfg *Config, keyID, stage string, wantActive bool, storedNull ...bool) *tables.TableVirtualKey {
+		t.Helper()
+		vk := verifyVirtualKeyInDB(t, cfg.ConfigStore, keyID)
+		var row struct{ Active *bool }
+		require.NoError(t, cfg.ConfigStore.(*configstore.RDBConfigStore).DB().Raw(
+			"SELECT is_active AS active FROM governance_virtual_keys WHERE id = ?", keyID).Scan(&row).Error)
+		payload, err := providerUtils.MarshalSorted(vk)
+		require.NoError(t, err)
+		var wire struct {
+			IsActive *bool `json:"is_active"`
+		}
+		require.NoError(t, json.Unmarshal(payload, &wire))
+		store, err := governance.NewLocalGovernanceStore(ctx, &testLogger{}, cfg.ConfigStore, cfg.LiveStore, nil)
+		require.NoError(t, err)
+		defer store.Close()
+		requestCtx := schemas.NewBifrostContext(ctx, time.Time{})
+		requestCtx.SetGrant(grant.New())
+		requestCtx.SetValue(schemas.BifrostContextKeyVirtualKey, vk.Value.GetValue())
+		permits, _, _, _ := store.ResolvePermits(requestCtx)
+		require.Len(t, permits, 1)
+		t.Logf("%s: SQL NULL=%t, permit active=%t, JSON field present=%t, dashboard disabled=%t",
+			stage, row.Active == nil, permits[0].IsActive(), wire.IsActive != nil, wire.IsActive == nil || !*wire.IsActive)
+		assert.Equal(t, wantActive, permits[0].IsActive(), stage+": enforcement state")
+		if len(storedNull) > 0 && storedNull[0] {
+			assert.Nil(t, row.Active, stage+": simulate a NULL written after migration")
+		} else {
+			assert.Equal(t, &wantActive, row.Active, stage+": stored is_active must be explicit")
+		}
+		assert.Equal(t, &wantActive, wire.IsActive, stage+": dashboard must receive the effective state")
+		memoryVK, found := cfg.LiveStore.Collections.VirtualKeys.Get(keyID)
+		require.True(t, found, stage+": key must exist in memory")
+		assert.Equal(t, wantActive, memoryVK.Active, stage+": live store must match the database")
+		return vk
+	}
+	load()
+	check(cfg, id, "initial create", true)
+	expiry = expiry.Add(time.Hour)
+	load()
+	initial := check(cfg, id, "expiry update on an enabled key", true)
+	require.True(t, initial.ExpiresAt.Equal(expiry))
+	// Disable through the store with the file's last-applied hash intact.
+	initial.IsActive = schemas.Ptr(false)
+	require.NoError(t, cfg.ConfigStore.UpdateVirtualKey(ctx, initial))
+	load()
+	check(cfg, id, "unchanged file preserves dashboard disable", false)
+
+	expiry = expiry.Add(time.Hour)
+	newID := uuid.NewString()
+	data.Governance.VirtualKeys = append(data.Governance.VirtualKeys, tables.TableVirtualKey{
+		ID: newID, Name: "new-9810-" + newID, Value: *schemas.NewSecretVar("sk-bf-9810-" + newID),
+	})
+	load()
+	updated := check(cfg, id, "expiry update preserves dashboard disable", false)
+	check(cfg, newID, "new key in same restart", true)
+	assert.True(t, updated.ExpiresAt.Equal(expiry))
+	hashAfterUpdate := updated.ConfigHash
+
+	data.Governance.VirtualKeys[0].IsActive = schemas.Ptr(true)
+	explicitHash, err := configstore.GenerateVirtualKeyHash(data.Governance.VirtualKeys[0])
+	require.NoError(t, err)
+	assert.Equal(t, hashAfterUpdate, explicitHash, "adding explicit true does not invalidate the hash")
+	load()
+	check(cfg, id, "explicit true only, same hash preserves dashboard disable", false)
+
+	data.Governance.VirtualKeys[0].Description = "force a new hash with explicit true"
+	load()
+	check(cfg, id, "explicit true plus changed description", true)
+
+	data.Governance.VirtualKeys[0].IsActive = schemas.Ptr(false)
+	load()
+	check(cfg, id, "explicit false control", false)
+	legacy := check(cfg, newID, "before legacy NULL seed", true)
+	closeConfig()
+	// Stop the existing worker before seeding pending repair on a separate pool.
+	// The original hash and updated_at are kept so the file still looks unchanged.
+	var seedDB *gorm.DB
+	switch storage := data.ConfigStoreConfig.Config.(type) {
+	case *configstore.SQLiteConfig:
+		seedDB, err = gorm.Open(sqlite.Open(storage.Path), &gorm.Config{})
+	case *configstore.PostgresConfig:
+		seedDB, err = postgresconn.Open(postgresconn.BuildDSN(storage), storage, nil)
+	default:
+		t.Fatalf("unexpected test config store: %T", storage)
+	}
+	require.NoError(t, err)
+	seedPool, err := seedDB.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = seedPool.Close() })
+	require.NoError(t, seedDB.Exec("UPDATE governance_virtual_keys SET is_active = NULL WHERE id = ?", newID).Error)
+	require.NoError(t, seedDB.Exec("DELETE FROM migrations WHERE id = ?", repairMigration).Error)
+	var pending struct{ IsActive *bool }
+	require.NoError(t, seedDB.Table((tables.TableVirtualKey{}).TableName()).
+		Select("is_active").Where("id = ?", newID).Take(&pending).Error)
+	require.Nil(t, pending.IsActive, "the row must still be NULL before restart")
+	var markerCount int64
+	require.NoError(t, seedDB.Table("migrations").Where("id = ?", repairMigration).Count(&markerCount).Error)
+	require.Zero(t, markerCount, "repair must still be pending before restart")
+	require.NoError(t, seedPool.Close())
+
+	load()
+	// Repair is asynchronous; wait for its durable completion before asserting SQL.
+	require.Eventually(t, func() bool {
+		var count int64
+		err := cfg.ConfigStore.(*configstore.RDBConfigStore).DB().Table("migrations").Where("id = ?", repairMigration).Count(&count).Error
+		return err == nil && count == 1
+	}, 5*time.Second, 10*time.Millisecond)
+	repaired := check(cfg, newID, "legacy NULL with unchanged config", true)
+	assert.Equal(t, legacy.ConfigHash, repaired.ConfigHash)
+	assert.True(t, legacy.UpdatedAt.Equal(repaired.UpdatedAt), "repair must not look like a user edit")
+	check(cfg, id, "migration preserves disabled key", false)
+	load()
+	check(cfg, newID, "repeated startup", true)
+	check(cfg, id, "repeated startup preserves disabled key", false)
+	// An older replica writes NULL after this migration is already recorded.
+	// The unchanged file must preserve its hash while reads expose active=true.
+	db := cfg.ConfigStore.(*configstore.RDBConfigStore).DB()
+	require.NoError(t, db.Table("migrations").Where("id = ?", repairMigration).Count(&markerCount).Error)
+	require.EqualValues(t, 1, markerCount, "the late write must follow a completed repair")
+	require.NoError(t, db.Exec("UPDATE governance_virtual_keys SET is_active = NULL WHERE id = ?", newID).Error)
+	load()
+	lateWrite := check(cfg, newID, "old replica writes NULL after migration", true, true)
+	assert.Equal(t, legacy.ConfigHash, lateWrite.ConfigHash)
+	assert.True(t, legacy.UpdatedAt.Equal(lateWrite.UpdatedAt))
+	check(cfg, id, "rolling upgrade preserves disabled key", false)
+}
+
+func TestVirtualKeyConfigSyncPreservesDisableAfterRead(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	dir := createTempDir(t)
+	data := makeConfigDataWithVirtualKeysAndDir(nil, []tables.TableVirtualKey{{
+		ID: "vk-9810", Name: "key-9810", Value: *schemas.NewSecretVar("sk-bf-vk-9810"),
+	}}, dir)
+	createConfigFile(t, dir, data)
+	cfg, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer cfg.Close(ctx)
+
+	snapshot, err := cfg.ConfigStore.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, snapshot.VirtualKeys, 1)
+	key := snapshot.VirtualKeys[0]
+	require.True(t, key.IsActiveValue())
+	// The dashboard commits a disable after config sync reads its snapshot.
+	key.IsActive = schemas.Ptr(false)
+	require.NoError(t, cfg.ConfigStore.UpdateVirtualKey(ctx, &key))
+	data.Governance.VirtualKeys[0].Description = "changed in the file"
+	cfg.GovernanceConfig = snapshot
+	mergeGovernanceConfig(ctx, cfg, data, snapshot)
+
+	updated := verifyVirtualKeyInDB(t, cfg.ConfigStore, key.ID)
+	assert.Equal(t, "changed in the file", updated.Description)
+	assert.Equal(t, schemas.Ptr(false), updated.IsActive)
 }
 
 // TestSQLite_VirtualKey_DBOnlyVK_Preserved tests that VK added via DB is preserved on reload

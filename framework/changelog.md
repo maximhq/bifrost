@@ -17,6 +17,7 @@
 - fix: modelcatalog - `allowed_models` accepts a key alias that resolves to an allowed model (thanks [@aharshit123456](https://github.com/aharshit123456)!)
 - fix: modelcatalog - stored model parameters survive the URL sync (thanks [@Constantine3](https://github.com/Constantine3)!)
 - fix: modelcatalog - ElevenLabs Scribe works with wildcard virtual keys
+- fix: configstore - preserve a virtual key's active state when an update omits it and repair stored NULL states during rolling upgrades (thanks [@Constantine3](https://github.com/Constantine3)!)
 - fix: configstore - config hashes are deterministic for map fields (thanks [@rojinebrahimi](https://github.com/rojinebrahimi)!)
 - fix: configstore - customer and team saves no longer rewrite their associations
 - fix: configstore - config.json MCP clients sync tool_sync_interval and tool_execution_timeout edits on restart (thanks [@ykakade](https://github.com/ykakade)!)
