@@ -67,6 +67,10 @@ type TableModelRouter struct {
 	ChainRouter   bool    `gorm:"not null;default:false" json:"-"`                     // the routers are walked again after this one applies a target
 	EmptyTarget   string  `gorm:"type:varchar(20);not null;default:''" json:"-"`       // classifier routers: "next_router", or empty for original_model
 
+	// A conditional router's fallback chain, a JSON array, for whichever of its targets is chosen,
+	// as a routing rule kept one. NULL keeps the request's own chain.
+	Fallbacks *string `gorm:"type:text" json:"-"`
+
 	// Deprecated lexical tier boundaries, still accepted and returned; zero reads as the default.
 	SimpleMediumBoundary  float64 `json:"-"`
 	MediumComplexBoundary float64 `json:"-"`

@@ -1,12 +1,15 @@
-// Package routing provides the routing rule engine as a Bifrost plugin. It owns the rule
-// set, the compiled CEL programs behind each rule, and the request-complexity analyzer that
-// backs the complexity_tier variable.
+// Package routing provides model routers as a Bifrost plugin. It owns the routers' compiled
+// conditions and the classifiers that give a request its complexity tier.
 //
 // The plugin runs in PreRequestHook, after governance has resolved the request's virtual key
 // and stamped its scope on the context, and it drives the rest of the routing pipeline from
-// there: rules decide provider, model, fallback chain and key pin, and only then does the
+// there: routers decide provider, model, fallback chain and key pin, and only then does the
 // virtual key's provider allowlist get published and its providers load balanced. Requests
-// with no rules configured pay a single map check before that materialization.
+// with no router enabled pay a single counter read before that materialization.
+//
+// Routing rules no longer run: the migration that made model routers of them left the rules
+// stored, and the rule store and engine here only serve the management API until they are
+// removed.
 package routing
 
 import (
@@ -18,7 +21,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -75,7 +77,7 @@ func (c *Config) chainMaxDepthOrDefault() *int {
 	return &defaultDepth
 }
 
-// RoutingPlugin evaluates routing rules for every request.
+// RoutingPlugin walks the model routers for every request.
 type RoutingPlugin struct {
 	rules              *rules.Store
 	ownsRules          bool // Init built the rule store, so Cleanup closes it
@@ -506,14 +508,13 @@ func (p *RoutingPlugin) deleteComplexityGenerationUnchecked(ctx context.Context,
 	return nil
 }
 
-// PreRequestHook evaluates routing rules, then materializes the virtual key's provider choice
-// for whatever provider/model the rules settled on.
+// PreRequestHook walks the model routers, then materializes the virtual key's provider choice for
+// whatever provider and model they settled on.
 //
-// The order inside this hook is load bearing: a matched rule can rewrite provider, model and
-// fallbacks, so the virtual key's provider allowlist and its load balancer must both see the
-// post-rule values. Both of those belong to the governance plugin and are invoked from here
-// rather than from governance's own hook, which runs earlier so that rules evaluate against a
-// fully stamped context.
+// The order inside this hook is load bearing: a router can rewrite provider, model and fallbacks,
+// so the virtual key's provider allowlist and its load balancer must both see what it chose. Both
+// of those belong to the governance plugin and are invoked from here rather than from governance's
+// own hook, which runs earlier so that routers are walked against a fully stamped context.
 //
 // It handles both normal body-having requests (routing on req.Model) and large-payload
 // streaming requests (routing on LargePayloadMetadata.Model from ctx, since the body is
@@ -545,23 +546,15 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 		return nil
 	}
 
-	decision, err := p.applyRoutingRules(ctx, req, scope)
-	if err != nil {
-		return err
-	}
-	// Model routers run after the routing rules and before the virtual key's
-	// allowlist and load balancing, which must see the model they choose.
+	// Model routers run before the virtual key's allowlist and load balancing, which must see
+	// the model they choose.
 	chainFromRouter := p.applyModelRouters(ctx, req, scope, false)
 
 	_, routedModel, routedFallbacks := req.GetRequestFields()
-	// Here and not in applyRoutingRules: the large-payload path routes a synthetic request and
-	// attaches none of its fallbacks, so only this path carries a chain governance can refuse.
-	// The chain is the model router's when its target replaced it, and the rule's otherwise.
-	switch {
-	case chainFromRouter != "":
+	// Here and not in the walk: the large-payload path routes a synthetic request and attaches
+	// none of its fallbacks, so only this path carries a chain governance can refuse.
+	if chainFromRouter != "" {
 		p.warnFallbacksOutsideAccess(ctx, schemas.RoutingEngineModelRouter, "Model router", chainFromRouter, routedFallbacks)
-	case decision != nil && len(decision.Fallbacks) > 0:
-		p.warnFallbacksOutsideAccess(ctx, schemas.RoutingEngineRoutingRule, "Rule", decision.MatchedRuleName, routedFallbacks)
 	}
 
 	// Downstream routing layers (load balancing, model-catalog resolution) intersect their
@@ -574,28 +567,24 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 }
 
 // routeLargePayloadModel wraps a model string in a synthetic BifrostRequest, runs the same
-// rule evaluation, model router walk and virtual key materialization as the main PreRequestHook
-// path, and returns the resolved model (provider-prefixed when a provider was selected, plain model
-// otherwise). Used by the large-payload branch where req.Model is empty because the body wasn't
-// parsed.
+// model router walk and virtual key materialization as the main PreRequestHook path, and returns
+// the resolved model (provider-prefixed when a provider was selected, plain model otherwise). Used
+// by the large-payload branch where req.Model is empty because the body wasn't parsed.
 //
 // The synthetic request carries no messages, so a classifier router has nothing to classify here:
 // it routes only on a tier the session already remembers, and otherwise passes the request on (see
-// applyModelRouters). Only the model is read back, so a target's fallbacks are not attached, as a
-// routing rule's are not; its key pin and first-token deadline are, since both live on ctx.
+// applyModelRouters). Only the model is read back, so a target's fallbacks are not attached; its
+// key pin and first-token deadline are, since both live on ctx.
 func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, scope rules.GovernanceScope, modelIn string, requestType schemas.RequestType) (string, error) {
 	// Parse a provider-prefixed model string the same way the transport does for
 	// body-having requests, so an explicit prefix like "openai/gpt-4o" lands in
-	// ChatRequest.Provider and rule evaluation honors the caller's routing intent.
+	// ChatRequest.Provider and the routers see the caller's routing intent.
 	providerIn, parsedModel := schemas.ParseModelString(modelIn, "")
 	synthetic := &schemas.BifrostRequest{
 		RequestType: requestType,
 		ChatRequest: &schemas.BifrostChatRequest{Provider: providerIn, Model: parsedModel},
 	}
 
-	if _, err := p.applyRoutingRules(ctx, synthetic, scope); err != nil {
-		return modelIn, err
-	}
 	p.applyModelRouters(ctx, synthetic, scope, true)
 
 	// Publish before load balancing, exactly as the body-having path does: the allowlist is
@@ -615,92 +604,6 @@ func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, scop
 		return string(provider) + "/" + model, nil
 	}
 	return model, nil
-}
-
-// applyRoutingRules evaluates routing rules against req and mutates
-// req.Provider/req.Model/req.Fallbacks when a rule matches, returning the matched
-// rules.Decision, or nil when no rule matched. A deployment with no rules configured pays a
-// single map check here and falls through to the virtual key's own provider selection.
-func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, scope rules.GovernanceScope) (*rules.Decision, error) {
-	if !p.rules.HasRules(ctx) {
-		return nil, nil
-	}
-
-	provider, model, _ := req.GetRequestFields()
-	if model == "" {
-		return nil, nil
-	}
-
-	requestType := string(req.RequestType)
-	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-	queryParams, _ := ctx.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
-
-	// Set up lazy complexity computation; only runs if a rule's outcome depends on complexity_tier.
-	var computeComplexity func() *complexity.ComplexityResult
-	if p.complexityAnalyzer.Load() != nil {
-		computeComplexity = func() *complexity.ComplexityResult {
-			return p.computeComplexity(ctx, req)
-		}
-	}
-
-	routingCtx := &rules.EvaluationContext{
-		Scope:                    scope,
-		Provider:                 provider,
-		Model:                    model,
-		RequestType:              requestType,
-		Headers:                  headers,
-		QueryParams:              queryParams,
-		BudgetAndRateLimitStatus: p.governance.GetBudgetAndRateLimitStatus(ctx, provider, model, nil, nil, nil),
-		ComputeComplexity:        computeComplexity,
-	}
-
-	p.logger.Debug("[Routing] Built routing context: provider=%s, model=%s, requestType=%s, vk=%s",
-		provider, model, requestType, scope.VirtualKeyID)
-
-	// Evaluate routing rules
-	decision, err := p.engine.EvaluateRoutingRules(ctx, routingCtx)
-	if err != nil {
-		p.logger.Error("failed to evaluate routing rules: %v", err)
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Routing rule evaluation error: %v", err))
-		return nil, nil
-	}
-	if decision == nil {
-		return nil, nil
-	}
-
-	p.logger.Debug("[Routing] Routing rule matched: %s", decision.MatchedRuleName)
-
-	if decision.Provider != "" {
-		req.SetProvider(schemas.ModelProvider(decision.Provider))
-	}
-	if decision.Model != "" {
-		req.SetModel(decision.Model)
-	}
-
-	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineRoutingRule)
-
-	// Add fallbacks if present; fill in the incoming model for fallbacks that omit it
-	if len(decision.Fallbacks) > 0 {
-		req.SetFallbacks(resolveRuleFallbacks(ctx, schemas.RoutingEngineRoutingRule, "Rule '"+decision.MatchedRuleName+"'", decision.Fallbacks, model))
-	}
-
-	// Pin specific API key by ID if the routing rule specifies one. This uses a dedicated,
-	// non-reserved context key (not BifrostContextKeyAPIKeyID): routing runs inside
-	// PreRequestHook, where core blocks writes to reserved key-selection keys, so a write to
-	// the caller-pin key would be silently dropped. Key selection reads this routing pin first
-	// and resolves it against the configured key pool.
-	if decision.KeyID != "" {
-		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, decision.KeyID)
-	}
-
-	// TTFT deadline for streaming requests. Core applies it to every attempt but
-	// the last, so it only takes effect when this request has fallbacks.
-	if decision.TTFTTimeout > 0 && bifrost.IsStreamRequestType(req.RequestType) {
-		ctx.SetValue(schemas.BifrostContextKeyStreamFirstTokenTimeout, decision.TTFTTimeout)
-	}
-
-	p.logger.Debug("[Routing] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, configstoreTables.RoutingFallbackStrings(decision.Fallbacks))
-	return decision, nil
 }
 
 // PreLLMHook implements schemas.LLMPlugin (no-op).
@@ -735,9 +638,8 @@ func (p *RoutingPlugin) persistComplexityTurnTier(ctx *schemas.BifrostContext) {
 	if sessionID == "" {
 		return
 	}
-	// One request can be classified for a routing rule's complexity_tier and
-	// by the model router that takes it. Each keeps its own tier, so a
-	// continuation resumes each on the tier it gave this turn.
+	// One request can be classified by several routers on its way through the walk. Each keeps
+	// its own tier, so a continuation resumes each on the tier it gave this turn.
 	tiers, _ := ctx.Value(modelRouterTiersKey{}).(map[string]routerTier)
 	for routerID, entry := range tiers {
 		if entry.result == nil || entry.result.Tier == "" {

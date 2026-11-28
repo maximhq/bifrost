@@ -28,8 +28,6 @@ const configContentJSON = `"providers": {"openai": {"keys": [
 			"provider_configs": [{"provider": "openai", "weight": 1, "allowed_models": ["*"]}]}],
 		"model_configs": [{"id": "mc-1", "model_name": "gpt-4o", "provider": "openai", "rate_limit_id": "rl-mc"}],
 		"providers": [{"name": "openai", "rate_limit_id": "rl-provider"}],
-		"routing_rules": [{"id": "rr-1", "name": "alias", "enabled": true, "scope": "global", "cel_expression": "model == \"assistant\"",
-			"targets": [{"provider": "openai", "model": "gpt-4o", "weight": 1}]}],
 		"pricing_overrides": [{"id": "po-1", "name": "discount", "scope_kind": "global", "match_type": "exact", "pattern": "gpt-4o",
 			"request_types": ["chat_completion"], "pricing_patch": "{\"input_cost_per_token\": 0.000001}"}]
 	},
@@ -83,13 +81,11 @@ func TestConfigJSONContentPerMode(t *testing.T) {
 			want = 1
 		}
 		_, agent := c.Agents.Get("helper")
-		_, routingRule := c.RoutingRules.Get("rr-1")
 		_, modelRouter := c.ModelRouters.Get("support")
 		require.Equal(t, want, countRecords(c.MCPClients), "%s: MCP clients load only with a config store", tc.mode)
 		require.Equal(t, want, countRecords(c.VirtualMCPs), "%s: virtual MCPs load only with a config store", tc.mode)
 		require.Equal(t, want, countRecords(c.WebhookEndpoints), "%s: webhooks load only with a config store", tc.mode)
 		require.Equal(t, tc.stored, agent, "%s: agents load only with a config store", tc.mode)
-		require.Equal(t, tc.stored, routingRule, "%s: routing rules load only with a config store", tc.mode)
 		require.Equal(t, tc.stored, modelRouter, "%s: model routers load only with a config store", tc.mode)
 		relays := 0
 		if tc.config.ConfigStore != nil {

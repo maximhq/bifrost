@@ -681,6 +681,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Relays = temp.Relays
 	cd.DatasheetOverrides = temp.DatasheetOverrides
 	cd.ModelRouters = temp.ModelRouters
+	defaultConditionalRoutersOn(raw["model_routers"], cd.ModelRouters)
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
@@ -1206,6 +1207,31 @@ func (c *Config) ConfigDir() string {
 	return filepath.Dir(c.configPath)
 }
 
+// refuseRemovedRoutingConfig fails the load of a config file that still declares routing rules or
+// the Complexity Router settings. Both became model routers: a request is no longer routed by a
+// rule, so a file that declares one would configure nothing, and starting anyway would leave an
+// operator believing it does. An empty routing_rules list declares no rule and is accepted.
+func refuseRemovedRoutingConfig(configData *ConfigData) error {
+	if configData == nil || configData.Governance == nil {
+		return nil
+	}
+	var removed []string
+	if len(configData.Governance.RoutingRules) > 0 {
+		removed = append(removed, "governance.routing_rules")
+	}
+	if configData.Governance.ComplexityAnalyzerConfig != nil {
+		removed = append(removed, "governance.complexity_analyzer_config")
+	}
+	if len(removed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("config.json declares %s, which is no longer read: routing rules and the Complexity Router became model routers. "+
+		"Rules already saved in the database are turned into model routers when the gateway starts. "+
+		"Remove %s from the file, and declare routers under model_routers if the file is where you keep them. "+
+		"See the v3.0.0 migration guide",
+		strings.Join(removed, " and "), strings.Join(removed, " and "))
+}
+
 func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	configFilePath := filepath.Join(configDirPath, "config.json")
 	configDBPath := filepath.Join(configDirPath, "config.db")
@@ -1291,6 +1317,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		if configData.Version == 1 {
 			logger.Info("config version 1 detected, applying v1.4.x compatibility semantics (empty arrays = allow all)")
 			applyV1Compat(&configData)
+		}
+		if err := refuseRemovedRoutingConfig(&configData); err != nil {
+			return nil, err
 		}
 	}
 

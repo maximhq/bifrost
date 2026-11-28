@@ -2,10 +2,10 @@ package complexity_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	mathrand "math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -365,62 +365,6 @@ func TestModelRouterFallbacks(t *testing.T) {
 	assert.Equal(t, []schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o"}}, run(t, modelless))
 }
 
-// TestModelRouterRunsAfterRoutingRules pins the order of the two steps: a
-// router's condition sees the model a routing rule chose.
-func TestModelRouterRunsAfterRoutingRules(t *testing.T) {
-	routeToMini := configstoreTables.TableRoutingRule{
-		ID: "to-mini", Name: "to-mini", CelExpression: `model == "gpt-4o"`, Enabled: schemas.Ptr(true), Scope: "global",
-		Targets: []configstoreTables.TableRoutingTarget{{Model: schemas.Ptr("gpt-4o-mini"), Weight: 1}},
-	}
-	onMini := decisionModelRouter("general", "General", tierTarget(complexity.TierComplex, "anthropic", "claude-opus"))
-	onMini.Routing = globalRouting(0, `model == "gpt-4o-mini"`)
-
-	plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(),
-		[]configstoreTables.TableRoutingRule{routeToMini}, []configstore.ModelRouter{onMini})
-	req := runPreRequest(t, plugin, newRequestContext(), complexText)
-	_, model, _ := req.GetRequestFields()
-	assert.Equal(t, "claude-opus", model)
-
-	plugin = modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{onMini})
-	req = runPreRequest(t, plugin, newRequestContext(), complexText)
-	_, model, _ = req.GetRequestFields()
-	assert.Equal(t, "gpt-4o", model, "without the routing rule the condition does not hold")
-}
-
-// TestComplexityTierStaysWithTheComplexityConfig pins that routers and a
-// routing rule's complexity_tier are separate: complexity_tier is classified
-// with the Complexity Router page's config, which records no router, and a
-// router that then takes the request classifies it again on its own.
-func TestComplexityTierStaysWithTheComplexityConfig(t *testing.T) {
-	complexToMini := configstoreTables.TableRoutingRule{
-		ID: "complex-to-mini", Name: "complex-to-mini", CelExpression: `complexity_tier == "COMPLEX"`, Enabled: schemas.Ptr(true), Scope: "global",
-		Targets: []configstoreTables.TableRoutingTarget{{Model: schemas.Ptr("gpt-4o-mini"), Weight: 1}},
-	}
-
-	t.Run("no router on", func(t *testing.T) {
-		decision := modelRoutingDecision()
-		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, []configstoreTables.TableRoutingRule{complexToMini}, nil)
-		ctx := newRequestContext()
-		req := runPreRequest(t, plugin, ctx, complexText)
-		_, model, _ := req.GetRequestFields()
-		assert.Equal(t, "gpt-4o-mini", model, "the complexity config's tier drives the routing rule")
-		assert.Equal(t, 1, decision.calls())
-		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID), "complexity_tier records no router")
-	})
-
-	t.Run("a router takes the request after", func(t *testing.T) {
-		decision := modelRoutingDecision()
-		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision,
-			[]configstoreTables.TableRoutingRule{complexToMini}, []configstore.ModelRouter{supportRouter("Support")})
-		ctx := newRequestContext()
-		req := runPreRequest(t, plugin, ctx, complexText)
-		_, model, _ := req.GetRequestFields()
-		assert.Equal(t, "claude-opus", model, "the router sees the routing rule's model and replaces it")
-		assert.Equal(t, 2, decision.calls(), "each classifies once")
-		assert.Equal(t, "support", ctx.Value(schemas.BifrostContextKeyModelRouterID))
-	})
-}
-
 // TestModelRoutingOnLargePayloads pins the step on a large payload, whose body
 // is not parsed. A conditional router routes it on its condition, as a routing
 // rule does. A classifier router has no text to classify, so it routes only on
@@ -550,20 +494,6 @@ func ruleFor(id, cel string, target configstoreTables.TableRoutingTarget) config
 		ID: id, Name: id, CelExpression: cel, Enabled: schemas.Ptr(true), Scope: "global",
 		Targets: []configstoreTables.TableRoutingTarget{target},
 	}
-}
-
-// pinnedStreamingRule is a routing rule that sets everything a rule can set:
-// it moves gpt-4o to openai/gpt-4o-mini, pins a key, gives the request a
-// fallback chain and, for streams, a first-token deadline.
-func pinnedStreamingRule(t *testing.T) configstoreTables.TableRoutingRule {
-	t.Helper()
-	target := ruleTarget("openai", "gpt-4o-mini")
-	target.KeyID = schemas.Ptr("openai-key")
-	target.TTFTTimeoutMs = schemas.Ptr(2000)
-	rule := ruleFor("to-mini", `model == "gpt-4o"`, target)
-	rule.Fallbacks = schemas.Ptr(`["anthropic/claude-sonnet"]`)
-	require.NoError(t, rule.AfterFind(nil))
-	return rule
 }
 
 // scopedRouting turns a router on for the requests of one scope entity that
@@ -736,284 +666,30 @@ func corruptSessions(sessions *livestore.Table[string, string]) {
 }
 
 // ---------------------------------------------------------------------------
-// Routing rules, then model routers: the two steps together
+// A gateway with no router
 // ---------------------------------------------------------------------------
 
-// TestModelRouterStepLeavesUntakenRequestsAlone pins the two cases where the
-// model router step must change nothing: a gateway with no rule and no
-// router, and a request a routing rule routed that no router takes. The
-// second is the guard for every routing rule already in production: its
-// model, key pin, fallbacks and first-token deadline all survive the step.
-func TestModelRouterStepLeavesUntakenRequestsAlone(t *testing.T) {
-	t.Run("no routing rule and no router", func(t *testing.T) {
-		governance := routing.NewMockGovernance()
-		decision := modelRoutingDecision()
-		plugin := modelRoutingTestPlugin(t, governance, decision, nil, nil)
-
-		ctx := newRequestContext()
-		req := runPreRequest(t, plugin, ctx, complexText)
-
-		provider, model, fallbacks := req.GetRequestFields()
-		assert.Equal(t, schemas.OpenAI, provider)
-		assert.Equal(t, "gpt-4o", model)
-		assert.Empty(t, fallbacks)
-		assert.Zero(t, decision.calls(), "nothing classifies a request nothing routes")
-		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID))
-		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
-		assert.Empty(t, enginesUsed(ctx))
-		assert.Empty(t, ctx.GetRoutingEngineLogs())
-		assert.Equal(t, []string{"gpt-4o"}, governance.LoadBalancedModels, "the virtual key's own routing still runs")
-	})
-
-	t.Run("a routing rule's result survives routers that do not take the request", func(t *testing.T) {
-		decision := modelRoutingDecision()
-		withFallbacks := tierTarget(complexity.TierComplex, "anthropic", "claude-opus")
-		withFallbacks.KeyID = schemas.Ptr("anthropic-key")
-		withFallbacks.ParsedFallbacks = []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: schemas.Azure, Model: "gpt-4o"}}}
-		elsewhere := decisionModelRouter("elsewhere", "Elsewhere", withFallbacks)
-		elsewhere.Routing = globalRouting(0, `model == "some-other-model"`)
-		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision,
-			[]configstoreTables.TableRoutingRule{pinnedStreamingRule(t)}, []configstore.ModelRouter{elsewhere})
-
-		ctx := newRequestContext()
-		req := streamRequest(complexText)
-		require.NoError(t, plugin.PreRequestHook(ctx, req))
-
-		provider, model, fallbacks := req.GetRequestFields()
-		assert.Equal(t, schemas.OpenAI, provider)
-		assert.Equal(t, "gpt-4o-mini", model)
-		assert.Equal(t, []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet"}}, fallbacks)
-		assert.Equal(t, "openai-key", ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID))
-		assert.Equal(t, 2*time.Second, ctx.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout))
-		assert.Zero(t, decision.calls(), "a router that does not take the request never classifies it")
-		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID))
-		assert.Equal(t, []string{schemas.RoutingEngineRoutingRule}, enginesUsed(ctx))
-	})
-}
-
-// TestModelRouterMatchesOnWhatRoutingRulesChose pins what a router's routing
-// is matched against: the request as the routing rules left it, never as the
-// app sent it. An operator writing a router's condition reads the provider
-// and model at the end of the rule chain.
-func TestModelRouterMatchesOnWhatRoutingRulesChose(t *testing.T) {
-	toMini := ruleFor("to-mini", `model == "gpt-4o"`, ruleTarget("", "gpt-4o-mini"))
-	toAnthropic := ruleFor("to-anthropic", `model == "gpt-4o"`, ruleTarget("anthropic", "claude-sonnet"))
-	chainFirst := ruleFor("chain-first", `model == "gpt-4o"`, ruleTarget("", "gpt-4o-mini"))
-	chainFirst.ChainRule = true
-	chainSecond := ruleFor("chain-second", `model == "gpt-4o-mini"`, ruleTarget("", "gpt-4.1"))
-	chainSecond.Priority = 1
-	neverMatches := ruleFor("never", `model == "no-such-model"`, ruleTarget("", "gpt-4o-mini"))
-	failsToEvaluate := ruleFor("fails", `int(headers["x-n"]) > 3`, ruleTarget("", "gpt-4o-mini"))
-
-	cases := []struct {
-		name         string
-		rules        []configstoreTables.TableRoutingRule
-		condition    string
-		headers      map[string]string
-		wantRouter   bool
-		wantProvider schemas.ModelProvider
-		wantModel    string
-		wantEngines  []string
-	}{
-		{
-			name:  "the model a rule chose is the model the condition sees",
-			rules: []configstoreTables.TableRoutingRule{toMini}, condition: `model == "gpt-4o-mini"`,
-			wantRouter: true, wantProvider: schemas.OpenAI, wantModel: "router-model",
-			wantEngines: []string{schemas.RoutingEngineRoutingRule, schemas.RoutingEngineModelRouter},
-		},
-		{
-			name:  "the name the app sent no longer matches once a rule replaced it",
-			rules: []configstoreTables.TableRoutingRule{toMini}, condition: `model == "gpt-4o"`,
-			wantProvider: schemas.OpenAI, wantModel: "gpt-4o-mini",
-			wantEngines: []string{schemas.RoutingEngineRoutingRule},
-		},
-		{
-			name:  "the provider a rule chose is the provider the condition sees",
-			rules: []configstoreTables.TableRoutingRule{toAnthropic}, condition: `provider == "anthropic"`,
-			wantRouter: true, wantProvider: schemas.Anthropic, wantModel: "router-model",
-			wantEngines: []string{schemas.RoutingEngineRoutingRule, schemas.RoutingEngineModelRouter},
-		},
-		{
-			name:  "the end of a rule chain is what the condition sees",
-			rules: []configstoreTables.TableRoutingRule{chainFirst, chainSecond}, condition: `model == "gpt-4.1"`,
-			wantRouter: true, wantProvider: schemas.OpenAI, wantModel: "router-model",
-			wantEngines: []string{schemas.RoutingEngineRoutingRule, schemas.RoutingEngineModelRouter},
-		},
-		{
-			name:  "a router takes a request no rule matched",
-			rules: []configstoreTables.TableRoutingRule{neverMatches}, condition: "",
-			wantRouter: true, wantProvider: schemas.OpenAI, wantModel: "router-model",
-			wantEngines: []string{schemas.RoutingEngineModelRouter},
-		},
-		{
-			name:  "a rule that fails to evaluate does not stop the router step",
-			rules: []configstoreTables.TableRoutingRule{failsToEvaluate}, condition: "", headers: map[string]string{"x-n": "not-a-number"},
-			wantRouter: true, wantProvider: schemas.OpenAI, wantModel: "router-model",
-			wantEngines: []string{schemas.RoutingEngineModelRouter},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			decision := modelRoutingDecision()
-			router := decisionModelRouter("general", "General", tierTarget(complexity.TierComplex, "", "router-model"))
-			router.Routing = globalRouting(0, tc.condition)
-			plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, tc.rules, []configstore.ModelRouter{router})
-
-			ctx := newRequestContext()
-			if tc.headers != nil {
-				ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, tc.headers)
-			}
-			req := runPreRequest(t, plugin, ctx, complexText)
-
-			provider, model, _ := req.GetRequestFields()
-			assert.Equal(t, tc.wantProvider, provider)
-			assert.Equal(t, tc.wantModel, model)
-			assert.Equal(t, tc.wantEngines, enginesUsed(ctx))
-			if tc.wantRouter {
-				assert.Equal(t, "general", ctx.Value(schemas.BifrostContextKeyModelRouterID))
-				assert.Equal(t, 1, decision.calls())
-			} else {
-				assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID))
-				assert.Zero(t, decision.calls())
-			}
-		})
-	}
-}
-
-// TestModelRouterTargetOverARoutingRule runs a router after a routing rule
-// that set everything a rule can set (model, key pin, fallbacks, first-token
-// deadline) and pins, for each kind of target, what the router replaces and
-// what it leaves as the rule set it. A tier without a target and a request
-// the router cannot classify keep the rule's result whole.
-func TestModelRouterTargetOverARoutingRule(t *testing.T) {
-	ruleFallbacks := []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet"}}
-	withKey := tierTarget(complexity.TierComplex, "anthropic", "claude-opus")
-	withKey.KeyID = schemas.Ptr("anthropic-key")
-	withFallbacks := tierTarget(complexity.TierComplex, "anthropic", "claude-opus")
-	withFallbacks.ParsedFallbacks = []configstoreTables.RoutingFallback{
-		{Fallback: schemas.Fallback{Provider: schemas.Azure}},
-		{Fallback: schemas.Fallback{Provider: schemas.Vertex, Model: "gemini-pro"}},
-	}
-
-	cases := []struct {
-		name           string
-		targets        []configstoreTables.TableModelRouterTarget
-		classifierDown bool
-		wantProvider   schemas.ModelProvider
-		wantModel      string
-		wantPin        any
-		wantDeadline   bool
-		wantFallbacks  []schemas.Fallback
-		wantTier       any
-		wantLog        string
-	}{
-		{
-			name:         "another model on the rule's provider keeps the key pin",
-			targets:      []configstoreTables.TableModelRouterTarget{tierTarget(complexity.TierComplex, "", "gpt-4.1")},
-			wantProvider: schemas.OpenAI, wantModel: "gpt-4.1", wantPin: "openai-key",
-			wantFallbacks: ruleFallbacks, wantTier: complexity.TierComplex, wantLog: "tier=COMPLEX → provider=openai, model=gpt-4.1",
-		},
-		{
-			name:         "another provider drops the rule's key pin",
-			targets:      []configstoreTables.TableModelRouterTarget{tierTarget(complexity.TierComplex, "anthropic", "claude-opus")},
-			wantProvider: schemas.Anthropic, wantModel: "claude-opus", wantPin: nil,
-			wantFallbacks: ruleFallbacks, wantTier: complexity.TierComplex, wantLog: "tier=COMPLEX → provider=anthropic, model=claude-opus",
-		},
-		{
-			name:         "a target's own key replaces the rule's",
-			targets:      []configstoreTables.TableModelRouterTarget{withKey},
-			wantProvider: schemas.Anthropic, wantModel: "claude-opus", wantPin: "anthropic-key",
-			wantFallbacks: ruleFallbacks, wantTier: complexity.TierComplex, wantLog: "tier=COMPLEX → provider=anthropic, model=claude-opus",
-		},
-		{
-			name:         "the rule's own provider and model keep its pin and deadline",
-			targets:      []configstoreTables.TableModelRouterTarget{tierTarget(complexity.TierComplex, "openai", "gpt-4o-mini")},
-			wantProvider: schemas.OpenAI, wantModel: "gpt-4o-mini", wantPin: "openai-key", wantDeadline: true,
-			wantFallbacks: ruleFallbacks, wantTier: complexity.TierComplex, wantLog: "tier=COMPLEX → provider=openai, model=gpt-4o-mini",
-		},
-		{
-			name:         "a target's fallbacks replace the rule's, and one without a model takes the rule's model",
-			targets:      []configstoreTables.TableModelRouterTarget{withFallbacks},
-			wantProvider: schemas.Anthropic, wantModel: "claude-opus", wantPin: nil,
-			wantFallbacks: []schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o-mini"}, {Provider: schemas.Vertex, Model: "gemini-pro"}},
-			wantTier:      complexity.TierComplex, wantLog: "tier=COMPLEX → provider=anthropic, model=claude-opus",
-		},
-		{
-			name:         "a tier without a model keeps everything the rule set",
-			targets:      []configstoreTables.TableModelRouterTarget{tierTarget(complexity.TierSimple, "anthropic", "claude-haiku")},
-			wantProvider: schemas.OpenAI, wantModel: "gpt-4o-mini", wantPin: "openai-key", wantDeadline: true,
-			wantFallbacks: ruleFallbacks, wantTier: complexity.TierComplex, wantLog: "has no model for tier=COMPLEX; keeping provider=openai, model=gpt-4o-mini",
-		},
-		{
-			name:           "a request the router cannot classify keeps everything the rule set",
-			targets:        []configstoreTables.TableModelRouterTarget{tierTarget(complexity.TierComplex, "anthropic", "claude-opus")},
-			classifierDown: true,
-			wantProvider:   schemas.OpenAI, wantModel: "gpt-4o-mini", wantPin: "openai-key", wantDeadline: true,
-			wantFallbacks: ruleFallbacks, wantTier: nil, wantLog: "produced no tier; keeping provider=openai, model=gpt-4o-mini",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			decision := modelRoutingDecision()
-			if tc.classifierDown {
-				decision.err = &schemas.BifrostError{Error: &schemas.ErrorField{Message: "decision model unavailable"}}
-			}
-			router := decisionModelRouter("general", "General", tc.targets...)
-			router.Routing = globalRouting(0, `model == "gpt-4o-mini"`)
-			plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision,
-				[]configstoreTables.TableRoutingRule{pinnedStreamingRule(t)}, []configstore.ModelRouter{router})
-
-			ctx := newRequestContext()
-			req := streamRequest(complexText)
-			require.NoError(t, plugin.PreRequestHook(ctx, req))
-
-			provider, model, fallbacks := req.GetRequestFields()
-			assert.Equal(t, tc.wantProvider, provider)
-			assert.Equal(t, tc.wantModel, model)
-			assert.Equal(t, tc.wantFallbacks, fallbacks)
-			assert.Equal(t, tc.wantPin, ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID))
-			if tc.wantDeadline {
-				assert.Equal(t, 2*time.Second, ctx.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout))
-			} else {
-				assert.Nil(t, ctx.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout), "the deadline was set for the rule's target")
-			}
-			assert.Equal(t, tc.wantTier, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
-			assert.Equal(t, "general", ctx.Value(schemas.BifrostContextKeyModelRouterID), "the router that took the request is recorded whatever it did")
-			assert.Equal(t, []string{schemas.RoutingEngineRoutingRule, schemas.RoutingEngineModelRouter}, enginesUsed(ctx))
-			assert.Contains(t, routingLogs(ctx), tc.wantLog)
-		})
-	}
-}
-
-// TestRoutingRuleTierAndRouterTierAreSeparate pins what a request records
-// when a routing rule read complexity_tier and a router then classified the
-// request differently. Each asks its own classifier once, the rule routes on
-// the Complexity Router page's tier, the router routes on its own, and the
-// tier, mechanism and router the request records are the router's, since it
-// decided last.
-func TestRoutingRuleTierAndRouterTierAreSeparate(t *testing.T) {
+// TestGatewayWithNoRouterChangesNothing pins that the routing step leaves a
+// request alone when no router is enabled: nothing is classified, recorded or
+// logged, and the virtual key's own routing still runs.
+func TestGatewayWithNoRouterChangesNothing(t *testing.T) {
+	governance := routing.NewMockGovernance()
 	decision := modelRoutingDecision()
-	complexToMini := ruleFor("complex-to-mini", `complexity_tier == "COMPLEX"`, ruleTarget("", "gpt-4o-mini"))
-	byLLM := configstore.ModelRouter{ID: "by-llm", Name: "By llm", ComplexityAnalyzerConfig: llmRouterConfig(), Targets: everyTierTargets("by-llm")}
-	byLLM.Routing = globalRouting(0, `model == "gpt-4o-mini"`)
-	plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, []configstoreTables.TableRoutingRule{complexToMini}, nil)
-	var llmCalls atomic.Int32
-	plugin.SetChatRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-		llmCalls.Add(1)
-		return llmClassifierChatResponse(`{"tier": "SIMPLE"}`), nil
-	})
-	require.NoError(t, reloadRouter(plugin, &byLLM))
+	plugin := modelRoutingTestPlugin(t, governance, decision, nil, nil)
 
 	ctx := newRequestContext()
 	req := runPreRequest(t, plugin, ctx, complexText)
 
-	assert.Equal(t, "by-llm-simple", routedModel(req), "the rule matched on COMPLEX, and the router that took its model routed on its own SIMPLE")
-	assert.Equal(t, 1, decision.calls(), "the complexity config classified once, for the rule")
-	assert.EqualValues(t, 1, llmCalls.Load(), "the router classified once, for itself")
-	assert.Equal(t, complexity.TierSimple, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier), "the request records the tier of the router that took it")
-	assert.Equal(t, complexity.MechanismLLM, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
-	assert.Equal(t, "by-llm", ctx.Value(schemas.BifrostContextKeyModelRouterID))
-	assert.Equal(t, []string{schemas.RoutingEngineRoutingRule, schemas.RoutingEngineModelRouter}, enginesUsed(ctx))
+	provider, model, fallbacks := req.GetRequestFields()
+	assert.Equal(t, schemas.OpenAI, provider)
+	assert.Equal(t, "gpt-4o", model)
+	assert.Empty(t, fallbacks)
+	assert.Zero(t, decision.calls(), "nothing classifies a request nothing routes")
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID))
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	assert.Empty(t, enginesUsed(ctx))
+	assert.Empty(t, ctx.GetRoutingEngineLogs())
+	assert.Equal(t, []string{"gpt-4o"}, governance.LoadBalancedModels, "the virtual key's own routing still runs")
 }
 
 // TestModelRoutersWalkScopesNarrowestFirst pins, through the whole hook, which
@@ -1081,54 +757,6 @@ func TestModelRoutersWalkScopesNarrowestFirst(t *testing.T) {
 		ctx := scopedRequestContext("vk-1", "user-1", "team-1", "customer-1")
 		runPreRequest(t, plugin, ctx, complexText)
 		assert.Equal(t, "global", ctx.Value(schemas.BifrostContextKeyModelRouterID))
-	})
-}
-
-// TestRoutingRuleScopeAndRouterScopeAreIndependent pins that each step
-// resolves its own scope: a virtual key's routing rule feeds a global router
-// only for that key's requests, and a global rule feeds a virtual key's
-// router only for that key's requests.
-func TestRoutingRuleScopeAndRouterScopeAreIndependent(t *testing.T) {
-	granted := grantedAccess(schemas.ProviderPermit{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, KeyIDs: schemas.WhiteList{"*"}})
-	run := func(t *testing.T, rule configstoreTables.TableRoutingRule, router configstore.ModelRouter, virtualKey string) (*schemas.BifrostContext, string) {
-		t.Helper()
-		governance := routing.NewMockGovernance()
-		governance.Access = granted
-		plugin := modelRoutingTestPlugin(t, governance, modelRoutingDecision(),
-			[]configstoreTables.TableRoutingRule{rule}, []configstore.ModelRouter{router})
-		ctx := scopedRequestContext(virtualKey, "", "", "")
-		req := runPreRequest(t, plugin, ctx, complexText)
-		return ctx, routedModel(req)
-	}
-	onMini := decisionModelRouter("on-mini", "On mini", tierTarget(complexity.TierComplex, "", "router-model"))
-
-	t.Run("a virtual key's rule, then a global router", func(t *testing.T) {
-		rule := ruleFor("vk-to-mini", `model == "gpt-4o"`, ruleTarget("", "gpt-4o-mini"))
-		rule.Scope, rule.ScopeID = "virtual_key", schemas.Ptr("vk-1")
-		router := onMini
-		router.Routing = globalRouting(0, `model == "gpt-4o-mini"`)
-
-		ctx, model := run(t, rule, router, "vk-1")
-		assert.Equal(t, "router-model", model)
-		assert.Equal(t, "on-mini", ctx.Value(schemas.BifrostContextKeyModelRouterID))
-
-		ctx, model = run(t, rule, router, "vk-2")
-		assert.Equal(t, "gpt-4o", model, "another key's request is not rewritten, so the router's condition does not hold")
-		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID))
-	})
-
-	t.Run("a global rule, then a virtual key's router", func(t *testing.T) {
-		rule := ruleFor("to-mini", `model == "gpt-4o"`, ruleTarget("", "gpt-4o-mini"))
-		router := onMini
-		router.Routing = scopedRouting("virtual_key", "vk-1", 0, `model == "gpt-4o-mini"`)
-
-		ctx, model := run(t, rule, router, "vk-1")
-		assert.Equal(t, "router-model", model)
-		assert.Equal(t, "on-mini", ctx.Value(schemas.BifrostContextKeyModelRouterID))
-
-		ctx, model = run(t, rule, router, "vk-2")
-		assert.Equal(t, "gpt-4o-mini", model, "the rule still applies; the other key's router does not")
-		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID))
 	})
 }
 
@@ -1423,10 +1051,33 @@ func TestConditionalRouterRoutesWithoutClassifying(t *testing.T) {
 		assert.Contains(t, routingLogs(ctx), "Model router 'Empty' has no target; trying the next router")
 	})
 
+	t.Run("its one fallback chain goes with whichever target is picked", func(t *testing.T) {
+		// A routing rule kept one fallback list for all its targets, and so does a conditional router.
+		left, right := tierTarget("", "openai", "left"), tierTarget("", "anthropic", "right")
+		left.Weight, right.Weight = 0.5, 0.5
+		split := conditionalRouter("split", "Split", left, right)
+		split.Fallbacks = []configstoreTables.RoutingFallback{
+			{Fallback: schemas.Fallback{Provider: schemas.Anthropic, Model: "right"}},
+			{Fallback: schemas.Fallback{Provider: schemas.OpenAI, Model: "left"}},
+		}
+		split.Routing = globalRouting(0, "")
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{split})
+
+		want := []schemas.Fallback{{Provider: schemas.Anthropic, Model: "right"}, {Provider: schemas.OpenAI, Model: "left"}}
+		picked := map[string]int{}
+		for range 200 {
+			req := runPreRequest(t, plugin, newRequestContext(), complexText)
+			_, model, fallbacks := req.GetRequestFields()
+			picked[model]++
+			require.Equal(t, want, fallbacks, "target %s", model)
+		}
+		assert.Positive(t, picked["left"])
+		assert.Positive(t, picked["right"])
+	})
+
 	t.Run("a target can keep the request's provider and model", func(t *testing.T) {
-		keep := tierTarget("", "", "")
-		keep.ParsedFallbacks = []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-sonnet"}}}
-		guarded := conditionalRouter("guarded", "Guarded", keep)
+		guarded := conditionalRouter("guarded", "Guarded", tierTarget("", "", ""))
+		guarded.Fallbacks = []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-sonnet"}}}
 		guarded.Routing = globalRouting(0, "")
 		after := conditionalRouter("after", "After", tierTarget("", "", "never"))
 		after.Routing = globalRouting(1, "")
@@ -1523,13 +1174,14 @@ func TestModelRouterChain(t *testing.T) {
 		step := tierTarget("", "openai", "step")
 		step.KeyID = schemas.Ptr("step-key")
 		step.TTFTTimeoutMs = schemas.Ptr(1500)
-		step.ParsedFallbacks = []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-sonnet"}}}
 		first := conditionalRouter("first", "First", step)
+		first.Fallbacks = []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-sonnet"}}}
 		first.Routing = chained(globalRouting(0, `model == "gpt-4o"`))
 
-		run := func(t *testing.T, final configstoreTables.TableModelRouterTarget) (*schemas.BifrostContext, []schemas.Fallback) {
+		run := func(t *testing.T, final configstoreTables.TableModelRouterTarget, chain ...configstoreTables.RoutingFallback) (*schemas.BifrostContext, []schemas.Fallback) {
 			t.Helper()
 			last := conditionalRouter("last", "Last", final)
+			last.Fallbacks = chain
 			last.Routing = globalRouting(1, `model == "step"`)
 			plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{first, last})
 			ctx := newRequestContext()
@@ -1549,8 +1201,7 @@ func TestModelRouterChain(t *testing.T) {
 		own := tierTarget("", "openai", "final")
 		own.KeyID = schemas.Ptr("final-key")
 		own.TTFTTimeoutMs = schemas.Ptr(900)
-		own.ParsedFallbacks = []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: schemas.Azure}}}
-		ctx, fallbacks = run(t, own)
+		ctx, fallbacks = run(t, own, configstoreTables.RoutingFallback{Fallback: schemas.Fallback{Provider: schemas.Azure}})
 		assert.Equal(t, "final-key", ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID))
 		assert.Equal(t, 900*time.Millisecond, ctx.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout))
 		assert.Equal(t, []schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o"}}, fallbacks,
@@ -1782,8 +1433,7 @@ func TestModelRouterChangesApplyToTheNextRequest(t *testing.T) {
 
 // TestModelRouterSessionsStayApart pins that session routing belongs to each
 // router: within one session, a router that reached COMPLEX holds its own
-// requests there, while another router, and the Complexity Router page's
-// config that routing rules read, keep classifying on their own ladder.
+// requests there, while another router keeps classifying on its own ladder.
 func TestModelRouterSessionsStayApart(t *testing.T) {
 	decision := modelRoutingDecision()
 	sessionRouter := func(id string, priority int) configstore.ModelRouter {
@@ -1791,11 +1441,8 @@ func TestModelRouterSessionsStayApart(t *testing.T) {
 		router.Routing = appRouting(priority, id)
 		return router
 	}
-	pageRule := ruleFor("page-complex", `headers["x-app"] == "page" && complexity_tier == "COMPLEX"`, ruleTarget("", "page-complex"))
 	plugin := modelRoutingTestPluginWithConfig(t, newTestKVStore(t), routing.NewMockGovernance(), decision.execute,
-		[]configstoreTables.TableRoutingRule{pageRule}, []configstore.ModelRouter{sessionRouter("a", 0), sessionRouter("b", 1)})
-	pageConfig := sessionRouterConfig()
-	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(&pageConfig))
+		nil, []configstore.ModelRouter{sessionRouter("a", 0), sessionRouter("b", 1)})
 
 	steps := []struct {
 		session, app, text                 string
@@ -1811,10 +1458,8 @@ func TestModelRouterSessionsStayApart(t *testing.T) {
 		{session: "s1", app: "b", text: mediumText, wantModel: "b-medium", wantTier: complexity.TierMedium, wantMechanism: complexity.MechanismDecision, wantRouter: "b", wantDecisionCalls: 3},
 		// Router b holds MEDIUM against a simpler turn, never a's COMPLEX.
 		{session: "s1", app: "b", text: simpleText, wantModel: "b-medium", wantTier: complexity.TierMedium, wantMechanism: complexity.MechanismSession, wantRouter: "b", wantDecisionCalls: 4},
-		// The complexity config's session was raised by neither router.
-		{session: "s1", app: "page", text: simpleText, wantModel: "gpt-4o", wantTier: complexity.TierSimple, wantMechanism: complexity.MechanismDecision, wantRouter: nil, wantDecisionCalls: 5},
 		// Another session of router a starts from nothing.
-		{session: "s2", app: "a", text: simpleText, wantModel: "a-simple", wantTier: complexity.TierSimple, wantMechanism: complexity.MechanismDecision, wantRouter: "a", wantDecisionCalls: 6},
+		{session: "s2", app: "a", text: simpleText, wantModel: "a-simple", wantTier: complexity.TierSimple, wantMechanism: complexity.MechanismDecision, wantRouter: "a", wantDecisionCalls: 5},
 	}
 	for i, step := range steps {
 		ctx := appSessionContext(step.session, step.app)
@@ -1863,35 +1508,6 @@ func TestModelRouterToolContinuation(t *testing.T) {
 		require.NoError(t, plugin.PreRequestHook(other, req))
 		assert.Equal(t, "b-complex", routedModel(req), "a router that did not serve the turn classifies the turn's text")
 		assert.Equal(t, 2, decision.calls())
-	})
-
-	t.Run("a routing rule's tier and the router's tier each resume", func(t *testing.T) {
-		decision := modelRoutingDecision()
-		mediumRule := ruleFor("medium", `complexity_tier == "MEDIUM"`, ruleTarget("", "rule-medium"))
-		byLLM := configstore.ModelRouter{ID: "by-llm", Name: "By llm", ComplexityAnalyzerConfig: llmRouterConfig(), Targets: everyTierTargets("by-llm")}
-		byLLM.Routing = globalRouting(0, `model == "rule-medium"`)
-		plugin := modelRoutingTestPluginWithConfig(t, newTestKVStore(t), routing.NewMockGovernance(), decision.execute,
-			[]configstoreTables.TableRoutingRule{mediumRule}, nil)
-		var llmCalls atomic.Int32
-		plugin.SetChatRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-			llmCalls.Add(1)
-			return llmClassifierChatResponse(`{"tier": "SIMPLE"}`), nil
-		})
-		require.NoError(t, reloadRouter(plugin, &byLLM))
-
-		turn := complexitySessionContext("s1")
-		req := runPreRequest(t, plugin, turn, mediumText)
-		require.Equal(t, "by-llm-simple", routedModel(req), "the rule matched on MEDIUM and the router routed on its own SIMPLE")
-		_, _, err := plugin.PostLLMHook(turn, servedChatResponse(), nil)
-		require.NoError(t, err)
-
-		continuation := complexitySessionContext("s1")
-		req = toolContinuationRequest(complexText)
-		require.NoError(t, plugin.PreRequestHook(continuation, req))
-		assert.Equal(t, "by-llm-simple", routedModel(req), "the rule resumes on MEDIUM, so the router takes the request again and resumes on SIMPLE")
-		assert.Equal(t, "by-llm", continuation.Value(schemas.BifrostContextKeyModelRouterID))
-		assert.Equal(t, 1, decision.calls(), "the complexity config does not classify the continuation")
-		assert.EqualValues(t, 1, llmCalls.Load(), "nor does the router")
 	})
 }
 
@@ -2131,72 +1747,35 @@ func TestModelRouterSessionStoreOutageLogsAsModelRouter(t *testing.T) {
 	}
 }
 
-// TestRefusedFallbacksNameWhoWroteThem pins who a "fallback will be refused by
-// governance" warning names, so an operator looks in the right place. When a
-// router's target replaced the chain, a fallback the virtual key refuses is
-// the router's and is reported against it, under the model router engine,
-// whether or not a routing rule matched first. When the router's target has
-// no fallbacks, the chain is still the routing rule's and the warning still
-// names the rule.
-func TestRefusedFallbacksNameWhoWroteThem(t *testing.T) {
-	access := grantedAccess(
+// TestRefusedRouterFallbacksAreReported pins who a "fallback will be refused
+// by governance" warning names, so an operator looks in the right place: a
+// fallback of a router's target that the virtual key refuses is reported
+// against that router, under the model router engine.
+func TestRefusedRouterFallbacksAreReported(t *testing.T) {
+	governance := routing.NewMockGovernance()
+	governance.Access = grantedAccess(
 		schemas.ProviderPermit{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o", "gpt-4o-mini"}, KeyIDs: schemas.WhiteList{"*"}},
 		schemas.ProviderPermit{Provider: "anthropic", AllowedModels: schemas.WhiteList{"claude-opus"}, KeyIDs: schemas.WhiteList{"*"}},
 	)
-	ruleWithFallbacks := func(t *testing.T, fallbacks string) configstoreTables.TableRoutingRule {
-		t.Helper()
-		rule := ruleFor("to-mini", `model == "gpt-4o"`, ruleTarget("openai", "gpt-4o-mini"))
-		rule.Fallbacks = schemas.Ptr(fallbacks)
-		require.NoError(t, rule.AfterFind(nil))
-		return rule
-	}
 	withRefusedFallback := tierTarget(complexity.TierComplex, "anthropic", "claude-opus")
 	withRefusedFallback.ParsedFallbacks = []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}}}
-	const refusedByRouter = "Model router 'Support': fallback groq/llama-3.1-8b-instant will be refused by governance: provider groq is not allowed for this request"
+	router := decisionModelRouter("support", "Support", withRefusedFallback)
+	router.Routing = globalRouting(0, "")
+	plugin := modelRoutingTestPlugin(t, governance, modelRoutingDecision(), nil, []configstore.ModelRouter{router})
 
-	run := func(t *testing.T, routingRules []configstoreTables.TableRoutingRule, target configstoreTables.TableModelRouterTarget, condition string) (*schemas.BifrostContext, []schemas.Fallback) {
-		t.Helper()
-		governance := routing.NewMockGovernance()
-		governance.Access = access
-		router := decisionModelRouter("support", "Support", target)
-		router.Routing = globalRouting(0, condition)
-		plugin := modelRoutingTestPlugin(t, governance, modelRoutingDecision(), routingRules, []configstore.ModelRouter{router})
-		ctx := scopedRequestContext("vk-1", "", "", "")
-		req := runPreRequest(t, plugin, ctx, complexText)
-		_, _, fallbacks := req.GetRequestFields()
-		return ctx, fallbacks
-	}
-	engineOf := func(ctx *schemas.BifrostContext, message string) string {
-		for _, entry := range ctx.GetRoutingEngineLogs() {
-			if entry.Message == message {
-				return entry.Engine
-			}
+	ctx := scopedRequestContext("vk-1", "", "", "")
+	req := runPreRequest(t, plugin, ctx, complexText)
+
+	_, _, fallbacks := req.GetRequestFields()
+	require.Equal(t, []schemas.Fallback{{Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}}, fallbacks)
+	const refused = "Model router 'Support': fallback groq/llama-3.1-8b-instant will be refused by governance: provider groq is not allowed for this request"
+	engine := ""
+	for _, entry := range ctx.GetRoutingEngineLogs() {
+		if entry.Message == refused {
+			engine = entry.Engine
 		}
-		return ""
 	}
-
-	t.Run("a router's chain that replaced the rule's is reported against the router", func(t *testing.T) {
-		rule := ruleWithFallbacks(t, `["openai/gpt-4o"]`)
-		ctx, fallbacks := run(t, []configstoreTables.TableRoutingRule{rule}, withRefusedFallback, `model == "gpt-4o-mini"`)
-		require.Equal(t, []schemas.Fallback{{Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}}, fallbacks, "the router's chain replaced the rule's")
-		assert.NotContains(t, routingLogs(ctx), "Rule 'to-mini': fallback groq/llama-3.1-8b-instant",
-			"the rule never wrote the groq fallback; the model router 'Support' did")
-		assert.Equal(t, schemas.RoutingEngineModelRouter, engineOf(ctx, refusedByRouter), "logs:\n%s", routingLogs(ctx))
-	})
-
-	t.Run("a router's chain is reported with no routing rule at all", func(t *testing.T) {
-		ctx, _ := run(t, nil, withRefusedFallback, "")
-		assert.Equal(t, schemas.RoutingEngineModelRouter, engineOf(ctx, refusedByRouter), "logs:\n%s", routingLogs(ctx))
-	})
-
-	t.Run("a rule's chain the router kept is still reported against the rule", func(t *testing.T) {
-		rule := ruleWithFallbacks(t, `["groq/llama-3.1-8b-instant"]`)
-		ctx, fallbacks := run(t, []configstoreTables.TableRoutingRule{rule}, tierTarget(complexity.TierComplex, "anthropic", "claude-opus"), `model == "gpt-4o-mini"`)
-		require.Equal(t, []schemas.Fallback{{Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}}, fallbacks, "a target without fallbacks keeps the rule's chain")
-		assert.Equal(t, schemas.RoutingEngineRoutingRule,
-			engineOf(ctx, "Rule 'to-mini': fallback groq/llama-3.1-8b-instant will be refused by governance: provider groq is not allowed for this request"), "logs:\n%s", routingLogs(ctx))
-		assert.NotContains(t, routingLogs(ctx), "Model router 'Support': fallback")
-	})
+	assert.Equal(t, schemas.RoutingEngineModelRouter, engine, "logs:\n%s", routingLogs(ctx))
 }
 
 // ---------------------------------------------------------------------------
@@ -2247,8 +1826,8 @@ func BenchmarkPreRequestHookModelRouters(b *testing.B) {
 		last.Routing = globalRouting(n, "")
 		return append(ladder, last)
 	}
-	// A gateway before and after its routing rules became routers: a thousand
-	// rules where only the last takes the request, and a rule for each tier.
+	// The routers a gateway's routing rules became: a thousand rules where only
+	// the last takes the request, and a rule for each tier.
 	thousandRules := make([]configstoreTables.TableRoutingRule, 0, 1000)
 	for i := range 999 {
 		thousandRules = append(thousandRules, migratingRule(fmt.Sprintf("rule-%04d", i), fmt.Sprintf(`model == "model-%d"`, i), i, "claude-opus"))
@@ -2268,7 +1847,6 @@ func BenchmarkPreRequestHookModelRouters(b *testing.B) {
 	}
 	cases := []struct {
 		name    string
-		rules   []configstoreTables.TableRoutingRule
 		routers []configstore.ModelRouter
 	}{
 		{name: "no router"},
@@ -2289,14 +1867,12 @@ func BenchmarkPreRequestHookModelRouters(b *testing.B) {
 		{name: "a thousand conditional routers, the last takes the request", routers: thousand},
 		{name: "three classifier routers with the same settings, the last takes the request", routers: tierLadder(3)},
 		{name: "a hundred classifier routers with the same settings, the last takes the request", routers: tierLadder(100)},
-		{name: "a thousand routing rules, the last takes the request", rules: thousandRules},
 		{name: "the routers a thousand routing rules become", routers: migrated(thousandRules)},
-		{name: "a routing rule for each tier", rules: tierRules},
 		{name: "the router a routing rule for each tier becomes", routers: migrated(tierRules)},
 	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
-			plugin := modelRoutingTestPluginWithConfig(b, nil, newQuietGovernance(), decide, tc.rules, tc.routers)
+			plugin := modelRoutingTestPluginWithConfig(b, nil, newQuietGovernance(), decide, nil, tc.routers)
 			req := llmComplexityChatRequest(complexText)
 			b.ReportAllocs()
 			for b.Loop() {
@@ -2335,7 +1911,12 @@ func reloadRouter(plugin *routing.RoutingPlugin, router *configstore.ModelRouter
 }
 
 // ---------------------------------------------------------------------------
-// Routing rules as model routers: the routers a rule set becomes route as it did
+// Routers made from routing rules route as the rules did
+//
+// Routing rules became model routers (configstore.ModelRoutersFromRoutingRules). While the rule
+// engine still ran, every rule set below was served by the rules and by the routers made from it,
+// and each request had to come out of both the same. What the rules answered is written down here,
+// so the routers are still held to it now that no request is routed by a rule.
 // ---------------------------------------------------------------------------
 
 // routedOutcome is everything the routing hook did to one request that the provider call, the
@@ -2350,11 +1931,11 @@ type routedOutcome struct {
 	Mechanism    string        // how the tier was reached
 	Allowlist    []string      // the model the virtual key's allowlist was read for
 	LoadBalanced []string      // the model load balancing was handed
-	TookBy       string        // the routing rule that took the request, or the router it became
+	TookBy       string        // the router that took the request
 	Classified   int           // classifier calls the request cost
 }
 
-// migrationRequest is one request of a comparison.
+// migrationRequest is one request sent through the routers a rule set became.
 type migrationRequest struct {
 	text      string            // what the classifier reads; "" for a request with nothing to classify
 	model     string            // "" is gpt-4o
@@ -2374,7 +1955,7 @@ func (r migrationRequest) String() string {
 		r.text, r.model, r.headers, r.stream, r.scoped, r.large, r.budget, r.down, r.session, len(r.fallbacks))
 }
 
-// migrationSide is one gateway of a comparison.
+// migrationSide is a gateway serving the routers a rule set became.
 type migrationSide struct {
 	plugin     *routing.RoutingPlugin
 	governance *routing.MockGovernance
@@ -2449,38 +2030,21 @@ func (s *migrationSide) route(t testing.TB, r migrationRequest) (routedOutcome, 
 	out.FirstToken, _ = ctx.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout).(time.Duration)
 	out.Tier, _ = ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier).(string)
 	out.Mechanism, _ = ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism).(string)
-	if id, ok := ctx.Value(schemas.BifrostContextKeyGovernanceRoutingRuleID).(string); ok {
-		out.TookBy = id
-	}
-	if id, ok := ctx.Value(schemas.BifrostContextKeyModelRouterID).(string); ok && out.TookBy == "" {
-		out.TookBy = id
-	}
+	out.TookBy, _ = ctx.Value(schemas.BifrostContextKeyModelRouterID).(string)
 	return out, ctx
 }
 
-// ruleMigration is a rule set served twice: by the routing rules, as a gateway serves it today,
-// and by the model routers the rules become, on a gateway with no rule.
+// ruleMigration is a rule set served by the model routers it became.
 type ruleMigration struct {
-	today     migrationSide
-	after     migrationSide
+	migrationSide
 	migration *configstore.RoutingRuleMigration
 	rules     map[string][]string // router id -> the rules it was made from
 }
 
-// migrateRules serves routingRules and the routers they become, both classifying with settings.
-// existing are routers the gateway already has. config builds each side's plugin config, since
-// two gateways never share session state; nil is no config.
-func migrateRules(t testing.TB, config func() *routing.Config, settings *complexity.AnalyzerConfig, routingRules []configstoreTables.TableRoutingRule, existing []configstore.ModelRouter) *ruleMigration {
+// migrateRules serves the routers routingRules become, classifying with settings, beside the
+// routers the gateway already has. config is the plugin config; nil is none.
+func migrateRules(t testing.TB, config *routing.Config, settings *complexity.AnalyzerConfig, routingRules []configstoreTables.TableRoutingRule, existing []configstore.ModelRouter) *ruleMigration {
 	t.Helper()
-	if config == nil {
-		config = func() *routing.Config { return nil }
-	}
-	side := func(rules []configstoreTables.TableRoutingRule, routers []configstore.ModelRouter) migrationSide {
-		s := migrationSide{governance: routing.NewMockGovernance(), decision: modelRoutingDecision()}
-		s.plugin = modelRoutingTestPluginWithConfig(t, config(), s.governance, s.decision.execute, rules, routers)
-		require.NoError(t, s.plugin.ReloadComplexityAnalyzerConfig(settings))
-		return s
-	}
 	migration, err := configstore.ModelRoutersFromRoutingRules(slices.Clone(routingRules), settings, slices.Clone(existing))
 	require.NoError(t, err)
 
@@ -2499,35 +2063,12 @@ func migrateRules(t testing.TB, config func() *routing.Config, settings *complex
 			m.rules[id] = append(m.rules[id], note.RuleID)
 		}
 	}
-	m.today = side(slices.Clone(routingRules), slices.Clone(existing))
-	m.after = side(nil, append(routers, migration.Routers...))
+	m.governance, m.decision = routing.NewMockGovernance(), modelRoutingDecision()
+	m.plugin = modelRoutingTestPluginWithConfig(t, config, m.governance, m.decision.execute, nil, append(routers, migration.Routers...))
 	return m
 }
 
-// compare routes one request through both gateways and requires the same outcome. The router
-// that took the request must be one its rule became.
-//
-// classifiesLess is the agreed difference. A routing rule asked for the tier whenever its
-// condition was undecided without one, even for a request no tier could make it match: the rest
-// of the condition fails to evaluate, or a `? :` leaves it false on every tier. A router asks only
-// once its own condition holds. So the routers may leave such a request unclassified, with no
-// tier and no "skipped" marker on it; where it is routed is the same.
-func (m *ruleMigration) compare(t testing.TB, r migrationRequest, classifiesLess bool) (routedOutcome, routedOutcome) {
-	t.Helper()
-	today, _ := m.today.route(t, r)
-	after, _ := m.after.route(t, r)
-	want := today
-	if after.TookBy != "" && slices.Contains(m.rules[after.TookBy], today.TookBy) {
-		want.TookBy = after.TookBy
-	}
-	if classifiesLess && after.Classified <= today.Classified && after.Tier == "" && after.Mechanism == "" {
-		want.Classified, want.Tier, want.Mechanism = after.Classified, "", ""
-	}
-	require.Equal(t, want, after, "the routers must route as the rules do: %s", r)
-	return today, after
-}
-
-// migrationRequests is the request grid every rule set is compared on: each tier, two models,
+// migrationRequests is the request grid every rule set is routed on: each tier, two models,
 // headers a condition can read, streams, a caller with every scope, and the requests that are
 // routed differently from an ordinary one.
 func migrationRequests() []migrationRequest {
@@ -2578,9 +2119,9 @@ func (o routedOutcome) String() string {
 	return line
 }
 
-// migrationProbes are the requests whose answers are written down for every rule set of
-// TestMigratedRoutersRouteAsRoutingRules: each tier, another model, a caller in every scope with
-// headers, a stream, a large payload and a classifier that fails.
+// migrationProbes are the requests whose answers are written down in full for every rule set of
+// TestRoutersMadeFromRoutingRulesRouteAsTheRulesDid: each tier, another model, a caller in every
+// scope with headers, a stream, a large payload and a classifier that fails.
 func migrationProbes() []migrationRequest {
 	return []migrationRequest{
 		{text: simpleText},
@@ -2636,8 +2177,9 @@ func withTargets(rule configstoreTables.TableRoutingRule, targets ...configstore
 }
 
 // migratedRouterAnswers is where each probe of migrationProbes ended up under the routing rules,
-// for every rule set of TestMigratedRoutersRouteAsRoutingRules, as routedOutcome.String writes it.
-// A rule set whose routers may classify less is written without the tier.
+// for every rule set of TestRoutersMadeFromRoutingRulesRouteAsTheRulesDid, as routedOutcome.String
+// writes it. A rule set whose routers classify less than its rules did is written without the
+// tier.
 var migratedRouterAnswers = map[string][]string{
 	"a rule with no condition": {
 		"openai/everything",
@@ -3121,12 +2663,65 @@ var migratedRouterAnswers = map[string][]string{
 	},
 }
 
-// TestMigratedRoutersRouteAsRoutingRules is the proof that moving routing rules into model routers
-// changes nothing for a gateway that has rules. Each rule set is served by the routing rules and,
-// on a second gateway with no rule, by the routers the migration makes from it. Every request of
-// the grid must come out of both the same: provider, model, fallbacks, key pin, first-token
-// deadline, tier, what governance was handed, which rule took it and how often it was classified.
-func TestMigratedRoutersRouteAsRoutingRules(t *testing.T) {
+// migratedRouterGrids is a fingerprint of everything the routing hook did to each request of
+// migrationRequests, for every rule set of TestRoutersMadeFromRoutingRulesRouteAsTheRulesDid. It was
+// taken while each request also had to come out of the routing rules the same.
+var migratedRouterGrids = map[string]string{
+	"a rule with no condition":                                         "7a789afc502acebc",
+	"a condition on the model":                                         "d154c6d9ad564260",
+	"a condition on a header":                                          "9055ed5def0001bd",
+	"a header that may be missing":                                     "c694ac8b2b9e7dda",
+	"nested and, or and not":                                           "6bda3bffb5b6498e",
+	"conditions on who is calling":                                     "f89d54e817affaa1",
+	"a condition on the budget":                                        "1b7d258596824904",
+	"a condition on the request type":                                  "e97347ba9a4f4a0c",
+	"blank space and a condition that does not compile":                "27bd7ad3a0859ebf",
+	"the first rule that matches wins":                                 "0d95f40e6a4080fa",
+	"negative priorities":                                              "7b5c24c0d3c901cc",
+	"rules with one priority":                                          "24b8ab3b4d27920d",
+	"a rule that is off":                                               "d9a57915441dc478",
+	"narrower scopes come first":                                       "53b5d655a42b2b61",
+	"a scope the request is not in":                                    "810e1b6af75e3ffc",
+	"the same name and priority in two scopes":                         "e5d63169b4c18f68",
+	"a target with a provider, a key and a deadline":                   "9f3960fdf65e3a54",
+	"a target that changes only the provider":                          "d95376fc0e220802",
+	"a target that keeps the request and adds fallbacks":               "0aece93a9098f833",
+	"a rule with no target goes on to the next rule":                   "bae47c84be1c12ea",
+	"odd weights with one target that can be picked":                   "51294b007e051540",
+	"ids with spaces, slashes and other scripts":                       "8de1d0516669971c",
+	"a chained rule, then a rule on what it chose":                     "9bd9c364ab1d6869",
+	"a chained rule nothing follows":                                   "26d0877aa1c39a4a",
+	"a chained rule that matches what it chose fires once":             "76bb973762047a71",
+	"two chained rules that feed each other":                           "4dc23fcd707866cc",
+	"a chain longer than it may run":                                   "3b844e8a34135114",
+	"chains across scopes":                                             "86c3414f848f105f",
+	"one rule on one tier":                                             "f96b9bca133fca2b",
+	"a rule for each tier":                                             "5f72f0c62c59c82d",
+	"a rule for each tier, then a rule for the rest":                   "791891089f5155c9",
+	"a rule for each tier after a rule that takes some requests first": "131c4b5f9132a97a",
+	"tier rules with other conditions beside the tier":                 "0692dfc160f52b51",
+	"two rules on the same tier":                                       "1d2522389938fd1f",
+	"tier rules in every scope":                                        "0ee0f9084a7246e0",
+	"a tier rule that is off between two that are on":                  "ac821cc31566c6d3",
+	"a tier under an or":                                               "c3d9ab4c16e545e7",
+	"a tier under a not":                                               "f80ecf78d7273be8",
+	"a tier that picks the condition":                                  "0a12c0c0be33aa73",
+	"a tier compared with a header":                                    "e7c732057d53cfe7",
+	"a tier that is always there once the request is classified":       "fcf175f6e5fa9027",
+	"a tier inside a loop":                                             "c08edc0bb1be813c",
+	"a chained tier rule, then rules on what it chose":                 "74109afb25be48e3",
+	"a chained rule with a tier under an or":                           "334054f8c0c5c3b7",
+	"a tier beside a header that is missing":                           "4aa7830c9c968fa2",
+	"a tier in the wrong letter case":                                  "83dfe5cc1881e006",
+	"a tier under an or with no target":                                "9b17459474582850",
+	"a condition no tier satisfies":                                    "91a468e9d20c844d",
+}
+
+// TestRoutersMadeFromRoutingRulesRouteAsTheRulesDid holds the routers made from each rule set to
+// what the routing rules answered: provider, model, fallbacks, key pin, first-token deadline and
+// tier for the probes, written out in migratedRouterAnswers, and everything the routing hook does
+// to each request of the full grid, as one fingerprint per rule set in migratedRouterGrids.
+func TestRoutersMadeFromRoutingRulesRouteAsTheRulesDid(t *testing.T) {
 	pinned := ruleTarget("azure", "gpt-4o")
 	pinned.KeyID = schemas.Ptr("azure-key")
 	pinned.TTFTTimeoutMs = schemas.Ptr(1500)
@@ -3150,7 +2745,7 @@ func TestMigratedRoutersRouteAsRoutingRules(t *testing.T) {
 	cases := []struct {
 		name           string
 		rules          []configstoreTables.TableRoutingRule
-		classifiesLess bool // see ruleMigration.compare
+		classifiesLess bool // its routers classify less than its rules did, so its answers are written without the tier
 	}{
 		// Conditions that do not read the tier.
 		{name: "a rule with no condition", rules: []configstoreTables.TableRoutingRule{migratingRule("all", "", 0, "everything")}},
@@ -3356,31 +2951,30 @@ func TestMigratedRoutersRouteAsRoutingRules(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := migrateRules(t, nil, decisionAnalyzerTestConfig(), tc.rules, nil)
-			for _, request := range migrationRequests() {
-				m.compare(t, request, tc.classifiesLess)
-			}
-			// The answers the routing rules gave, written down, so the routers are still held
-			// to them once there is no routing rule to compare with.
 			want, ok := migratedRouterAnswers[tc.name]
 			require.True(t, ok, "no answers are written down for this rule set")
 			require.Len(t, want, len(probes))
 			for i, probe := range probes {
-				today, after := m.compare(t, probe, tc.classifiesLess)
+				got, _ := m.route(t, probe)
 				if tc.classifiesLess {
-					today.Tier, after.Tier = "", ""
+					got.Tier = ""
 				}
-				assert.Equal(t, want[i], today.String(), "the routing rules: %s", probe)
-				assert.Equal(t, want[i], after.String(), "the routers: %s", probe)
+				assert.Equal(t, want[i], got.String(), "%s", probe)
 			}
+			grid := sha256.New()
+			for _, request := range migrationRequests() {
+				got, _ := m.route(t, request)
+				fmt.Fprintf(grid, "%+v\n", got)
+			}
+			assert.Equal(t, migratedRouterGrids[tc.name], fmt.Sprintf("%x", grid.Sum(nil)[:8]), "a request of the grid is routed differently than it was")
 		})
 	}
 }
 
-// TestMigratedTierRulesRouteEachTier pins the answers of the setup most gateways with tier rules
-// have, a rule per tier and a rule for everything else, so the comparison above cannot pass on two
-// gateways that are wrong in the same way. It also pins what the migration costs: the three tier
-// rules are one router, and a request is classified once on both gateways.
-func TestMigratedTierRulesRouteEachTier(t *testing.T) {
+// TestRoutersMadeFromTierRulesRouteEachTier pins the answers of the setup most gateways with tier
+// rules had, a rule per tier and a rule for everything else. The three tier rules are one router,
+// and a request is classified once.
+func TestRoutersMadeFromTierRulesRouteEachTier(t *testing.T) {
 	rules := []configstoreTables.TableRoutingRule{
 		migratingRule("support", `headers["x-app"] == "support"`, 0, "support-model"),
 		migratingRule("simple", `complexity_tier == "SIMPLE"`, 1, "gpt-4o-mini"),
@@ -3394,7 +2988,7 @@ func TestMigratedTierRulesRouteEachTier(t *testing.T) {
 	cases := []struct {
 		request migrationRequest
 		want    routedOutcome
-		took    string // the rule that takes it today
+		rule    string // the rule that took such a request
 	}{
 		{migrationRequest{text: simpleText}, routedOutcome{Provider: "openai", Model: "gpt-4o-mini", Tier: complexity.TierSimple, Mechanism: complexity.MechanismDecision, Classified: 1}, "simple"},
 		{migrationRequest{text: mediumText}, routedOutcome{Provider: "openai", Model: "gpt-4o", Tier: complexity.TierMedium, Mechanism: complexity.MechanismDecision, Classified: 1}, "medium"},
@@ -3405,23 +2999,21 @@ func TestMigratedTierRulesRouteEachTier(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.request.String(), func(t *testing.T) {
-			today, after := m.compare(t, tc.request, false)
+			got, _ := m.route(t, tc.request)
+			assert.Contains(t, m.rules[got.TookBy], tc.rule, "the router that takes it is the one made from that rule")
+			// Rules that share a router show under the first one's id.
+			tc.want.TookBy = got.TookBy
 			tc.want.Allowlist, tc.want.LoadBalanced = []string{tc.want.Model}, []string{tc.want.Model}
-			want := tc.want
-			want.TookBy = tc.took
-			assert.Equal(t, want, today, "the routing rules")
-			// A merged router has the id of the first rule it was made from.
-			want.TookBy = after.TookBy
-			assert.Equal(t, want, after, "the routers they became")
-			assert.Contains(t, m.rules[after.TookBy], tc.took)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
 
-// TestMigratedRoutersKeepTargetWeights proves a rule's weighted targets are picked from as before.
-// The pick is random, so each gateway routes the same request many times: both must reach the same
-// targets, and reach each about as often as its weight says, whatever the weights summed to.
-func TestMigratedRoutersKeepTargetWeights(t *testing.T) {
+// TestRoutersMadeFromRoutingRulesKeepTargetWeights proves a rule's weighted targets are picked
+// from as before. The pick is random, so the same request is routed many times: it must reach the
+// targets the rule could pick, each about as often as its weight said, whatever the weights
+// summed to.
+func TestRoutersMadeFromRoutingRulesKeepTargetWeights(t *testing.T) {
 	cases := []struct {
 		name    string
 		targets []configstoreTables.TableRoutingTarget
@@ -3449,238 +3041,132 @@ func TestMigratedRoutersKeepTargetWeights(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				m := migrateRules(t, nil, decisionAnalyzerTestConfig(), []configstoreTables.TableRoutingRule{withTargets(migratingRule("weighted", condition, 0, ""), tc.targets...)}, nil)
-				for label, side := range map[string]*migrationSide{"routing rules": &m.today, "routers": &m.after} {
-					counts := map[string]int{}
-					for range draws {
-						out, _ := side.route(t, migrationRequest{text: simpleText})
-						counts[out.Model]++
-					}
-					require.Len(t, counts, len(tc.shares), "%s reach %v", label, counts)
-					for model, share := range tc.shares {
-						assert.InDelta(t, share, float64(counts[model])/draws, 0.1, "%s: share of %s", label, model)
-					}
+				counts := map[string]int{}
+				for range draws {
+					out, _ := m.route(t, migrationRequest{text: simpleText})
+					counts[out.Model]++
+				}
+				require.Len(t, counts, len(tc.shares), "reached %v", counts)
+				for model, share := range tc.shares {
+					assert.InDelta(t, share, float64(counts[model])/draws, 0.1, "share of %s", model)
 				}
 			})
 		}
 	}
 }
 
-// TestMigratedRoutersClassifyLessThanRoutingRules pins the first agreed difference. A routing rule
+// TestRoutersMadeFromRoutingRulesClassifyLess pins the first difference from routing rules. A rule
 // classified a request whenever its condition was undecided without the tier, which includes a
 // condition that fails to evaluate, such as one that reads a header the request does not have. A
 // router classifies only once its own condition holds. The request is routed the same; it is not
 // classified, so it carries no tier and costs no classifier call.
-func TestMigratedRoutersClassifyLessThanRoutingRules(t *testing.T) {
+func TestRoutersMadeFromRoutingRulesClassifyLess(t *testing.T) {
 	rules := []configstoreTables.TableRoutingRule{
 		migratingRule("support-simple", `headers["x-app"] == "support" && complexity_tier == "SIMPLE"`, 0, "support-simple"),
 		migratingRule("rest", "", 1, "rest"),
 	}
 	m := migrateRules(t, nil, decisionAnalyzerTestConfig(), rules, nil)
 
-	// The header is missing: the rule cannot match on any tier, but it classified to find out.
-	today, _ := m.today.route(t, migrationRequest{text: complexText})
-	after, _ := m.after.route(t, migrationRequest{text: complexText})
-	assert.Equal(t, 1, today.Classified)
-	assert.Equal(t, complexity.TierComplex, today.Tier)
-	assert.Zero(t, after.Classified)
-	assert.Empty(t, after.Tier)
-	assert.Equal(t, "rest", today.Model)
-	assert.Equal(t, "rest", after.Model)
+	// The header is missing. The rule could not match on any tier, and classified to find out.
+	got, _ := m.route(t, migrationRequest{text: complexText})
+	assert.Zero(t, got.Classified)
+	assert.Empty(t, got.Tier)
+	assert.Empty(t, got.Mechanism)
+	assert.Equal(t, "rest", got.Model)
 
-	// The header is there: both classify, once.
-	today, after = m.compare(t, migrationRequest{text: simpleText, headers: map[string]string{"x-app": "support"}}, false)
-	assert.Equal(t, 1, today.Classified)
-	assert.Equal(t, "support-simple", after.Model)
+	// The header is there: the request is classified, once.
+	got, _ = m.route(t, migrationRequest{text: simpleText, headers: map[string]string{"x-app": "support"}})
+	assert.Equal(t, 1, got.Classified)
+	assert.Equal(t, "support-simple", got.Model)
 }
 
-// TestMigratedRoutersAcrossSessionTurns covers session memory, which keeps a session on the
-// highest tier it has reached. Tier rules that became one router, which is every set of tier rules
-// with the same condition, remember exactly as the rules did. Tier rules with different conditions
-// stay separate routers, and each remembers for itself: that is the second agreed difference,
-// pinned in the last subtest.
-func TestMigratedRoutersAcrossSessionTurns(t *testing.T) {
+// TestRoutersMadeFromRoutingRulesAcrossSessionTurns covers session memory, which keeps a session
+// on the highest tier it has reached. Tier rules that became one router, which is every set of
+// tier rules with the same condition, remember exactly as the rules did. Tier rules with different
+// conditions stay separate routers, and each remembers for itself: that is the second difference
+// from routing rules, pinned in the last subtest.
+func TestRoutersMadeFromRoutingRulesAcrossSessionTurns(t *testing.T) {
 	settings := sessionRouterConfig()
-	config := func() *routing.Config { return newTestKVStore(t) }
+	type turn struct {
+		request migrationRequest
+		want    string
+	}
+	play := func(t *testing.T, m *ruleMigration, turns []turn) {
+		t.Helper()
+		for i, turn := range turns {
+			got, _ := m.route(t, turn.request)
+			assert.Equal(t, turn.want, got.Model, "turn %d: %s", i, turn.request)
+		}
+	}
 
 	t.Run("a rule for each tier remembers as before", func(t *testing.T) {
-		rules := []configstoreTables.TableRoutingRule{
+		m := migrateRules(t, newTestKVStore(t), &settings, []configstoreTables.TableRoutingRule{
 			migratingRule("simple", `complexity_tier == "SIMPLE"`, 0, "tier-simple"),
 			migratingRule("medium", `complexity_tier == "MEDIUM"`, 1, "tier-medium"),
 			migratingRule("complex", `complexity_tier == "COMPLEX"`, 2, "tier-complex"),
-		}
-		m := migrateRules(t, config, &settings, rules, nil)
+		}, nil)
 		require.Len(t, m.migration.Routers, 1)
-		turns := []struct{ text, session, want string }{
-			{simpleText, "s1", "tier-simple"},
-			{mediumText, "s1", "tier-medium"},
-			{simpleText, "s1", "tier-medium"}, // the session stays on the highest tier it reached
-			{complexText, "s1", "tier-complex"},
-			{simpleText, "s1", "tier-complex"},
-			{mediumText, "s1", "tier-complex"},
-			{simpleText, "s2", "tier-simple"}, // another session starts over
-			{simpleText, "", "tier-simple"},   // a request outside any session is classified on its own
-		}
-		for i, turn := range turns {
-			today, _ := m.compare(t, migrationRequest{text: turn.text, session: turn.session}, false)
-			assert.Equal(t, turn.want, today.Model, "turn %d", i)
-		}
+		play(t, m, []turn{
+			{migrationRequest{text: simpleText, session: "s1"}, "tier-simple"},
+			{migrationRequest{text: mediumText, session: "s1"}, "tier-medium"},
+			{migrationRequest{text: simpleText, session: "s1"}, "tier-medium"}, // the session stays on the highest tier it reached
+			{migrationRequest{text: complexText, session: "s1"}, "tier-complex"},
+			{migrationRequest{text: simpleText, session: "s1"}, "tier-complex"},
+			{migrationRequest{text: mediumText, session: "s1"}, "tier-complex"},
+			{migrationRequest{text: simpleText, session: "s2"}, "tier-simple"}, // another session starts over
+			{migrationRequest{text: simpleText}, "tier-simple"},                // a request outside any session is classified on its own
+		})
 	})
 
 	t.Run("tier rules with the same condition remember as before", func(t *testing.T) {
-		rules := []configstoreTables.TableRoutingRule{
+		m := migrateRules(t, newTestKVStore(t), &settings, []configstoreTables.TableRoutingRule{
 			migratingRule("cheap", `model == "gpt-4o" && complexity_tier in ["SIMPLE", "MEDIUM"]`, 0, "cheap"),
 			migratingRule("big", `model == "gpt-4o" && complexity_tier == "COMPLEX"`, 1, "big"),
 			migratingRule("rest", "", 2, "rest"),
-		}
-		m := migrateRules(t, config, &settings, rules, nil)
-		for _, turn := range []migrationRequest{
-			{text: simpleText, session: "s1"}, {text: complexText, session: "s1"}, {text: simpleText, session: "s1"},
-			{text: simpleText, session: "s1", model: "o3"}, {text: mediumText, session: "s1"},
-		} {
-			m.compare(t, turn, false)
-		}
+		}, nil)
+		play(t, m, []turn{
+			{migrationRequest{text: simpleText, session: "s1"}, "cheap"},
+			{migrationRequest{text: complexText, session: "s1"}, "big"},
+			{migrationRequest{text: simpleText, session: "s1"}, "big"},
+			{migrationRequest{text: simpleText, session: "s1", model: "o3"}, "rest"},
+			{migrationRequest{text: mediumText, session: "s1"}, "big"},
+		})
 	})
 
 	t.Run("tier rules with different conditions each remember for themselves", func(t *testing.T) {
-		rules := []configstoreTables.TableRoutingRule{
+		m := migrateRules(t, newTestKVStore(t), &settings, []configstoreTables.TableRoutingRule{
 			migratingRule("o3-simple", `model == "o3" && complexity_tier == "SIMPLE"`, 0, "o3-small"),
 			migratingRule("complex", `complexity_tier == "COMPLEX"`, 1, "big"),
-		}
-		m := migrateRules(t, config, &settings, rules, nil)
+		}, nil)
 		require.Len(t, m.migration.Routers, 2)
-
-		// The session reaches COMPLEX on a request only the second rule's condition holds for.
-		first := migrationRequest{text: complexText, session: "s1"}
-		today, _ := m.compare(t, first, false)
-		assert.Equal(t, "big", today.Model)
-
-		// A simple request for o3 follows. The rules kept one memory, so it is still COMPLEX and
-		// goes to the big model. The first router never saw the COMPLEX turn: it classifies the
-		// request on its own, as SIMPLE.
-		second := migrationRequest{text: simpleText, session: "s1", model: "o3"}
-		today, _ = m.today.route(t, second)
-		after, _ := m.after.route(t, second)
-		assert.Equal(t, "big", today.Model, "the routing rules")
-		assert.Equal(t, "o3-small", after.Model, "the routers")
+		play(t, m, []turn{
+			// The session reaches COMPLEX on a request only the second rule's condition held for.
+			{migrationRequest{text: complexText, session: "s1"}, "big"},
+			// A simple request for o3 follows. The rules kept one memory, so it was still COMPLEX and
+			// went to the big model. The first router never saw the COMPLEX turn: it classifies the
+			// request on its own, as SIMPLE.
+			{migrationRequest{text: simpleText, session: "s1", model: "o3"}, "o3-small"},
+		})
 	})
 }
 
-// TestMigratedRulesEndTheWalkBeforeExistingRouters pins the third agreed difference, which only a
-// gateway that has both routing rules and model routers can see. Today a rule routes the request
-// and a router then routes it again. After the migration the rule is a router in the same walk, so
-// when it takes the request the walk ends there. A request no rule takes reaches the existing
-// routers on both gateways.
-func TestMigratedRulesEndTheWalkBeforeExistingRouters(t *testing.T) {
+// TestRoutersMadeFromRoutingRulesEndTheWalkBeforeExistingRouters pins the third difference from
+// routing rules, which only a gateway that had both rules and model routers can see. A rule routed
+// the request and a router then routed it again. The rule is now a router in the same walk, so
+// when it takes the request the walk ends there. A request no rule took still reaches the routers
+// that were there.
+func TestRoutersMadeFromRoutingRulesEndTheWalkBeforeExistingRouters(t *testing.T) {
 	existing := conditionalRouter("existing", "Existing", tierTarget("", "azure", ""))
 	existing.Routing = globalRouting(0, "")
 	rules := []configstoreTables.TableRoutingRule{migratingRule("gpt", `model == "gpt-4o"`, 0, "gpt-4o-mini")}
 	m := migrateRules(t, nil, decisionAnalyzerTestConfig(), rules, []configstore.ModelRouter{existing})
 	require.Len(t, m.migration.Moved, 1, "the existing router moves behind the rule's router, whose priority it had")
 
-	today, _ := m.today.route(t, migrationRequest{text: simpleText})
-	after, _ := m.after.route(t, migrationRequest{text: simpleText})
-	assert.Equal(t, "azure/gpt-4o-mini", today.Provider+"/"+today.Model, "the rule chose the model, then the router the provider")
-	assert.Equal(t, "openai/gpt-4o-mini", after.Provider+"/"+after.Model, "the rule's router took the request, so the existing router is not reached")
+	got, _ := m.route(t, migrationRequest{text: simpleText})
+	assert.Equal(t, "openai/gpt-4o-mini", got.Provider+"/"+got.Model, "the rule's router took the request, so the existing router is not reached; under rules it then moved the request to azure")
+	assert.Equal(t, "gpt", got.TookBy)
 
-	m.compare(t, migrationRequest{text: simpleText, model: "o3"}, false)
-}
-
-// generatedMigratingRules builds a rule set from a seed for the comparison: conditions over every
-// variable the request grid sets, with and without the tier, in every scope, chained or not, with
-// keys, deadlines and fallbacks. Each rule has one target it can pick, so a request has one answer.
-func generatedMigratingRules(t testing.TB, seed uint64) ([]configstoreTables.TableRoutingRule, bool) {
-	t.Helper()
-	random := mathrand.New(mathrand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
-	plain := []string{
-		"", `model == "gpt-4o"`, `model == "o3"`, `headers["x-app"] == "support"`, `"x-plan" in headers`,
-		`request_type == "chat_completion_stream"`, `team_id == "team-1"`, `budget_used > 90.0`,
-		`model == "o3" || headers["x-plan"] == "pro"`, `!(model == "gpt-4o") && virtual_key_id != ""`,
-		`model.startsWith("step-")`, `model in ["chained-a", "chained-b"]`,
-	}
-	tiered := []string{
-		`complexity_tier == "SIMPLE"`, `complexity_tier == "MEDIUM"`, `complexity_tier == "COMPLEX"`,
-		`complexity_tier != "SIMPLE"`, `complexity_tier in ["SIMPLE", "COMPLEX"]`,
-		`model == "gpt-4o" && complexity_tier == "SIMPLE"`, `model == "gpt-4o" && complexity_tier == "COMPLEX"`,
-		`"x-plan" in headers && complexity_tier == "MEDIUM"`,
-		`model == "o3" || complexity_tier == "COMPLEX"`, `!(model == "o3" && complexity_tier == "SIMPLE")`,
-		`complexity_tier != ""`, `["SIMPLE", "MEDIUM"].exists(tier, tier == complexity_tier)`,
-	}
-	// Conditions whose rule asks for the tier of a request no tier lets it match, which a router
-	// does not.
-	wasteful := []string{
-		`headers["x-app"] == "support" && complexity_tier == "SIMPLE"`, `complexity_tier == headers["x-tier"]`,
-		`complexity_tier == "SIMPLE" ? model == "o3" : team_id == "team-1"`,
-		`complexity_tier == "simple"`, `complexity_tier == "SIMPLE" && complexity_tier == "COMPLEX"`,
-	}
-	scopes := []struct{ scope, id string }{
-		{"global", ""}, {"global", ""}, {"global", ""}, {"team", "team-1"}, {"team", "team-2"},
-		{"customer", "customer-1"}, {"virtual_key", "vk-1"}, {"user", "user-1"},
-	}
-	chainedTo := []string{"chained-a", "chained-b", "o3", "gpt-4o", "step-1"}
-	classifiesLess := false
-	count := 2 + random.IntN(9)
-	rules := make([]configstoreTables.TableRoutingRule, 0, count)
-	for i := range count {
-		condition := plain[random.IntN(len(plain))]
-		switch roll := random.IntN(10); {
-		case roll < 4:
-			condition = tiered[random.IntN(len(tiered))]
-		case roll == 4:
-			condition, classifiesLess = wasteful[random.IntN(len(wasteful))], true
-		}
-		rule := migratingRule(fmt.Sprintf("rule-%d", i), condition, random.IntN(12)-2, fmt.Sprintf("model-%d", i))
-		rule.CreatedAt = rule.CreatedAt.Add(time.Duration(i) * time.Minute)
-		if scope := scopes[random.IntN(len(scopes))]; scope.scope != "global" {
-			rule = inScope(rule, scope.scope, scope.id)
-		}
-		if random.IntN(8) == 0 {
-			rule = turnedOff(rule)
-		}
-		target := &rule.Targets[0]
-		if random.IntN(4) == 0 {
-			rule = chaining(rule)
-			target.Model = schemas.Ptr(chainedTo[random.IntN(len(chainedTo))])
-		}
-		switch random.IntN(6) {
-		case 0:
-			target.Provider = schemas.Ptr("azure")
-			target.KeyID = schemas.Ptr(fmt.Sprintf("azure-key-%d", i))
-		case 1:
-			target.Provider, target.Model = schemas.Ptr("anthropic"), nil
-		case 2:
-			// A rule with no target routes nothing; one that reads the tier may still have asked
-			// for it, which its routers do not.
-			rule.Targets = nil
-			classifiesLess = classifiesLess || strings.Contains(condition, "complexity_tier")
-		}
-		if len(rule.Targets) > 0 && random.IntN(4) == 0 {
-			rule.Targets[0].TTFTTimeoutMs = schemas.Ptr(500 * (1 + random.IntN(4)))
-		}
-		if random.IntN(3) == 0 {
-			rule = withFallbacks(t, rule, []string{`["anthropic/claude-haiku"]`, `["openai/", "anthropic/claude-sonnet"]`, `[{"provider": "openai", "model": "gpt-4o-mini", "key_id": "openai-key"}]`}[random.IntN(3)])
-		}
-		rules = append(rules, rule)
-	}
-	return rules, classifiesLess
-}
-
-// FuzzMigratedRoutersRouteAsRoutingRules runs the comparison of
-// TestMigratedRoutersRouteAsRoutingRules on rule sets generated from a seed. The seeds below run
-// with the tests; `go test -fuzz=FuzzMigratedRoutersRouteAsRoutingRules` keeps generating more.
-func FuzzMigratedRoutersRouteAsRoutingRules(f *testing.F) {
-	for seed := uint64(1); seed <= 40; seed++ {
-		f.Add(seed)
-	}
-	requests := migrationRequests()
-	f.Fuzz(func(t *testing.T, seed uint64) {
-		rules, classifiesLess := generatedMigratingRules(t, seed)
-		m := migrateRules(t, nil, decisionAnalyzerTestConfig(), rules, nil)
-		for _, request := range requests {
-			today, after := m.compare(t, request, classifiesLess)
-			if t.Failed() {
-				t.Logf("seed %d\ntoday %+v\nafter %+v", seed, today, after)
-				return
-			}
-		}
-	})
+	got, _ = m.route(t, migrationRequest{text: simpleText, model: "o3"})
+	assert.Equal(t, "azure/o3", got.Provider+"/"+got.Model)
+	assert.Equal(t, "existing", got.TookBy)
 }

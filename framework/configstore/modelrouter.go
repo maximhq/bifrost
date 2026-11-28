@@ -34,11 +34,11 @@ const (
 // in governance_config and is the one routing rules read complexity_tier from.
 //
 // Mode and Meta are set when the router is created and kept by every later
-// save. Targets and Routing are read with the router but written on
+// save. Targets, Fallbacks and Routing are read with the router but written on
 // their own, so saving a classifier never changes where requests go: update
-// and reset leave both alone, and create stores only Routing, or the default
-// routing when it is nil (see defaultModelRouterRouting). A config.json entry
-// that omits either leaves the stored one as it is.
+// and reset leave them alone, and create stores Routing, or the default
+// routing when it is nil (see defaultModelRouterRouting), and the Fallbacks it
+// is given. A config.json entry that omits one leaves the stored one as it is.
 type ModelRouter struct {
 	ID          string                  `json:"id"`
 	Name        string                  `json:"name"`
@@ -49,6 +49,12 @@ type ModelRouter struct {
 	Targets    []tables.TableModelRouterTarget `json:"targets,omitempty"` // a classifier router's model per tier, or a conditional router's targets; written by SetModelRouterTargets
 	Routing    *ModelRouterRouting             `json:"routing,omitempty"` // which requests it takes; written by SetModelRouterRouting
 	ConfigHash string                          `json:"-"`                 // hash of the config.json entry's name, description, targets and routing last applied
+
+	// Fallbacks is a conditional router's fallback chain, for whichever of its
+	// targets is chosen, as a routing rule kept one. It replaces the request's
+	// chain; none keeps it. A classifier router has none here: each of its
+	// targets carries its own. Written by SetModelRouterFallbacks.
+	Fallbacks []tables.RoutingFallback `json:"fallbacks,omitempty"`
 }
 
 // ValidateModelRouterIdentity trims a router's id, name and description in
@@ -87,9 +93,9 @@ func ValidateModelRouterIdentity(r *ModelRouter) error {
 
 // GenerateModelRouterHash hashes the fields of a config.json router entry that
 // the per-section config hashes do not cover: its name, its description and,
-// when the entry declares them, its targets and its routing. A conditional
-// mode is written only when the entry has one, so the hash of
-// an entry written before they existed is unchanged.
+// when the entry declares them, its targets, its fallbacks and its routing. A
+// conditional mode and fallbacks are written only when the entry has them, so
+// the hash of an entry written before they existed is unchanged.
 func GenerateModelRouterHash(r ModelRouter) string {
 	hash := sha256.New()
 	writeHashField(hash, "name", strings.TrimSpace(r.Name))
@@ -99,6 +105,9 @@ func GenerateModelRouterHash(r ModelRouter) string {
 	}
 	if r.Targets != nil {
 		writeModelRouterTargetsHash(hash, r.Targets)
+	}
+	if r.Fallbacks != nil {
+		writeHashField(hash, "fallbacks", ModelRouterFallbacksHash(r.Fallbacks))
 	}
 	if r.Routing != nil {
 		writeModelRouterRoutingHash(hash, *r.Routing)
@@ -163,6 +172,9 @@ func modelRouterToTable(r *ModelRouter) (*tables.TableModelRouter, error) {
 		}
 	}
 	var err error
+	if row.Fallbacks, err = encodeModelRouterFallbacks(r.Fallbacks); err != nil {
+		return nil, fmt.Errorf("encode fallbacks: %w", err)
+	}
 	if row.SimplePhrasesJSON, err = marshalModelRouterPhrases(cfg.Keywords.SimpleKeywords); err != nil {
 		return nil, fmt.Errorf("encode simple phrases: %w", err)
 	}
@@ -266,6 +278,9 @@ func modelRouterFromTable(row *tables.TableModelRouter) (*ModelRouter, error) {
 	cfg.Classifier = row.Classifier
 	cfg.TierBoundaries = ComplexityTierBoundaries{SimpleMedium: row.SimpleMediumBoundary, MediumComplex: row.MediumComplexBoundary}
 	var err error
+	if r.Fallbacks, err = decodeModelRouterFallbacks(row.Fallbacks); err != nil {
+		return nil, fmt.Errorf("%w: model router %q fallbacks: %w", ErrConfigUnreadable, row.ID, err)
+	}
 	if cfg.Keywords.SimpleKeywords, err = unmarshalModelRouterPhrases(row.SimplePhrasesJSON); err != nil {
 		return nil, fmt.Errorf("%w: model router %q simple phrases: %w", ErrConfigUnreadable, row.ID, err)
 	}
@@ -550,11 +565,12 @@ func (s *RDBConfigStore) ModelRouterNameTaken(ctx context.Context, routerID, nam
 }
 
 // CreateModelRouter stores a new router with its routing, or with the
-// default routing when it has none: off, global, and last among the global
-// routers. A taken id is ErrAlreadyExists, and a priority another router in
+// default routing when it has none: global, last among the global routers,
+// and on for a conditional router only (see defaultModelRouterRouting). A taken id is ErrAlreadyExists, and a priority another router in
 // the scope holds is ErrModelRouterPriorityTaken. Names are not compared (see
-// ModelRouterNameTaken). Targets are left for SetModelRouterTargets. The
-// stored routing is set on router.
+// ModelRouterNameTaken). A conditional router's fallbacks are stored with it;
+// targets are left for SetModelRouterTargets. The stored routing is set on
+// router.
 func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error {
 	r, err := prepareModelRouter(router)
 	if err != nil {
@@ -567,6 +583,9 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 		}
 		r.Routing = &routing
 	}
+	if err := ValidateModelRouterFallbacks(r.Mode, r.Fallbacks); err != nil {
+		return err
+	}
 	if err := s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
 		db := txDB.WithContext(ctx)
 		var taken int64
@@ -577,7 +596,7 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 			return fmt.Errorf("%w: a model router with id %q", ErrAlreadyExists, r.ID)
 		}
 		if r.Routing == nil {
-			routing, err := defaultModelRouterRouting(ctx, txDB)
+			routing, err := defaultModelRouterRouting(ctx, txDB, r.Mode)
 			if err != nil {
 				return err
 			}
@@ -808,6 +827,9 @@ func (s *RDBConfigStore) saveModelRouterWithTx(ctx context.Context, txDB *gorm.D
 	}
 	r.Mode, r.Meta = tables.NormalizeModelRouterMode(existing.Mode), existing.Meta
 	r.Routing = modelRouterRoutingFromRow(existing)
+	if r.Fallbacks, err = decodeModelRouterFallbacks(existing.Fallbacks); err != nil {
+		return nil, fmt.Errorf("%w: model router %q fallbacks: %w", ErrConfigUnreadable, r.ID, err)
+	}
 	row, err := modelRouterToTable(&r)
 	if err != nil {
 		return nil, err

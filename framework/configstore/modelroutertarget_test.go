@@ -426,6 +426,11 @@ func TestValidateModelRouterTargetsConditional(t *testing.T) {
 		"keeping the model twice": {[]tables.TableModelRouterTarget{
 			testModelRouterTarget("", "", "", "", 0.5), testModelRouterTarget("", "", "", "", 0.5)},
 			"duplicate target: provider"},
+		"fallbacks on a target": {[]tables.TableModelRouterTarget{func() tables.TableModelRouterTarget {
+			target := testModelRouterTarget("", "openai", "gpt-4o", "", 1)
+			target.ParsedFallbacks = []tables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "anthropic", Model: "claude-sonnet"}}}
+			return target
+		}()}, "a conditional router takes its fallbacks on the router, not on a target"},
 	}
 	for name, tc := range invalid {
 		t.Run(name, func(t *testing.T) {
@@ -577,6 +582,119 @@ func TestModelRouterTargetFallbacksRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listed, 1)
 	check(t, listed[0].Targets)
+}
+
+// TestModelRouterFallbacksStore pins a conditional router's own fallback chain, the one list a
+// routing rule kept for whichever of its targets was chosen. It is saved on its own, survives every
+// other save of the router, keeps a key pin and the order it was written in, and an empty list
+// clears it. A classifier router has none: its fallbacks belong to each tier's target.
+func TestModelRouterFallbacksStore(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	router := testModelRouter("fast-lane", "Fast lane")
+	router.Mode = tables.ModelRouterModeConditional
+	require.NoError(t, store.CreateModelRouter(ctx, router))
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
+
+	unpinned := schemas.Fallback{Provider: "openai", Model: "gpt-4o"}
+	pinned := schemas.Fallback{Provider: "anthropic", Model: "claude-sonnet", KeyID: "key-backup"}
+	chain := []tables.RoutingFallback{{Fallback: unpinned}, {Fallback: pinned}}
+	stored := func(t *testing.T) []tables.RoutingFallback {
+		t.Helper()
+		got, err := store.GetModelRouter(ctx, "fast-lane")
+		require.NoError(t, err)
+		return got.Fallbacks
+	}
+
+	require.Empty(t, stored(t), "a new router has no chain")
+	require.NoError(t, store.SetModelRouterFallbacks(ctx, "fast-lane", chain))
+	got := stored(t)
+	require.Len(t, got, 2)
+	assert.Equal(t, unpinned, got[0].Resolved())
+	assert.Equal(t, pinned, got[1].Resolved())
+	assert.True(t, got[1].IsKeyPinned())
+
+	listed, err := store.GetModelRouters(ctx)
+	require.NoError(t, err)
+	for _, r := range listed {
+		if r.ID == "fast-lane" {
+			assert.Len(t, r.Fallbacks, 2, "the list carries each router's chain")
+		}
+	}
+
+	t.Run("other saves of the router keep it", func(t *testing.T) {
+		update := testModelRouter("fast-lane", "Fast lane, renamed")
+		require.NoError(t, store.UpdateModelRouter(ctx, update))
+		require.NoError(t, store.SetModelRouterTargets(ctx, "fast-lane", []tables.TableModelRouterTarget{
+			testModelRouterTarget("", "openai", "gpt-4o", "", 0.5), testModelRouterTarget("", "anthropic", "claude-sonnet", "", 0.5),
+		}))
+		require.NoError(t, store.SetModelRouterRouting(ctx, "fast-lane", ModelRouterRouting{Enabled: true, Scope: "global", Priority: 7}))
+		assert.Len(t, stored(t), 2)
+	})
+
+	t.Run("a target of the router cannot carry its own", func(t *testing.T) {
+		target := testModelRouterTarget("", "openai", "gpt-4o", "", 1)
+		target.ParsedFallbacks = chain
+		err := store.SetModelRouterTargets(ctx, "fast-lane", []tables.TableModelRouterTarget{target})
+		require.ErrorIs(t, err, ErrInvalidModelRouterTargets)
+		require.ErrorContains(t, err, "on the router, not on a target")
+	})
+
+	t.Run("what is refused", func(t *testing.T) {
+		err := store.SetModelRouterFallbacks(ctx, "support", chain)
+		require.ErrorIs(t, err, ErrInvalidModelRouterTargets, "a classifier router has no chain of its own")
+		require.ErrorContains(t, err, "on each target, not on the router")
+
+		err = store.SetModelRouterFallbacks(ctx, "fast-lane", []tables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "no-such-provider", Model: "m"}}})
+		require.ErrorIs(t, err, ErrInvalidModelRouterTargets)
+		require.ErrorContains(t, err, "must use a known provider prefix")
+
+		require.ErrorIs(t, store.SetModelRouterFallbacks(ctx, "no-such-router", chain), ErrNotFound)
+		assert.Len(t, stored(t), 2, "a refused write leaves the stored chain")
+	})
+
+	t.Run("an empty list clears it", func(t *testing.T) {
+		require.NoError(t, store.SetModelRouterFallbacks(ctx, "fast-lane", []tables.RoutingFallback{}))
+		assert.Empty(t, stored(t))
+		var row tables.TableModelRouter
+		require.NoError(t, store.DB().WithContext(ctx).First(&row, "id = ?", "fast-lane").Error)
+		assert.Nil(t, row.Fallbacks, "no chain is stored as NULL, not as an empty list")
+	})
+
+	t.Run("a router created with a chain stores it", func(t *testing.T) {
+		withChain := testModelRouter("with-chain", "With chain")
+		withChain.Mode = tables.ModelRouterModeConditional
+		withChain.Fallbacks = chain
+		require.NoError(t, store.CreateModelRouter(ctx, withChain))
+		got, err := store.GetModelRouter(ctx, "with-chain")
+		require.NoError(t, err)
+		assert.Len(t, got.Fallbacks, 2)
+
+		classifier := testModelRouter("classifier-chain", "Classifier chain")
+		classifier.Fallbacks = chain
+		require.ErrorContains(t, store.CreateModelRouter(ctx, classifier), "on each target, not on the router")
+	})
+}
+
+// TestGenerateModelRouterHashFallbacks pins the fallback chain's part in a config.json entry's
+// hash: an entry that declares none hashes as it did before routers had a chain, and the chain's
+// entries, their order and a key pin each change the hash.
+func TestGenerateModelRouterHashFallbacks(t *testing.T) {
+	entry := func(fallbacks []tables.RoutingFallback) ModelRouter {
+		return ModelRouter{ID: "fast-lane", Name: "Fast lane", Mode: tables.ModelRouterModeConditional, Fallbacks: fallbacks}
+	}
+	a := tables.RoutingFallback{Fallback: schemas.Fallback{Provider: "openai", Model: "gpt-4o"}}
+	b := tables.RoutingFallback{Fallback: schemas.Fallback{Provider: "anthropic", Model: "claude-sonnet"}}
+	pinned := tables.RoutingFallback{Fallback: schemas.Fallback{Provider: "openai", Model: "gpt-4o", KeyID: "key-1"}}
+
+	none := GenerateModelRouterHash(entry(nil))
+	withoutField := ModelRouter{ID: "fast-lane", Name: "Fast lane", Mode: tables.ModelRouterModeConditional}
+	assert.Equal(t, GenerateModelRouterHash(withoutField), none)
+	assert.NotEqual(t, none, GenerateModelRouterHash(entry([]tables.RoutingFallback{})), "an empty list is declared, and clears the stored chain")
+	ab := GenerateModelRouterHash(entry([]tables.RoutingFallback{a, b}))
+	assert.Equal(t, ab, GenerateModelRouterHash(entry([]tables.RoutingFallback{a, b})))
+	assert.NotEqual(t, ab, GenerateModelRouterHash(entry([]tables.RoutingFallback{b, a})), "the order is the order they are tried in")
+	assert.NotEqual(t, GenerateModelRouterHash(entry([]tables.RoutingFallback{a})), GenerateModelRouterHash(entry([]tables.RoutingFallback{pinned})))
 }
 
 // TestModelRouterResetAndEditKeepTargets pins that the two config writes that

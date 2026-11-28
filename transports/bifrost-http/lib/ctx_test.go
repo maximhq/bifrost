@@ -1876,11 +1876,35 @@ type gateway struct {
 	client     *bifrost.Bifrost
 	governance *governance.GovernancePlugin
 	rules      *rules.TestRules
+	routing    *routing.RoutingPlugin
 	kv         *livestore.Table[string, string]
 }
 
+// putRule saves a routing rule the way a scenario edits one mid-run: as the model router it
+// becomes, replacing the router served for it.
+func (g *gateway) putRule(rule *configstoreTables.TableRoutingRule) {
+	g.t.Helper()
+	gwServeRulesAsRouters(g.t, g.rules, g.routing, []*configstoreTables.TableRoutingRule{rule})
+}
+
+// deleteRule removes the model router a routing rule became, as deleting it does.
+func (g *gateway) deleteRule(id string) {
+	g.t.Helper()
+	ctx := context.Background()
+	if err := g.rules.ConfigStore().DeleteModelRouter(ctx, id); err != nil {
+		g.t.Fatalf("deleting model router %s: %v", id, err)
+	}
+	if err := g.rules.Live().Refresh(ctx, []livestore.Ref{{Kind: livestore.KindModelRouter, ID: id, Remove: true}}); err != nil {
+		g.t.Fatalf("refreshing model router %s: %v", id, err)
+	}
+	if err := g.routing.RemoveModelRouter(id); err != nil {
+		g.t.Fatalf("removing model router %s: %v", id, err)
+	}
+}
+
 // gwSetup is what a scenario's gateway starts with: each provider's keys, the governance state
-// (virtual keys, teams, customers), and the routing rules.
+// (virtual keys, teams, customers), and the routing rules. The rules are served as the model
+// routers the upgrade makes of them, since rules themselves no longer route a request.
 type gwSetup struct {
 	keys       map[schemas.ModelProvider][]schemas.Key
 	governance configstore.GovernanceConfig
@@ -1933,16 +1957,12 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 		t.Fatalf("rules.NewTestRules: %v", err)
 	}
 	t.Cleanup(ruleStore.Close)
-	for _, rule := range setup.rules {
-		if err := ruleStore.Put(ctx, rule); err != nil {
-			t.Fatalf("Put %s: %v", rule.ID, err)
-		}
-	}
 	kv := config.Shared.Sessions
 	routingPlugin, err := routing.InitFromStore(ctx, &routing.Config{Sessions: kv, Warm: config.Shared.Warm}, logger, nil, ruleStore.Store, governancePlugin)
 	if err != nil {
 		t.Fatalf("routing.InitFromStore: %v", err)
 	}
+	gwServeRulesAsRouters(t, ruleStore, routingPlugin, setup.rules)
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
 		Account:         NewBaseAccount(config),
 		Logger:          logger,
@@ -1957,7 +1977,7 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 		_ = routingPlugin.Cleanup()
 		_ = governancePlugin.Cleanup()
 	})
-	return &gateway{t: t, up: u, config: config, client: client, governance: governancePlugin, rules: ruleStore, kv: kv}
+	return &gateway{t: t, up: u, config: config, client: client, governance: governancePlugin, rules: ruleStore, routing: routingPlugin, kv: kv}
 }
 
 // gwCall is one chat request as a caller sends it: the model string with or without a provider
@@ -2174,6 +2194,48 @@ func requireShare(t *testing.T, counts map[schemas.ModelProvider]int, n int, pro
 // Routing-rule scenarios from the routing test plan, run through the gateway above with the real routing plugin evaluating the rules, alone or over a virtual
 // key the governance plugin resolves.
 
+// gwServeRulesAsRouters serves the model routers a scenario's routing rules become. The routers
+// are stored the way the upgrade stores them: a rule's fallbacks are written to its router as the
+// rule held them, without the checks the routers API applies, so a fallback naming a provider that
+// no longer exists reaches the gateway as it would after an upgrade.
+func gwServeRulesAsRouters(t *testing.T, store *rules.TestRules, plugin *routing.RoutingPlugin, routingRules []*configstoreTables.TableRoutingRule) {
+	t.Helper()
+	ctx := context.Background()
+	stored := make([]configstoreTables.TableRoutingRule, 0, len(routingRules))
+	fallbacks := make(map[string]*string, len(routingRules))
+	for _, rule := range routingRules {
+		stored = append(stored, *rule)
+		fallbacks[rule.ID] = rule.Fallbacks
+	}
+	migration, err := configstore.ModelRoutersFromRoutingRules(stored, nil, nil)
+	if err != nil {
+		t.Fatalf("mapping the routing rules to model routers: %v", err)
+	}
+	for i := range migration.Routers {
+		router := migration.Routers[i]
+		router.Fallbacks = nil
+		if err := store.SaveModelRouter(ctx, &router); err != nil {
+			t.Fatalf("saving model router %s: %v", router.ID, err)
+		}
+		if raw := fallbacks[router.ID]; raw != nil {
+			if err := store.ConfigStore().DB().WithContext(ctx).Model(&configstoreTables.TableModelRouter{}).
+				Where("id = ?", router.ID).Update("fallbacks", raw).Error; err != nil {
+				t.Fatalf("storing the fallbacks of model router %s: %v", router.ID, err)
+			}
+			if err := store.Live().Refresh(ctx, []livestore.Ref{{Kind: livestore.KindModelRouter, ID: router.ID}}); err != nil {
+				t.Fatalf("refreshing model router %s: %v", router.ID, err)
+			}
+		}
+		record, ok := store.Live().Collections.ModelRouters.Get(router.ID)
+		if !ok {
+			t.Fatalf("model router %s is not in the live store", router.ID)
+		}
+		if err := plugin.ReloadModelRouter(&record.Router); err != nil {
+			t.Fatalf("serving model router %s: %v", router.ID, err)
+		}
+	}
+}
+
 // gwRule is a routing rule matching model == "m" at scope (global for ""), targeting target, with
 // fallbacks stored as the config store keeps them (nil for none). It is decoded the way the config
 // store loads a rule, so a fallback naming a provider is resolved when a request uses it.
@@ -2352,7 +2414,7 @@ func TestGatewayRuleFallbackToADeletedProviderIsSkipped(t *testing.T) {
 	if index, _ := r.ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); index != 1 {
 		t.Fatalf("B should serve as fallback 1, served at index %d", index)
 	}
-	if !strings.Contains(r.trail(), `Rule 'R1': fallback "gw-c/m" skipped: it does not name a known provider`) {
+	if !strings.Contains(r.trail(), `Model router 'R1': fallback "gw-c/m" skipped: it does not name a known provider`) {
 		t.Fatalf("the trail should warn about the deleted provider's fallback:\n%s", r.trail())
 	}
 	if a, b := providerHits(u, keys, gwA, ""), providerHits(u, keys, gwB, ""); a != 3 || b != 1 {
@@ -2400,9 +2462,7 @@ func TestGatewayRuleScopePrecedence(t *testing.T) {
 	}
 	for _, step := range steps {
 		if step.deleteRule != "" {
-			if err := g.rules.Delete(context.Background(), step.deleteRule); err != nil {
-				t.Fatalf("deleting rule %s: %v", step.deleteRule, err)
-			}
+			g.deleteRule(step.deleteRule)
 		}
 		for turn := range 5 {
 			r := g.send(gwCall{model: "m", headers: vkHeaders("vk1", "")})
@@ -2485,9 +2545,7 @@ func TestGatewayRulePinOutsideTheVirtualKeysKeys(t *testing.T) {
 	}
 	g.requireBinding(r, "route", "", "m", "gw-b/m")
 
-	if err := g.rules.Put(context.Background(), gwRule(t, "R1", "", "", gwTarget(gwA, "m", "a1"), nil)); err != nil {
-		t.Fatalf("removing the rule's fallback: %v", err)
-	}
+	g.putRule(gwRule(t, "R1", "", "", gwTarget(gwA, "m", "a1"), nil))
 	u.clearHits()
 	r = g.send(gwCall{model: "m", headers: vkHeaders("vk1", "")})
 	requireFailedWith(t, r, http.StatusBadRequest)

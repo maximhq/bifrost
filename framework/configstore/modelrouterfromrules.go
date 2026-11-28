@@ -90,8 +90,9 @@ type routingRuleTierConditions struct {
 //     placed first so those requests are still not classified, then a classifier router for each
 //     condition the tiers are left with.
 //
-// A rule's fallbacks go on each of its targets. A priority is kept unless it is negative, taken,
-// or pushed along by a rule before it that became several routers; the order never changes.
+// A rule's fallbacks go on its conditional router, and on each target of a classifier router. A
+// priority is kept unless it is negative, taken, or pushed along by a rule before it that became
+// several routers; the order never changes.
 // Existing routers move after the rule routers of their scope only when their priority is taken,
 // because rules ran before routers. Every rule has a note, which lists what was written
 // differently and what does not route exactly as the rule did.
@@ -158,7 +159,7 @@ func ModelRoutersFromRoutingRules(rules []tables.TableRoutingRule, settings *Com
 			targets := routerTargetsFromRule(rule, &plan.note)
 			if open >= 0 && plan.shares() && plan.pieces[0].condition == out.Routers[open].Routing.CelExpression && plan.pieces[0].tiers&openTiers == 0 {
 				shared := &out.Routers[open]
-				shared.Targets = append(shared.Targets, targetsOnTiers(targets, plan.pieces[0].tiers)...)
+				shared.Targets = append(shared.Targets, targetsOnTiers(targets, plan.pieces[0].tiers, rule.ParsedFallbacks)...)
 				shared.Meta.RoutingRuleIDs = append(shared.Meta.RoutingRuleIDs, rule.ID)
 				openTiers |= plan.pieces[0].tiers
 				plan.note.RouterIDs = []string{shared.ID}
@@ -369,12 +370,13 @@ func routersFromRulePlan(plan *routingRulePlan, targets []tables.TableModelRoute
 		}
 		if piece.tiers == 0 {
 			router.Targets = slices.Clone(targets)
+			router.Fallbacks = slices.Clone(rule.ParsedFallbacks)
 		} else {
 			router.Mode = tables.ModelRouterModeClassifier
 			router.ComplexityAnalyzerConfig = settings.Normalized()
 			router.Routing.EmptyTarget = tables.ModelRouterEmptyTargetNextRouter
 			router.Routing.Enabled = router.Routing.Enabled && !idle
-			router.Targets = targetsOnTiers(targets, piece.tiers)
+			router.Targets = targetsOnTiers(targets, piece.tiers, rule.ParsedFallbacks)
 		}
 		plan.note.RouterIDs = append(plan.note.RouterIDs, id)
 		routers = append(routers, router)
@@ -454,8 +456,9 @@ func freeRouterID(id string, taken, ruleIDs map[string]struct{}) string {
 	return candidate
 }
 
-// routerTargetsFromRule returns a rule's targets as a router's, with the rule's fallbacks on each.
-// The routing rules picked a target in proportion to its weight among the ones that are not
+// routerTargetsFromRule returns a rule's targets as a router's, without its fallbacks: a
+// conditional router keeps them itself, as the rule did, and a classifier router's targets get them
+// in targetsOnTiers. The routing rules picked a target in proportion to its weight among the ones that are not
 // negative, and evenly when every weight is 0. A router's weights are above 0 and sum to 1, so the
 // same pick is written that way: a target that was never picked is left out and the rest are
 // scaled.
@@ -488,7 +491,6 @@ func routerTargetsFromRule(rule *tables.TableRoutingRule, note *RoutingRuleMigra
 		if from.TTFTTimeoutMs != nil && *from.TTFTTimeoutMs > 0 {
 			target.TTFTTimeoutMs = bifrost.Ptr(*from.TTFTTimeoutMs)
 		}
-		target.ParsedFallbacks = slices.Clone(rule.ParsedFallbacks)
 		targets = append(targets, target)
 	}
 	if even {
@@ -506,8 +508,10 @@ func routerTargetsFromRule(rule *tables.TableRoutingRule, note *RoutingRuleMigra
 	return targets
 }
 
-// targetsOnTiers returns a copy of a rule's targets for each of the tiers.
-func targetsOnTiers(targets []tables.TableModelRouterTarget, tiers uint8) []tables.TableModelRouterTarget {
+// targetsOnTiers returns a copy of a rule's targets for each of the tiers, each with the rule's
+// fallbacks: a classifier router keeps them on its targets, and one that several rules share has
+// each rule's own on that rule's targets.
+func targetsOnTiers(targets []tables.TableModelRouterTarget, tiers uint8, fallbacks []tables.RoutingFallback) []tables.TableModelRouterTarget {
 	var out []tables.TableModelRouterTarget
 	for i, tier := range routingRuleTiers {
 		if tiers&(1<<i) == 0 {
@@ -515,7 +519,7 @@ func targetsOnTiers(targets []tables.TableModelRouterTarget, tiers uint8) []tabl
 		}
 		for _, target := range targets {
 			target.Tier = tier
-			target.ParsedFallbacks = slices.Clone(target.ParsedFallbacks)
+			target.ParsedFallbacks = slices.Clone(fallbacks)
 			out = append(out, target)
 		}
 	}

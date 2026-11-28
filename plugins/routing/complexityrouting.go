@@ -73,15 +73,6 @@ func shareClassification(ctx *schemas.BifrostContext, key string, proposal compl
 	ctx.SetValue(sharedClassificationsKey{}, append(answers, sharedClassification{key: key, proposal: proposal}))
 }
 
-// computeComplexity classifies the request for a routing rule's complexity_tier, with the
-// Complexity Router page's config.
-func (p *RoutingPlugin) computeComplexity(
-	ctx *schemas.BifrostContext,
-	req *schemas.BifrostRequest,
-) *complexity.ComplexityResult {
-	return p.computeRouterComplexity(ctx, req, p.complexityRuntime())
-}
-
 // computeRouterComplexity classifies the request with one classifier, at most once per
 // request (see modelRouterTiersKey).
 func (p *RoutingPlugin) computeRouterComplexity(

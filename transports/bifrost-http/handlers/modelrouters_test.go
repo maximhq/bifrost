@@ -764,11 +764,72 @@ func TestConditionalModelRouterEndpoints(t *testing.T) {
 	assert.Equal(t, "classifier", body["mode"], "a router created without a mode is a classifier")
 }
 
-// TestModelRouterCreateIgnoresTargetsAndGeneratesID pins that a create body's
-// targets are dropped, since targets have their own endpoint, that a router
-// sent without an id (or with a blank one) gets a generated id, and that the
-// manager is asked to serve the router under the id it was stored with.
-func TestModelRouterCreateIgnoresTargetsAndGeneratesID(t *testing.T) {
+// TestConditionalModelRouterFallbacks pins a conditional router's fallback chain over the API. It
+// is one list on the router, as a routing rule's was, sent with the targets: a write that sends it
+// replaces it, one that leaves it out keeps it, and an empty list clears it. A target of the router
+// cannot carry its own, a classifier router has none on the router, and a refused write saves
+// neither the targets nor the chain. A create saves it with the router, as it saves targets.
+func TestConditionalModelRouterFallbacks(t *testing.T) {
+	h, _, store := modelRouterHandler(t)
+	ctx := context.Background()
+	body := modelRouterOK(t, h.createModelRouter, `{"id":"fast-lane","name":"Fast lane","mode":"conditional",`+
+		`"targets":[{"provider":"openai","model":"gpt-4o","weight":1}],"fallbacks":["anthropic/claude-sonnet-4"]}`, nil)
+	assert.Equal(t, []any{"anthropic/claude-sonnet-4"}, body["fallbacks"], "a create saves the chain with the router")
+	assert.Len(t, body["targets"], 1)
+	status, refusal := call(t, h.createModelRouter, `{"id":"on-target","name":"On target","mode":"conditional",`+
+		`"targets":[{"provider":"openai","model":"gpt-4o","weight":1,"fallbacks":["anthropic/claude-sonnet-4"]}]}`, nil)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, "%v", refusal)
+	_, err := store.GetModelRouter(ctx, "on-target")
+	require.ErrorIs(t, err, configstore.ErrNotFound, "a refused create stores nothing")
+	path := modelRouterPath("fast-lane")
+	targets := `"targets":[{"provider":"openai","model":"gpt-4o-mini","weight":0.5},{"provider":"openai","model":"gpt-4o","weight":0.5}]`
+	stored := func() *configstore.ModelRouter {
+		router, err := store.GetModelRouter(ctx, "fast-lane")
+		require.NoError(t, err)
+		return router
+	}
+
+	body = modelRouterOK(t, h.setModelRouterTargets, `{`+targets+`,"fallbacks":["anthropic/claude-sonnet-4",{"provider":"anthropic","model":"claude-opus-4","key_id":"key-1"},{"provider":"openai","model":"gpt-4o-mini"}]}`, path)
+	assert.Equal(t, []any{"anthropic/claude-sonnet-4", map[string]any{"provider": "anthropic", "model": "claude-opus-4", "key_id": "key-1"}, "openai/gpt-4o-mini"}, body["fallbacks"],
+		"the answer carries the chain, an unpinned object in its string form")
+	for _, target := range body["targets"].([]any) {
+		assert.NotContains(t, target, "fallbacks")
+	}
+
+	modelRouterOK(t, h.setModelRouterTargets, `{"targets":[{"provider":"openai","model":"gpt-4o-mini","weight":1}]}`, path)
+	assert.Len(t, stored().Fallbacks, 3, "a write that sends no fallbacks keeps the chain")
+	assert.Len(t, stored().Targets, 1)
+
+	refused := map[string]string{
+		"a fallback on a target":         `{"targets":[{"provider":"openai","model":"gpt-4o","weight":1,"fallbacks":["anthropic/claude-sonnet-4"]}]}`,
+		"a fallback naming no provider":  `{` + targets + `,"fallbacks":["claude-sonnet-4"]}`,
+		"a fallback with a key name":     `{` + targets + `,"fallbacks":[{"provider":"anthropic","provider_key_name":"Anthropic Prod"}]}`,
+		"targets that do not sum to one": `{"targets":[{"provider":"openai","model":"gpt-4o","weight":0.4}],"fallbacks":[]}`,
+	}
+	for name, request := range refused {
+		status, answer := call(t, h.setModelRouterTargets, request, path)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, "%s: %v", name, answer)
+	}
+	assert.Len(t, stored().Fallbacks, 3, "a refused write leaves the chain")
+	assert.Len(t, stored().Targets, 1, "and the targets")
+
+	body = modelRouterOK(t, h.setModelRouterTargets, `{`+targets+`,"fallbacks":[]}`, path)
+	assert.NotContains(t, body, "fallbacks", "an empty list clears the chain")
+	assert.Empty(t, stored().Fallbacks)
+
+	modelRouterOK(t, h.createModelRouter, modelRouterBody("support", "Support"), nil)
+	tiered := `"targets":[{"tier":"SIMPLE","provider":"openai","model":"gpt-4o-mini","weight":1,"fallbacks":["anthropic/claude-sonnet-4"]}]`
+	status, answer := call(t, h.setModelRouterTargets, `{`+tiered+`,"fallbacks":["anthropic/claude-sonnet-4"]}`, modelRouterPath("support"))
+	assert.Equal(t, fasthttp.StatusBadRequest, status, "a classifier router takes its fallbacks on each target: %v", answer)
+	modelRouterOK(t, h.setModelRouterTargets, `{`+tiered+`}`, modelRouterPath("support"))
+}
+
+// TestModelRouterCreateSavesTargetsAndGeneratesID pins that a create body's
+// targets are saved with the router, as creating a routing rule saved its
+// targets, that a router sent without an id (or with a blank one) gets a
+// generated id, and that the manager is asked to serve the router under the
+// id it was stored with. Targets that cannot be saved create nothing.
+func TestModelRouterCreateSavesTargetsAndGeneratesID(t *testing.T) {
 	h, manager, store := modelRouterHandler(t)
 	targets := `"targets":[{"tier":"SIMPLE","provider":"openai","model":"gpt-4o-mini","weight":1}]`
 
@@ -789,12 +850,57 @@ func TestModelRouterCreateIgnoresTargetsAndGeneratesID(t *testing.T) {
 			assert.False(t, generated[id], "every generated id is new")
 			generated[id] = true
 			assert.Equal(t, []string{id}, manager.reloadedRouters, "the manager serves the router under its generated id")
-			assert.NotContains(t, body, "targets", "targets in a create body are ignored")
+			assert.Len(t, body["targets"], 1, "the answer carries the targets the create saved")
 
 			stored, err := store.GetModelRouter(context.Background(), id)
 			require.NoError(t, err, "the router is stored under the generated id")
-			assert.Empty(t, stored.Targets)
-			assert.Empty(t, manager.reloadedTargets, "a create never serves targets")
+			require.Len(t, stored.Targets, 1)
+			assert.Equal(t, "gpt-4o-mini", *stored.Targets[0].Model)
+			assert.Empty(t, manager.reloadedTargets, "a create serves the router whole, targets included")
+		})
+	}
+
+	t.Run("targets that cannot be saved create nothing", func(t *testing.T) {
+		status, answer := call(t, h.createModelRouter, modelRouterBody("half", "Half", `"targets":[{"tier":"SIMPLE","model":"m","weight":0.5}]`), nil)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, "%v", answer)
+		_, err := store.GetModelRouter(context.Background(), "half")
+		require.ErrorIs(t, err, configstore.ErrNotFound)
+	})
+}
+
+// TestConditionalModelRouterIsOnUnlessToldOtherwise pins what a router created without saying
+// whether it is on gets: a conditional router is on, as a routing rule that did not say otherwise
+// was, whether its body has routing or not; a classifier router is off until its routing turns it
+// on, since it would classify every request in its scope.
+func TestConditionalModelRouterIsOnUnlessToldOtherwise(t *testing.T) {
+	h, _, _ := modelRouterHandler(t)
+	enabled := func(body map[string]any) any {
+		routing, _ := body["routing"].(map[string]any)
+		return routing["enabled"]
+	}
+	conditional := func(id, routing string) string {
+		body := `{"id":"` + id + `","name":"` + id + `","mode":"conditional","targets":[{"provider":"openai","model":"gpt-4o-mini","weight":1}]`
+		if routing != "" {
+			body += `,"routing":` + routing
+		}
+		return body + `}`
+	}
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"a conditional router without routing", conditional("no-routing", ""), true},
+		{"a conditional router whose routing does not say", conditional("silent", `{"scope":"global","priority":900,"cel_expression":"model == \"gpt-4o\""}`), true},
+		{"a conditional router whose routing says on", conditional("says-on", `{"enabled":true,"scope":"global","priority":901}`), true},
+		{"a conditional router whose routing says off", conditional("says-off", `{"enabled":false,"scope":"global","priority":902}`), false},
+		{"a classifier router without routing", modelRouterBody("tiered", "Tiered"), false},
+		{"a classifier router whose routing does not say", modelRouterBody("tiered-silent", "Tiered silent", `"routing":{"scope":"global","priority":950}`), false},
+		{"a classifier router whose routing says on", modelRouterBody("tiered-on", "Tiered on", `"routing":{"enabled":true,"scope":"global","priority":951}`), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, enabled(modelRouterOK(t, h.createModelRouter, tc.body, nil)))
 		})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -83,6 +84,9 @@ func ValidateModelRouterTargets(mode string, targets []tables.TableModelRouterTa
 		if !(t.Weight > 0) {
 			return fmt.Errorf("targets[%d]: weight must be greater than 0, got %v", i, t.Weight)
 		}
+		if conditional && len(t.ParsedFallbacks) > 0 {
+			return fmt.Errorf("targets[%d]: a conditional router takes its fallbacks on the router, not on a target", i)
+		}
 		if t.TTFTTimeoutMs != nil {
 			if *t.TTFTTimeoutMs < 0 || *t.TTFTTimeoutMs > maxModelRouterTTFTTimeoutMs {
 				return fmt.Errorf("targets[%d]: ttft_timeout_ms must be between 1 and %d (0 disables it)", i, maxModelRouterTTFTTimeoutMs)
@@ -92,7 +96,9 @@ func ValidateModelRouterTargets(mode string, targets []tables.TableModelRouterTa
 			}
 		}
 		for j, fb := range t.ParsedFallbacks {
-			if p := strings.TrimSpace(string(fb.Provider)); p == "" || !schemas.IsKnownProvider(p) {
+			// Resolved, because a "provider/model" string read before its custom provider was known
+			// carries no provider until it is parsed again.
+			if p := strings.TrimSpace(string(fb.Resolved().Provider)); p == "" || !schemas.IsKnownProvider(p) {
 				return fmt.Errorf("targets[%d].fallbacks[%d] %q must use a known provider prefix", i, j, fb.String())
 			}
 		}
@@ -120,6 +126,70 @@ func ValidateModelRouterTargets(mode string, targets []tables.TableModelRouterTa
 		}
 	}
 	return nil
+}
+
+// ValidateModelRouterFallbacks checks a router's own fallback chain. Only a
+// conditional router has one, for whichever of its targets is chosen, as a
+// routing rule had; a classifier router's fallbacks belong to each tier's
+// target. Each entry must name a known provider.
+func ValidateModelRouterFallbacks(mode string, fallbacks []tables.RoutingFallback) error {
+	if len(fallbacks) == 0 {
+		return nil
+	}
+	if tables.NormalizeModelRouterMode(mode) != tables.ModelRouterModeConditional {
+		return fmt.Errorf("a classifier router takes its fallbacks on each target, not on the router")
+	}
+	for i, fb := range fallbacks {
+		// Resolved, for the reason a target's fallback is: see ValidateModelRouterTargets.
+		if p := strings.TrimSpace(string(fb.Resolved().Provider)); p == "" || !schemas.IsKnownProvider(p) {
+			return fmt.Errorf("fallbacks[%d] %q must use a known provider prefix", i, fb.String())
+		}
+	}
+	return nil
+}
+
+// ModelRouterFallbacksHash hashes a fallback chain in its order, which is the
+// order the fallbacks are tried in. A fallback that pins a key is written in
+// its JSON form, so the pin is part of the hash.
+func ModelRouterFallbacksHash(fallbacks []tables.RoutingFallback) string {
+	h := sha256.New()
+	for _, fb := range fallbacks {
+		entry := fb.String()
+		if fb.IsKeyPinned() {
+			if data, err := fb.MarshalJSON(); err == nil {
+				entry = string(data)
+			}
+		}
+		writeHashField(h, "fallback", entry)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// encodeModelRouterFallbacks lays a router's fallback chain out for its
+// column; an empty chain is NULL.
+func encodeModelRouterFallbacks(fallbacks []tables.RoutingFallback) (*string, error) {
+	if len(fallbacks) == 0 {
+		return nil, nil
+	}
+	data, err := json.Marshal(fallbacks)
+	if err != nil {
+		return nil, err
+	}
+	encoded := string(data)
+	return &encoded, nil
+}
+
+// decodeModelRouterFallbacks reads a router's fallback chain from its column;
+// NULL and empty are no chain.
+func decodeModelRouterFallbacks(raw *string) ([]tables.RoutingFallback, error) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return nil, nil
+	}
+	var fallbacks []tables.RoutingFallback
+	if err := json.Unmarshal([]byte(*raw), &fallbacks); err != nil {
+		return nil, err
+	}
+	return fallbacks, nil
 }
 
 // writeModelRouterTargetsHash writes a router's targets into its config.json
@@ -226,6 +296,31 @@ func (s *RDBConfigStore) SetModelRouterTargets(ctx context.Context, routerID str
 			return &modelRouterTargetsError{err: err}
 		}
 		return writeModelRouterTargets(ctx, txDB, routerID, targets)
+	})
+}
+
+// SetModelRouterFallbacks replaces a conditional router's fallback chain; an
+// empty chain clears it. The router must have been saved: ErrNotFound
+// otherwise. The chain is checked against the stored router's mode under its
+// row lock, and one that does not pass is refused with an error matching
+// ErrInvalidModelRouterTargets.
+func (s *RDBConfigStore) SetModelRouterFallbacks(ctx context.Context, routerID string, fallbacks []tables.RoutingFallback, tx ...*gorm.DB) error {
+	routerID = strings.TrimSpace(routerID)
+	return s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
+		row, err := s.lockModelRouterRow(ctx, txDB, routerID)
+		if err != nil {
+			return err
+		}
+		if row == nil {
+			return ErrNotFound
+		}
+		if err := ValidateModelRouterFallbacks(row.Mode, fallbacks); err != nil {
+			return &modelRouterTargetsError{err: err}
+		}
+		if row.Fallbacks, err = encodeModelRouterFallbacks(fallbacks); err != nil {
+			return err
+		}
+		return txDB.WithContext(ctx).Model(row).Select("Fallbacks").Updates(row).Error
 	})
 }
 

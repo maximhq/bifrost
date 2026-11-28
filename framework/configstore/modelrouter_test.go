@@ -89,17 +89,19 @@ func fillEveryField(t *testing.T, v reflect.Value, path string, seq *int) {
 // router, its config, suggestions block and routing included, has a column. A
 // field added without one fails here instead of being silently dropped on
 // save. Targets have a table of their own, which TestModelRouterTargetsStore
-// covers.
+// covers. The fallbacks are set by hand: a fallback keeps the text it was
+// written as, which the filler cannot reach.
 func TestModelRouterTableRoundTripCoversEveryField(t *testing.T) {
 	var router ModelRouter
 	seq := 0
 	v := reflect.ValueOf(&router).Elem()
 	for i := 0; i < v.NumField(); i++ {
-		if name := v.Type().Field(i).Name; name != "Targets" {
+		if name := v.Type().Field(i).Name; name != "Targets" && name != "Fallbacks" {
 			fillEveryField(t, v.Field(i), "ModelRouter."+name, &seq)
 		}
 	}
 	router.EmbeddingFingerprint = "" // the complexity config's bookkeeping; routers do not store it
+	require.NoError(t, json.Unmarshal([]byte(`["anthropic/claude-sonnet", "openai/", {"provider": "openai", "model": "gpt-4o-mini", "key_id": "openai-key"}]`), &router.Fallbacks))
 
 	row, err := modelRouterToTable(&router)
 	require.NoError(t, err)

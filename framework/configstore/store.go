@@ -397,6 +397,9 @@ type ConfigStore interface {
 	// SetModelRouterTargets replaces a saved router's targets: a classifier
 	// router's model per tier, or a conditional router's one target list.
 	SetModelRouterTargets(ctx context.Context, routerID string, targets []tables.TableModelRouterTarget, tx ...*gorm.DB) error
+	// SetModelRouterFallbacks replaces a conditional router's fallback chain,
+	// which applies to whichever of its targets is chosen.
+	SetModelRouterFallbacks(ctx context.Context, routerID string, fallbacks []tables.RoutingFallback, tx ...*gorm.DB) error
 	// SetModelRouterRouting replaces which requests a saved router takes.
 	SetModelRouterRouting(ctx context.Context, routerID string, routing ModelRouterRouting, tx ...*gorm.DB) error
 	// SetModelRouterRoutings replaces several routers' routing in one

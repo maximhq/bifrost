@@ -185,8 +185,8 @@ func (r *TestRules) Delete(ctx context.Context, id string) error {
 	return r.live.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindRoutingRule, ID: id, Remove: true}})
 }
 
-// SaveModelRouter saves router, its targets and its routing through the config store, creating it
-// or replacing what was saved, and refreshes it, as a save does. A router saved without routing
+// SaveModelRouter saves router, its targets, its fallbacks and its routing through the config
+// store, creating it or replacing what was saved, and refreshes it, as a save does. A router saved without routing
 // keeps the routing it had, or the default a new router gets.
 func (r *TestRules) SaveModelRouter(ctx context.Context, router *configstore.ModelRouter) error {
 	saved := *router
@@ -204,6 +204,9 @@ func (r *TestRules) SaveModelRouter(ctx context.Context, router *configstore.Mod
 		return err
 	}
 	if err := r.configStore.SetModelRouterTargets(ctx, router.ID, router.Targets); err != nil {
+		return err
+	}
+	if err := r.configStore.SetModelRouterFallbacks(ctx, router.ID, router.Fallbacks); err != nil {
 		return err
 	}
 	return r.live.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindModelRouter, ID: router.ID}})

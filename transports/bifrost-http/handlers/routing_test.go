@@ -533,6 +533,39 @@ func TestRoutingRoutesServeCanonicalAndLegacyPaths(t *testing.T) {
 	}
 }
 
+// TestRoutingRuleAndComplexityRouterWritesAreRefused pins that nothing accepts a change to a
+// routing rule or to the Complexity Router settings. Neither routes a request any more, both
+// having become model routers, so a write that was saved would do nothing. Each write answers 410
+// and names the routers API, on the canonical path and on the legacy one.
+func TestRoutingRuleAndComplexityRouterWritesAreRefused(t *testing.T) {
+	r := router.New()
+	(&RoutingHandler{}).RegisterRoutes(r)
+
+	writes := []struct{ method, path string }{
+		{fasthttp.MethodPost, "/api/routing/rules"},
+		{fasthttp.MethodPut, "/api/routing/rules/rule-1"},
+		{fasthttp.MethodDelete, "/api/routing/rules/rule-1"},
+		{fasthttp.MethodPost, "/api/governance/routing-rules"},
+		{fasthttp.MethodPut, "/api/governance/routing-rules/rule-1"},
+		{fasthttp.MethodDelete, "/api/governance/routing-rules/rule-1"},
+		{fasthttp.MethodPut, "/api/routing/complexity-analyzer-config"},
+		{fasthttp.MethodPost, "/api/routing/complexity-analyzer-config/reset"},
+		{fasthttp.MethodPut, "/api/governance/complexity-analyzer-config"},
+		{fasthttp.MethodPost, "/api/governance/complexity-analyzer-config/reset"},
+	}
+	for _, write := range writes {
+		t.Run(write.method+" "+write.path, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(write.method)
+			ctx.Request.SetRequestURI(write.path)
+			ctx.Request.SetBody([]byte(`{"name":"anything"}`))
+			r.Handler(ctx)
+			require.Equal(t, fasthttp.StatusGone, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			require.Contains(t, string(ctx.Response.Body()), "/api/routing/model-routers", "the answer says where routing is configured now")
+		})
+	}
+}
+
 // reloadRecordingRoutingManager accepts rule reloads so the CRUD handlers can run end to end.
 type reloadRecordingRoutingManager struct {
 	RoutingManager

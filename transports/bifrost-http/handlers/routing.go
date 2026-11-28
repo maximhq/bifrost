@@ -138,14 +138,17 @@ func (h *RoutingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	}
 
 	register(fasthttp.MethodGet, "/api/routing/rules", "/api/governance/routing-rules", h.getRoutingRules)
-	register(fasthttp.MethodPost, "/api/routing/rules", "/api/governance/routing-rules", h.createRoutingRule)
+	// Routing rules and the Complexity Router settings no longer route a request: both became
+	// model routers. What is stored can still be read; a write is refused, so nothing accepts a
+	// change that would do nothing.
+	register(fasthttp.MethodPost, "/api/routing/rules", "/api/governance/routing-rules", h.refuseRoutingRuleWrite)
 	register(fasthttp.MethodGet, "/api/routing/rules/{rule_id}", "/api/governance/routing-rules/{rule_id}", h.getRoutingRule)
-	register(fasthttp.MethodPut, "/api/routing/rules/{rule_id}", "/api/governance/routing-rules/{rule_id}", h.updateRoutingRule)
-	register(fasthttp.MethodDelete, "/api/routing/rules/{rule_id}", "/api/governance/routing-rules/{rule_id}", h.deleteRoutingRule)
+	register(fasthttp.MethodPut, "/api/routing/rules/{rule_id}", "/api/governance/routing-rules/{rule_id}", h.refuseRoutingRuleWrite)
+	register(fasthttp.MethodDelete, "/api/routing/rules/{rule_id}", "/api/governance/routing-rules/{rule_id}", h.refuseRoutingRuleWrite)
 
 	register(fasthttp.MethodGet, "/api/routing/complexity-analyzer-config", "/api/governance/complexity-analyzer-config", h.getComplexityAnalyzerConfig)
-	register(fasthttp.MethodPut, "/api/routing/complexity-analyzer-config", "/api/governance/complexity-analyzer-config", h.updateComplexityAnalyzerConfig)
-	register(fasthttp.MethodPost, "/api/routing/complexity-analyzer-config/reset", "/api/governance/complexity-analyzer-config/reset", h.resetComplexityAnalyzerConfig)
+	register(fasthttp.MethodPut, "/api/routing/complexity-analyzer-config", "/api/governance/complexity-analyzer-config", h.refuseComplexityRouterWrite)
+	register(fasthttp.MethodPost, "/api/routing/complexity-analyzer-config/reset", "/api/governance/complexity-analyzer-config/reset", h.refuseComplexityRouterWrite)
 	// Status never shipped under /api/governance, so it has no legacy alias.
 	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-status", lib.ChainMiddlewares(h.getComplexitySemanticStatus, middlewares...))
 	r.Handle(fasthttp.MethodPost, "/api/routing/complexity-analyzer-status/retry", lib.ChainMiddlewares(h.retryComplexitySemanticWarmup, middlewares...))
@@ -897,6 +900,18 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		"message": "Routing rule updated successfully",
 		"rule":    rule,
 	})
+}
+
+// refuseRoutingRuleWrite answers a create, update or delete of a routing rule. Rules no longer
+// route a request, and the ones that were saved became model routers.
+func (h *RoutingHandler) refuseRoutingRuleWrite(ctx *fasthttp.RequestCtx) {
+	SendError(ctx, fasthttp.StatusGone, "routing rules became model routers and can no longer be changed: use /api/routing/model-routers")
+}
+
+// refuseComplexityRouterWrite answers a change to the Complexity Router settings. Nothing reads
+// them any more: each model router made from a rule carries its own copy.
+func (h *RoutingHandler) refuseComplexityRouterWrite(ctx *fasthttp.RequestCtx) {
+	SendError(ctx, fasthttp.StatusGone, "the Complexity Router settings became part of each model router and can no longer be changed: use /api/routing/model-routers")
 }
 
 // deleteRoutingRule deletes a routing rule

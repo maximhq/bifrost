@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -6098,6 +6099,39 @@ func TestMigrationAddModelRouterMetaColumn(t *testing.T) {
 	assert.Nil(t, router.Meta, "a router from before the column was not made from routing rules")
 }
 
+// TestMigrationAddModelRouterFallbacksColumn pins the column a conditional router keeps its fallback
+// chain in: a database from before it gains it, a router stored before it has no chain, and the
+// step is safe to run again.
+func TestMigrationAddModelRouterFallbacksColumn(t *testing.T) {
+	ctx := context.Background()
+	store, db := setupFullMigrationDB(t)
+	mg := db.Migrator()
+	// The state before the step: not applied, the table without the column, and a router stored
+	// that way.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_model_router_fallbacks_column").Error)
+	require.NoError(t, db.Exec("ALTER TABLE model_routers DROP COLUMN fallbacks").Error)
+	require.False(t, mg.HasColumn(&tables.TableModelRouter{}, "fallbacks"))
+	require.NoError(t, db.Exec(`INSERT INTO model_routers (id, name, mode, classifier, scope, enabled, priority, created_at, updated_at)
+		VALUES ('fast-lane', 'Fast lane', 'conditional', '', 'global', false, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).Error)
+
+	require.NoError(t, migrationAddModelRouterFallbacksColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableModelRouter{}, "fallbacks"))
+	require.NoError(t, migrationAddModelRouterFallbacksColumn(ctx, db, testMigrationLogger), "running again is a no-op")
+
+	router, err := store.GetModelRouter(ctx, "fast-lane")
+	require.NoError(t, err)
+	assert.Empty(t, router.Fallbacks, "a router from before the column has no chain, so it keeps the request's")
+
+	// The step that makes routers of routing rules writes this column and meta, so it has to come
+	// after both.
+	var steps []string
+	for _, step := range configstoreMigrationSteps {
+		steps = append(steps, step.IDs...)
+	}
+	assert.Less(t, slices.Index(steps, "add_model_router_fallbacks_column"), slices.Index(steps, "routing_rules_to_model_routers"))
+	assert.Less(t, slices.Index(steps, "add_model_router_meta_column"), slices.Index(steps, "routing_rules_to_model_routers"))
+}
+
 // setupContentLoggingColumnsTestDB creates an in-memory SQLite database holding every table that
 // carries a disable_content_logging column, each in its shape before the column existed. Built by
 // hand because GORM's SQLite DropColumn reports success without dropping anything.
@@ -6404,6 +6438,36 @@ func seedRoutingRule(t *testing.T, db *gorm.DB, rule tables.TableRoutingRule) {
 	require.NoError(t, db.Create(&rule).Error)
 }
 
+// TestRoutingRulesBecomeModelRoutersAtStartUp pins the upgrade itself: a database that holds
+// routing rules and has not run the migration yet gets its routers from the ordinary migration
+// run at start-up, the migration being the last step of the list.
+func TestRoutingRulesBecomeModelRoutersAtStartUp(t *testing.T) {
+	ctx := context.Background()
+	const step = "routing_rules_to_model_routers"
+	assert.Equal(t, []string{step}, configstoreMigrationSteps[len(configstoreMigrationSteps)-1].IDs)
+
+	store, db := setupFullMigrationDB(t)
+	// The state of a gateway on the release before: rules stored, the step not applied.
+	seedRoutingRule(t, db, migrationRule("gpt", `model == "gpt-4o"`, 0, migrationRuleTarget("azure", "gpt-4o", 1)))
+	seedRoutingRule(t, db, migrationRule("simple", `complexity_tier == "SIMPLE"`, 1, migrationRuleTarget("openai", "gpt-4o-mini", 1)))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", step).Error)
+
+	require.NoError(t, triggerMigrations(ctx, db, testMigrationLogger))
+
+	routers, err := store.GetModelRouters(ctx)
+	require.NoError(t, err)
+	ids := make([]string, 0, len(routers))
+	for _, router := range routers {
+		ids = append(ids, router.ID+" "+router.Mode)
+	}
+	assert.ElementsMatch(t, []string{"gpt conditional", "simple classifier"}, ids)
+
+	require.NoError(t, triggerMigrations(ctx, db, testMigrationLogger))
+	again, err := store.GetModelRouters(ctx)
+	require.NoError(t, err)
+	assert.Len(t, again, 2, "a later start runs nothing")
+}
+
 // TestMigrationRoutingRulesToModelRouters runs the migration on a database: the rules stored there
 // become the routers the mapping gives, the routers already there keep their place after them, the
 // rules are left as they were, and a second run changes nothing.
@@ -6459,6 +6523,9 @@ func TestMigrationRoutingRulesToModelRouters(t *testing.T) {
 		want, err := ModelRoutersFromRoutingRules(stored, saved, before)
 		require.NoError(t, err)
 
+		// The database was opened before it had rules, which applied the step. Take it back to
+		// where a gateway with rules is when it upgrades: the step not applied yet.
+		require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "routing_rules_to_model_routers").Error)
 		require.NoError(t, migrationRoutingRulesToModelRouters(ctx, db, testMigrationLogger))
 
 		routers, err := store.GetModelRouters(ctx)
@@ -6477,6 +6544,7 @@ func TestMigrationRoutingRulesToModelRouters(t *testing.T) {
 			assert.Equal(t, mapped.Meta, got.Meta, mapped.ID)
 			assert.Equal(t, mapped.Routing, got.Routing, mapped.ID)
 			assert.ElementsMatch(t, describeModelRouterTargets(mapped.Targets), describeModelRouterTargets(got.Targets), mapped.ID)
+			assert.Equal(t, tables.RoutingFallbackStrings(mapped.Fallbacks), tables.RoutingFallbackStrings(got.Fallbacks), mapped.ID)
 			if mapped.Mode == tables.ModelRouterModeClassifier {
 				assert.Equal(t, mapped.ComplexityAnalyzerConfig, got.ComplexityAnalyzerConfig, mapped.ID)
 			}
@@ -6488,7 +6556,8 @@ func TestMigrationRoutingRulesToModelRouters(t *testing.T) {
 		assert.Equal(t, map[string]any{"combinator": "and", "rules": []any{}}, support.Routing.Query)
 		require.Len(t, support.Targets, 1)
 		assert.Equal(t, 2000, *support.Targets[0].TTFTTimeoutMs)
-		assert.Equal(t, []string{"anthropic/claude-sonnet", "openai/"}, tables.RoutingFallbackStrings(support.Targets[0].ParsedFallbacks))
+		assert.Equal(t, []string{"anthropic/claude-sonnet", "openai/"}, tables.RoutingFallbackStrings(support.Fallbacks), "one list on the router, as the rule kept it")
+		assert.Empty(t, support.Targets[0].ParsedFallbacks)
 		// Two tier rules next to each other are one router; the split rule is two.
 		assert.ElementsMatch(t, []string{"SIMPLE openai/gpt-4o-mini@ 0.5", "SIMPLE groq/llama@ 0.5", "COMPLEX anthropic/claude-opus@ 1"}, describeModelRouterTargets(byID["simple"].Targets))
 		assert.NotContains(t, byID, "complex")
