@@ -2,6 +2,8 @@ package registry
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -105,4 +107,19 @@ func TestMCPUserDiscoveriesDropARowGoneAtTheReread(t *testing.T) {
 	require.Equal(t, MCPUserDiscoveryKey(user, "bob", "client-wiki"), recs[0].ID)
 	require.NotNil(t, recs[0].Discovery)
 	require.Equal(t, first, recs[0].Discovery.Hash)
+}
+
+// TestMCPUserDiscoveryContentPoolKeyReadsTheStoredDigest checks a discovery's key in the shared pool:
+// the first sixteen bytes of the SHA-256 hex digest its rows carry, and, for a value that is not
+// one, the first sixteen bytes of the value's own SHA-256, so every pool key is SHA-256 based.
+func TestMCPUserDiscoveryContentPoolKeyReadsTheStoredDigest(t *testing.T) {
+	digest := strings.Repeat("0123456789abcdef", 4)
+	var want [16]byte
+	_, err := hex.Decode(want[:], []byte(digest[:32]))
+	require.NoError(t, err)
+	require.Equal(t, want, (&MCPUserDiscoveryContent{Hash: digest}).PoolKey())
+
+	sum := sha256.Sum256([]byte("not a digest"))
+	copy(want[:], sum[:])
+	require.Equal(t, want, (&MCPUserDiscoveryContent{Hash: "not a digest"}).PoolKey())
 }

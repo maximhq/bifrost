@@ -3,8 +3,6 @@ package livestore
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"slices"
 	"strings"
 
@@ -208,7 +206,7 @@ func LimitOwners(budgets, rateLimits []registry.LimitOwner) StoreOption {
 func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 	c := &Collections{}
 	var err error
-	if c.grantSets, err = s.RegisterInterned[registry.GrantSet](KindGrantSet, func(g *registry.GrantSet) Hash { return Hash(g.ID) }); err != nil {
+	if c.grantSets, err = s.RegisterInterned[registry.GrantSet](KindGrantSet, func(g *registry.GrantSet) Hash { return Hash(g.PoolKey()) }); err != nil {
 		return nil, err
 	}
 	if c.Providers, err = s.Register(KindProvider, []Kind{KindBudget, KindRateLimit}, Loader[registry.Provider]{
@@ -445,7 +443,8 @@ func buildLimitLinks[T any](links []registry.LimitLink[T]) []Option[T] {
 // caller, and holding their discovery's shared copy.
 func registerMCPUserDiscoveries(s *Store, c *Collections) error {
 	var err error
-	if c.mcpDiscoveries, err = s.RegisterInterned[registry.MCPUserDiscoveryContent](KindMCPUserDiscoveryContent, mcpDiscoveryHash); err != nil {
+	poolKey := func(d *registry.MCPUserDiscoveryContent) Hash { return Hash(d.PoolKey()) }
+	if c.mcpDiscoveries, err = s.RegisterInterned[registry.MCPUserDiscoveryContent](KindMCPUserDiscoveryContent, poolKey); err != nil {
 		return err
 	}
 	c.MCPUserDiscoveries, err = s.Register(KindMCPUserDiscovery, []Kind{KindMCPClient}, Loader[registry.MCPUserDiscovery]{
@@ -459,19 +458,4 @@ func registerMCPUserDiscoveries(s *Store, c *Collections) error {
 		Interns(c.mcpDiscoveries, func(d *registry.MCPUserDiscovery) **registry.MCPUserDiscoveryContent { return &d.Discovery }),
 	)
 	return err
-}
-
-// mcpDiscoveryHash is a discovery's key in its pool: the SHA-256 content hash its rows carry, read
-// as the first sixteen bytes of the hex digest, or the first sixteen bytes of the string's own
-// SHA-256 when it is not hex. Equal keys share one copy, so the key must be collision resistant.
-func mcpDiscoveryHash(d *registry.MCPUserDiscoveryContent) Hash {
-	var h Hash
-	if len(d.Hash) >= 2*len(h) {
-		if _, err := hex.Decode(h[:], []byte(d.Hash[:2*len(h)])); err == nil {
-			return h
-		}
-	}
-	sum := sha256.Sum256([]byte(d.Hash))
-	copy(h[:], sum[:])
-	return h
 }

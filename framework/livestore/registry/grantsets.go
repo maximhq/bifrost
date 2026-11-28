@@ -64,6 +64,10 @@ type ProviderLimit struct {
 	RateLimitID string
 }
 
+// PoolKey is the set's key in the shared pool of grant sets: its content hash, set when the set is
+// sealed.
+func (g *GrantSet) PoolKey() [16]byte { return g.ID }
+
 // SealGrantSet sets g's ID from its content and returns g. Every field is written length-prefixed,
 // with nil apart from empty, so two sets that differ in anything differ in what is hashed. A set is
 // sealed once, after it is built and before it is interned.
