@@ -3759,6 +3759,39 @@ func TestStripUnsupportedFieldsFromRawBody_ToolChangeBlocks(t *testing.T) {
 	}
 }
 
+// BenchmarkAnthropicStreamingBetaHeaderFiltering compares custom-key filtering with
+// base-provider resolution, both without overrides.
+func BenchmarkAnthropicStreamingBetaHeaderFiltering(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Anthropic)
+	customProvider := schemas.ModelProvider("anthropic-credits")
+	headers := []string{AnthropicAdvisorBetaHeader}
+
+	for _, tc := range []struct {
+		name    string
+		headers []string
+	}{
+		{name: "no beta headers", headers: nil},
+		{name: "one beta header", headers: headers},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.Run("custom provider key", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					_ = FilterBetaHeadersForProvider(tc.headers, customProvider)
+				}
+			})
+			b.Run("resolved base provider", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					provider := schemas.ResolveBaseProvider(ctx, customProvider)
+					_ = FilterBetaHeadersForProvider(tc.headers, provider)
+				}
+			})
+		})
+	}
+}
+
 // BenchmarkStripUnsupportedFieldsFromRawBody_ToolChangeBlocks measures the strip on a
 // 400-turn Claude Code body for a provider without the beta (DeepSeek): the common case (nothing to strip, which pays only
 // the byte prefilter) and one carrying a system message with a tool_addition block.
@@ -5355,6 +5388,104 @@ func TestHandleAnthropicChatCompletionStreaming_PreservesEncodedPath(t *testing.
 	assertEncodedPathPreserved(t, rec.get())
 }
 
+func TestAnthropicProviderStreamingUsesBaseProviderForBetaFiltering(t *testing.T) {
+	tests := []struct {
+		name      string
+		base      schemas.ModelProvider
+		headers   []string
+		overrides map[string]bool
+		expected  string
+	}{
+		{
+			name:      "anthropic override disables advisor beta",
+			base:      schemas.Anthropic,
+			headers:   []string{AnthropicAdvisorBetaHeader},
+			overrides: map[string]bool{AnthropicAdvisorBetaHeaderPrefix: false},
+		},
+		{
+			name: "bedrock filters and rewrites beta headers",
+			base: schemas.Bedrock,
+			headers: []string{
+				AnthropicFallbackCreditBetaHeader,
+				AnthropicAdvisorBetaHeader,
+				"made-up-beta-2030",
+			},
+			expected: AnthropicFallbackCreditBetaHeaderAWS,
+		},
+	}
+	streamMethods := []struct {
+		name string
+		call func(*AnthropicProvider, *schemas.BifrostContext, schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
+	}{
+		{
+			name: "chat",
+			call: func(provider *AnthropicProvider, ctx *schemas.BifrostContext, key schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				request := &schemas.BifrostChatRequest{
+					Provider: schemas.Anthropic,
+					Model:    "claude-sonnet-4-6",
+					Input: []schemas.ChatMessage{{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")},
+					}},
+				}
+				return provider.ChatCompletionStream(ctx, truncationPassthroughPostHook, nil, key, request)
+			},
+		},
+		{
+			name: "responses",
+			call: func(provider *AnthropicProvider, ctx *schemas.BifrostContext, key schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				request := &schemas.BifrostResponsesRequest{
+					Provider: schemas.Anthropic,
+					Model:    "claude-sonnet-4-6",
+					Input:    makeSimpleInput("Hello!"),
+				}
+				return provider.ResponsesStream(ctx, truncationPassthroughPostHook, nil, key, request)
+			},
+		},
+	}
+
+	for _, method := range streamMethods {
+		for _, tc := range tests {
+			t.Run(method.name+"/"+tc.name, func(t *testing.T) {
+				gotHeader := make(chan string, 1)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gotHeader <- r.Header.Get(AnthropicBetaHeader)
+					w.Header().Set("Content-Type", "text/event-stream")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(anthropicMessageStart + anthropicTextDelta + anthropicMessageStop))
+				}))
+				defer server.Close()
+
+				provider := NewAnthropicProvider(&schemas.ProviderConfig{
+					NetworkConfig: schemas.NetworkConfig{
+						BaseURL:             server.URL,
+						BetaHeaderOverrides: tc.overrides,
+					},
+					CustomProviderConfig: &schemas.CustomProviderConfig{
+						CustomProviderKey: "anthropic-credits",
+						BaseProviderType:  tc.base,
+					},
+				}, truncationTestLogger{})
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tc.base)
+				ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+					AnthropicBetaHeader: tc.headers,
+				})
+				key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+
+				stream, bifrostErr := method.call(provider, ctx, key)
+				if bifrostErr != nil {
+					t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+				}
+				collectTruncationChunks(t, stream)
+				if got := <-gotHeader; got != tc.expected {
+					t.Errorf("anthropic-beta = %q, want %q", got, tc.expected)
+				}
+			})
+		}
+	}
+}
+
 // Automatic beta injection follows the strip gate and existing header policies.
 func TestSafeguardsBetaGatesAndOverrides(t *testing.T) {
 	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure, schemas.DeepSeek} {
@@ -5787,7 +5918,7 @@ func TestTypedAndRawSignalScansStayInLockstep(t *testing.T) {
 }
 
 // TestEveryOutboundPathSetsBetaHeadersIdentically stops the streaming and unary request
-// builders drifting apart on beta headers.
+// builders drifting apart on beta headers while letting streaming resolve custom providers.
 //
 // anthropic.go builds outbound requests in several places — unary chat, streaming chat,
 // unary responses, streaming responses — and each sets anthropic-beta with its own copy of
@@ -5796,7 +5927,9 @@ func TestTypedAndRawSignalScansStayInLockstep(t *testing.T) {
 // a feature working on one call shape and not the other.
 //
 // Rather than trust that they match, this extracts every block that sets the header and
-// requires them to be textually identical.
+// compares them after normalizing the provider argument. Unary requests already receive
+// the base provider; streaming resolves it here because providerName is also used for
+// passthrough gating.
 func TestEveryOutboundPathSetsBetaHeadersIdentically(t *testing.T) {
 	source, err := os.ReadFile("anthropic.go")
 	if err != nil {
@@ -5829,20 +5962,33 @@ func TestEveryOutboundPathSetsBetaHeadersIdentically(t *testing.T) {
 		at = append(at, i+1)
 	}
 
-	if len(blocks) < 2 {
-		t.Fatalf("found %d beta-header blocks in anthropic.go; expected several (unary and "+
-			"streaming, chat and responses). The guard has broken, or the call was renamed.", len(blocks))
+	if len(blocks) != 3 {
+		t.Fatalf("found %d beta-header blocks in anthropic.go; expected one unary and two "+
+			"streaming blocks. The guard has broken, or a call was added/removed.", len(blocks))
 	}
 
+	resolvedProvider := "schemas.ResolveBaseProvider(ctx, providerName)"
+	if strings.Contains(blocks[0], resolvedProvider) {
+		t.Errorf("unary beta-header block at anthropic.go:%d should keep its base provider argument", at[0])
+	}
 	for i := 1; i < len(blocks); i++ {
-		if blocks[i] != blocks[0] {
+		if !strings.Contains(blocks[i], resolvedProvider) {
+			t.Errorf("streaming beta-header block at anthropic.go:%d should resolve the base provider", at[i])
+		}
+	}
+
+	normalize := func(block string) string {
+		return strings.ReplaceAll(block, resolvedProvider, "providerName")
+	}
+	for i := 1; i < len(blocks); i++ {
+		if normalize(blocks[i]) != normalize(blocks[0]) {
 			t.Errorf("the beta-header block at anthropic.go:%d differs from the one at "+
-				"anthropic.go:%d, so these request paths can send different anthropic-beta "+
-				"values for the same request.\n\nfirst:\n%s\ndiffering:\n%s",
+				"anthropic.go:%d beyond resolving the provider, so these request paths can "+
+				"send different anthropic-beta values for the same request.\n\nfirst:\n%s\ndiffering:\n%s",
 				at[i], at[0], blocks[0], blocks[i])
 		}
 	}
-	t.Logf("%d outbound beta-header blocks, all identical (lines %v)", len(blocks), at)
+	t.Logf("%d outbound beta-header blocks have matching filtering logic (lines %v)", len(blocks), at)
 }
 
 // TestRawPathWithCallerBetaHeadersMatchesTypedPath covers prefix suppression.
