@@ -166,8 +166,8 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		// core session routing, and warm coordination its own shared table.
 		// Both fields are runtime-only and never persisted in plugin
 		// configuration.
-		routingConfig.Sessions = bifrostConfig.Shared.Sessions
-		routingConfig.Warm = bifrostConfig.Shared.Warm
+		routingConfig.Sessions = bifrostConfig.SharedTables.Sessions
+		routingConfig.Warm = bifrostConfig.SharedTables.Warm
 		// Routing rules read the virtual key and its live budget/rate-limit usage, so the
 		// governance plugin must already be registered when this runs.
 		governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](bifrostConfig, governancePluginNameFromContext(ctx))

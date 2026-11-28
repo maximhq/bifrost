@@ -159,7 +159,7 @@ func (c *Config) AttachLiveStore(live *livestore.Store) error {
 		return err
 	}
 	c.LiveStore = live
-	c.Shared = shared
+	c.SharedTables = shared
 	c.oauth2SigningKey = signingKey
 	live.Collections.Providers.Subscribe(func(_ context.Context, changes []livestore.Change[registry.Provider]) {
 		for _, change := range changes {

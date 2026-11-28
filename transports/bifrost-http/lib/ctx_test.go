@@ -1938,8 +1938,8 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 			t.Fatalf("Put %s: %v", rule.ID, err)
 		}
 	}
-	kv := config.Shared.Sessions
-	routingPlugin, err := routing.InitFromStore(ctx, &routing.Config{Sessions: kv, Warm: config.Shared.Warm}, logger, nil, ruleStore.Store, governancePlugin)
+	kv := config.SharedTables.Sessions
+	routingPlugin, err := routing.InitFromStore(ctx, &routing.Config{Sessions: kv, Warm: config.SharedTables.Warm}, logger, nil, ruleStore.Store, governancePlugin)
 	if err != nil {
 		t.Fatalf("routing.InitFromStore: %v", err)
 	}

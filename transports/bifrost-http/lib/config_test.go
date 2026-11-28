@@ -22731,8 +22731,8 @@ func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
 	require.NotNil(t, config.WebSocketConfig, "WebSocketConfig should have defaults")
 
 	// Verify the shared tables are created
-	require.NotNil(t, config.Shared, "shared tables should be created")
-	require.NotNil(t, config.Shared.Sessions, "the session table should be created")
+	require.NotNil(t, config.SharedTables, "shared tables should be created")
+	require.NotNil(t, config.SharedTables.Sessions, "the session table should be created")
 }
 
 // TestLoadConfig_NoConfigFile_ExistingDB tests LoadConfig with no config.json but existing DB from previous run

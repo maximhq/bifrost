@@ -884,10 +884,10 @@ type Config struct {
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
-	// Shared holds the live-store tables that keep state between requests: session state,
+	// SharedTables holds the live-store tables that keep state between requests: session state,
 	// routing's warm coordination, poll leases and transport-level protocol state.
 	// AttachLiveStore creates them on the live store.
-	Shared *SharedTables
+	SharedTables *SharedTables
 
 	// Process-wide feature flag store. Flags are code-declared via
 	// featureflags.Register; this struct holds the effective state with
@@ -9142,7 +9142,7 @@ func (c *Config) GetAsyncJobResultTTL() int {
 
 // GetSharedTables returns the tables that keep state between requests.
 func (c *Config) GetSharedTables() *SharedTables {
-	return c.Shared
+	return c.SharedTables
 }
 
 // Close gracefully shuts down all background components associated with the Config.
