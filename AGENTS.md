@@ -240,7 +240,7 @@ Client HTTP Request
   2. **Create or update**: re-read the written rows with retries, bounded by the request's deadline or by a small fixed budget when it has none. If the read still fails, keep the previous record and answer 500, saying the write was saved but not loaded.
   3. **Never write configuration to the database from live-store contents**: a partial update merges onto a database read, not onto the live record. State the process owns (usage, last reset, reset epochs, discovery status) is exempt.
 
-  Only an explicit delete removes a record without reading it. A reload or reconcile that finds a held record missing from a list it read earlier re-reads that record instead of removing it, since the list may be older than the record.
+  Only an explicit delete removes a record without reading it. A reload or reconcile that lists rows itself and finds a held record missing from that list passes it to `Refresh` as a plain ref, which re-reads it, instead of removing it, since the list may be older than the record. `RefreshKind` lists and publishes under every record lock, so its listing is never older than a record memory holds and its removals stand; it is meant for small kinds whose change messages name no row.
 
   A change applied on behalf of another process follows the same rules with `lib.DBLookupRetry()`. Every write path that re-reads (a collection's rows, or a deleted entity's holders) needs a test where that re-read fails, showing which of these outcomes it gives.
 
