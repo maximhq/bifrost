@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -992,5 +993,36 @@ func TestBuildRequest_TemplatedQueryHonorsStyleAndRequired(t *testing.T) {
 				require.ErrorContains(t, err, "tag_<key>", "base %s args %v", base, args)
 			}
 		}
+	}
+}
+
+// TestBuildRequest_CallTokenWinsOverStoredAuthorization: a per-call outbound token replaces the
+// Authorization a stored bearer, basic or Authorization API-key credential would send.
+func TestBuildRequest_CallTokenWinsOverStoredAuthorization(t *testing.T) {
+	ts, _ := newCaptureServer(t, nil)
+	spec := `{"openapi":"3.0.3","info":{"title":"t","version":"1"},
+"components":{"securitySchemes":{"Bearer":{"type":"http","scheme":"bearer"},"Basic":{"type":"http","scheme":"basic"},"AuthKey":{"type":"apiKey","in":"header","name":"Authorization"}}},
+"paths":{"/bearer":{"get":{"operationId":"bearer","security":[{"Bearer":[]}],"responses":{"200":{"description":"ok"}}}},
+"/basic":{"get":{"operationId":"basic","security":[{"Basic":[]}],"responses":{"200":{"description":"ok"}}}},
+"/key":{"get":{"operationId":"key","security":[{"AuthKey":[]}],"responses":{"200":{"description":"ok"}}}}}}`
+	exec, syn := inlineExecutor(t, ts, spec, func(o *ServerOptions) {
+		o.Credentials = map[string]schemas.MCPOpenAPICredential{
+			"Bearer":  {Value: schemas.NewSecretVar("stored-bearer")},
+			"Basic":   {Username: schemas.NewSecretVar("user"), Password: schemas.NewSecretVar("pass")},
+			"AuthKey": {Value: schemas.NewSecretVar("stored-key")},
+		}
+	})
+	callCtx, release := mcputils.WithCallToken(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), "call-token")
+	defer release()
+
+	for _, op := range []string{"bearer", "basic", "key"} {
+		req, err := exec.BuildRequest(callCtx, findTool(t, syn, op), map[string]any{})
+		require.NoError(t, err)
+		assert.Equal(t, "Bearer call-token", req.Header.Get("Authorization"), "%s: the call token wins", op)
+
+		req, err = exec.BuildRequest(context.Background(), findTool(t, syn, op), map[string]any{})
+		require.NoError(t, err)
+		assert.NotEqual(t, "Bearer call-token", req.Header.Get("Authorization"), "%s: without a token the stored credential is sent", op)
+		assert.NotEmpty(t, req.Header.Get("Authorization"), "%s", op)
 	}
 }

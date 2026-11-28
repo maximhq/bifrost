@@ -475,11 +475,11 @@ func TestPrepareToolExecution_CodeModeToolFollowsServerTypeOnSlug(t *testing.T) 
 	}
 
 	setServerTypeOnSlug(m, "codey", schemas.MCPServerTypeOnSlugDisabled)
-	_, _, _, err := m.prepareToolExecution(onClientSlug("codey"), request)
+	_, _, _, _, err := m.prepareToolExecution(onClientSlug("codey"), request)
 	assert.ErrorContains(t, err, "not permitted", "slug disabled: the code-mode tools are not served there")
 
 	setServerTypeOnSlug(m, "alpha", schemas.MCPServerTypeOnSlugEnabled)
-	_, _, release, err := m.prepareToolExecution(onClientSlug("alpha"), request)
+	_, _, _, release, err := m.prepareToolExecution(onClientSlug("alpha"), request)
 	require.NoError(t, err, "slug enabled: the code-mode tools are served there")
 	release()
 }
@@ -515,7 +515,7 @@ func TestPrepareToolExecution_CodeModeToolNeedsAReachableCodeModeClient(t *testi
 				delete(m.clientMap, "codey-id")
 				m.mu.Unlock()
 			}
-			_, _, release, err := m.prepareToolExecution(ctx, request)
+			_, _, _, release, err := m.prepareToolExecution(ctx, request)
 			if tc.wantErr {
 				assert.ErrorContains(t, err, "not permitted")
 				return
@@ -846,6 +846,14 @@ func BenchmarkDescribeUnservableInput(b *testing.B) {
 			}
 		})
 	}
+}
+
+// TestReleaseMCPRequestClearsOutboundToken proves a pooled request never carries a hook's token
+// into the next call that reuses it.
+func TestReleaseMCPRequestClearsOutboundToken(t *testing.T) {
+	req := &schemas.BifrostMCPRequest{ClientName: "c", OutboundToken: "tok"}
+	resetMCPRequest(req)
+	assert.Equal(t, schemas.BifrostMCPRequest{}, *req)
 }
 
 // A gateway caller's capabilities are declared upstream only where Bifrost can relay them.

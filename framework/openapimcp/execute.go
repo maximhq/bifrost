@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -287,6 +288,8 @@ func (e *Executor) BuildRequest(ctx context.Context, tool *Tool, args map[string
 	for name, values := range credHeaders.Header {
 		req.Header[name] = values
 	}
+	// Layer 4: a per-call outbound token replaces Authorization, whatever credential set it.
+	mcputils.ApplyOutboundToken(ctx, req.Header)
 	cookies.mergeMissing(argCookies)
 	for _, c := range credCookies {
 		cookies.set(c.Name, c.Value)
