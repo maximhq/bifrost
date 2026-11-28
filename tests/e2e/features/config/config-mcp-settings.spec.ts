@@ -72,4 +72,26 @@ test.describe('MCP Settings', () => {
       await coreConfigApi.updateClientConfig(request, { mcp_openapi_max_spec_mb: original })
     }
   })
+
+  test('should persist the free tool calls over budget switch', async ({ configSettingsPage, request }) => {
+    const field = 'mcp_allow_free_calls_when_budget_exhausted'
+    const initial = (await coreConfigApi.get(request)).client_config[field] === true
+    try {
+      await configSettingsPage.goto('mcp-gateway')
+      await configSettingsPage.dismissOnboardingWidget()
+      const freeCalls = configSettingsPage.mcpAllowFreeCallsWhenBudgetExhaustedSwitch
+      await expect(freeCalls).toBeVisible()
+      expect(await configSettingsPage.getSwitchState(freeCalls)).toBe(initial)
+
+      await freeCalls.click()
+      await configSettingsPage.mcpSettingsSaveBtn.click()
+      await configSettingsPage.waitForSuccessToast()
+
+      await configSettingsPage.goto('mcp-gateway')
+      expect(await configSettingsPage.getSwitchState(configSettingsPage.mcpAllowFreeCallsWhenBudgetExhaustedSwitch)).toBe(!initial)
+      expect((await coreConfigApi.get(request)).client_config[field]).toBe(!initial)
+    } finally {
+      await coreConfigApi.updateClientConfig(request, { [field]: initial })
+    }
+  })
 })

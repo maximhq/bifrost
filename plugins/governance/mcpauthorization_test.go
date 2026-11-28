@@ -1,10 +1,15 @@
 package governance
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // TestMCPExecutionAuthorization preserves governance while replacing only the exact tool permit.
@@ -93,23 +98,62 @@ func TestMCPExecutionAuthorizationRejectsForgedInjectedMarker(t *testing.T) {
 }
 
 // BenchmarkPreMCPHook measures governing one MCP call: a tool call, the baseline, beside the prompt
-// and resource reads now governed too (identity and limits, no per-tool permit).
+// and resource reads now governed too (identity and limits, no per-tool permit), and a tool call with
+// client.mcp_allow_free_calls_when_budget_exhausted on, which adds the price lookup.
 func BenchmarkPreMCPHook(b *testing.B) {
-	p := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
+	// The key grants the benchmarked tool, so every case times the allowed path.
+	grantsLocalRead := func() *configstoreTables.TableVirtualKey {
+		vk := buildVKForMCPStamping([]string{"read"})
+		vk.MCPConfigs[0].MCPClient = configstoreTables.TableMCPClient{ClientID: "local", Name: "local"}
+		return vk
+	}
+	p := newAccessTestPlugin(b, grantsLocalRead(), nil)
+	freeCallsOn := newAccessTestPlugin(b, grantsLocalRead(), nil)
+	freeCallsOn.mcpAllowFreeCallsWhenBudgetExhaustedFn = func() bool { return true }
+	// A priced entry for the benchmarked tool, so the free-call check takes the price lookup. Prices
+	// live on the MCP client's record, which the catalog reads from the live store.
+	value, ok := harnessDBs.Load(freeCallsOn.live)
+	if !ok {
+		b.Fatal("the plugin's live store was not built by a live harness")
+	}
+	db := value.(*gorm.DB)
+	var client configstoreTables.TableMCPClient
+	if err := db.Where("name = ?", "local").Limit(1).Find(&client).Error; err != nil {
+		b.Fatal(err)
+	}
+	if client.ClientID == "" {
+		client = configstoreTables.TableMCPClient{ClientID: "local", Name: "local", ConnectionType: string(schemas.MCPConnectionTypeHTTP)}
+	}
+	client.ToolPricing = map[string]float64{"read": 0}
+	if err := db.Save(&client).Error; err != nil {
+		b.Fatal(err)
+	}
+	if err := freeCallsOn.live.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindMCPClient, ID: client.ClientID}}); err != nil {
+		b.Fatal(err)
+	}
+	catalog, err := mcpcatalog.Init(context.Background(), freeCallsOn.live, NewMockLogger())
+	if err != nil {
+		b.Fatal(err)
+	}
+	freeCallsOn.mcpCatalog = catalog
 	tool := "local-read"
+	toolCall := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "local", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tool, Arguments: "{}"}}}
 	for _, tc := range []struct {
-		name string
-		req  *schemas.BifrostMCPRequest
+		name   string
+		plugin *GovernancePlugin
+		req    *schemas.BifrostMCPRequest
 	}{
-		{"tool-call", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "local", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tool, Arguments: "{}"}}}},
-		{"prompt-get", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeGetPrompt, ClientName: "local", BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "local-review"}}},
-		{"resource-read", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeReadResource, ClientName: "local", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "file:///handbook.md"}}},
+		{"tool-call", p, toolCall},
+		{"prompt-get", p, &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeGetPrompt, ClientName: "local", BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "local-review"}}},
+		{"resource-read", p, &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeReadResource, ClientName: "local", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "file:///handbook.md"}}},
+		{"tool-call-free-calls-on", freeCallsOn, toolCall},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, _, err := p.PreMCPHook(presentCtx(mcpTestVKValue), tc.req); err != nil {
-					b.Fatal(err)
+				// A refused call would time the refusal, not the governed path.
+				if _, short, err := tc.plugin.PreMCPHook(presentCtx(mcpTestVKValue), tc.req); err != nil || short != nil {
+					b.Fatalf("err=%v short=%+v", err, short)
 				}
 			}
 		})

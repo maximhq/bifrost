@@ -2063,12 +2063,21 @@ func (s *BifrostHTTPServer) NarrowListModelsProviders(ctx *schemas.BifrostContex
 //
 // Without governance there is nothing to evaluate against and nothing to restrict, which is why a
 // missing plugin answers with no access rather than with access permitting nothing.
+//
+// With client.mcp_allow_free_calls_when_budget_exhausted on, admission leaves budgets out: no tool is
+// known yet, and a call that is charged nothing may run over an exhausted budget. Each tools/call is
+// still held to the budget by PreMCPHook once its tool, and so its price, is known; access, rate and
+// request limits are checked here either way.
 func (s *BifrostHTTPServer) AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) (schemas.Access, *schemas.BifrostError) {
 	governancePlugin, err := s.getGovernancePlugin()
 	if err != nil {
 		return nil, nil
 	}
-	if _, refused := governancePlugin.Evaluate(ctx, &governance.EvaluationRequest{RequestType: schemas.MCPToolExecutionRequest}); refused != nil {
+	admission := &governance.EvaluationRequest{
+		RequestType:     schemas.MCPToolExecutionRequest,
+		SkipBudgetCheck: s.Config.ShouldAllowFreeMCPCallsWhenBudgetExhausted(),
+	}
+	if _, refused := governancePlugin.Evaluate(ctx, admission); refused != nil {
 		return nil, refused
 	}
 	// Evaluating refuses a request that carries no grant, so one that was admitted carries the

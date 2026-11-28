@@ -480,6 +480,7 @@ bifrost:
     # mcpClientMetadataUrl: "https://public.example.com/bifrost/client.json" # Where you host Bifrost's Client ID Metadata Document for MCP servers that cannot reach Bifrost; unset serves it under mcpExternalClientUrl. Supports env.VAR_NAME and vault references
     # bifrostUrl: "https://bifrost.example.com/bifrost" # Gateway's public base URL as clients reach it, including server.basePath. Required for /v1/mcp; unset, /v1/mcp answers 503. Supports env.VAR_NAME and vault references
     # bifrostMcpAllowWrites: true            # Whether /v1/mcp serves non-GET /api operations (configuration changes) as tools; inference, batch and file routes are served either way
+    # mcpAllowFreeCallsWhenBudgetExhausted: false # Let MCP calls that cost nothing run over an exhausted budget; priced calls, rate and request limits are still enforced
     # mcpOpenapiMaxSpecMb: 32                # Size limit in MiB on an openapi MCP client's spec (inline, specFile or fetched from specUrl); 0 = built-in default (32), max 256. Parsing holds several times the spec's size in memory
     # skillsExternalClientUrl: "https://bifrost.example.com" # Public base URL for skills marketplaces; unset disables marketplace serving, not skill management or downloads. Supports env.VAR_NAME and vault references
     # a2aPrivateAllowlist: ["research.internal"] # Private hosts, IPs, or CIDRs permitted for Agent Gateway outbound requests

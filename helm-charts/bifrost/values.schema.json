@@ -1031,6 +1031,11 @@
               "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject.",
               "default": false
             },
+            "mcpAllowFreeCallsWhenBudgetExhausted": {
+              "type": "boolean",
+              "description": "When true, an MCP tool call, prompt read or resource read that costs nothing (no MCP tool pricing entry, or a cost per execution of 0) is not refused by an exhausted budget. Rate limits, request limits and access rules still apply, and priced tool calls are still refused.",
+              "default": false
+            },
             "mcpEnableTempTokenAuth": {
               "type": "boolean",
               "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth auth pages.",

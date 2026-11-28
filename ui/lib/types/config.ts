@@ -958,6 +958,8 @@ export interface CoreConfig {
 	bifrost_mcp_allow_writes?: boolean;
 	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
+	// MCP calls that cost nothing are not refused by an exhausted budget; rate and request limits still apply.
+	mcp_allow_free_calls_when_budget_exhausted?: boolean;
 	mcp_oauth_private_allowlist?: string[];
 	a2a_private_allowlist?: string[];
 	async_job_result_ttl: number;
