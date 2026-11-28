@@ -1428,16 +1428,41 @@ func TestDeepCopyChatTool_PreservesMCPMetadata(t *testing.T) {
 	original := ChatTool{
 		Type:     ChatToolTypeFunction,
 		Function: &ChatToolFunction{Name: "chart"},
-		MCP:      &MCPToolMetadata{Title: "Chart", Icons: []mcp.Icon{{Src: "https://example.com/c.png"}}, OutputSchema: json.RawMessage(`{"type":"object"}`)},
+		MCP:      &MCPToolMetadata{Title: "Chart", Icons: []mcp.Icon{{Src: "https://example.com/c.png"}}, OutputSchema: json.RawMessage(`{"type":"object"}`), HasParamHeaders: Ptr(true)},
 	}
 	copied := DeepCopyChatTool(original)
-	if copied.MCP == nil || copied.MCP.Title != "Chart" || len(copied.MCP.Icons) != 1 || string(copied.MCP.OutputSchema) != `{"type":"object"}` {
+	if copied.MCP == nil || copied.MCP.Title != "Chart" || len(copied.MCP.Icons) != 1 || string(copied.MCP.OutputSchema) != `{"type":"object"}` || copied.MCP.HasParamHeaders == nil || !*copied.MCP.HasParamHeaders {
 		t.Fatalf("metadata lost in copy: %+v", copied.MCP)
 	}
 	copied.MCP.Icons[0].Src = "changed"
 	copied.MCP.OutputSchema[0] = '['
-	if original.MCP.Icons[0].Src != "https://example.com/c.png" || original.MCP.OutputSchema[0] != '{' {
+	*copied.MCP.HasParamHeaders = false
+	if original.MCP.Icons[0].Src != "https://example.com/c.png" || original.MCP.OutputSchema[0] != '{' || !*original.MCP.HasParamHeaders {
 		t.Fatal("copy shares memory with the original")
+	}
+}
+
+func TestApplyToolDetails_BackfillsHasParamHeadersOnLegacyRecord(t *testing.T) {
+	var details map[string]MCPToolDetails
+	if err := json.Unmarshal([]byte(`{"srv-t":{"metadata":{"title":"Saved"}}}`), &details); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tools := map[string]ChatTool{
+		"srv-t": {
+			Type: ChatToolTypeFunction,
+			Function: &ChatToolFunction{
+				Name: "t",
+				Parameters: &ToolFunctionParameters{
+					Type:       "object",
+					Properties: OrderedMapFromMap(map[string]any{"action": map[string]any{"type": "string", "x-mcp-header": "Action"}}),
+				},
+			},
+		},
+	}
+	ApplyToolDetails(tools, details)
+	meta := tools["srv-t"].MCP
+	if meta == nil || meta.HasParamHeaders == nil || !*meta.HasParamHeaders {
+		t.Fatalf("expected HasParamHeaders=true after legacy restore, got %+v", meta)
 	}
 }
 

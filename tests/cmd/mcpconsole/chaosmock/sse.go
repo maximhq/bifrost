@@ -160,7 +160,7 @@ func (s *Server) ServeSSEMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := s.Handle(&req, sessionID, sess.Identity, f)
+	res := s.HandleWithHeaders(&req, sessionID, sess.Identity, f, r.Header)
 
 	switch {
 	case res.HTTPStatus != 0:

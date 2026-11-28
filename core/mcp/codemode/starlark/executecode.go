@@ -379,14 +379,16 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		// empty mutated args become an empty map, and a parse failure is a hard
 		// error rather than a silent fallback.
 		effectiveToolName := originalToolName
+		effectivePrefixedName := toolName
 		effectiveArgs := args
 		if preReq != nil && preReq.ChatAssistantMessageToolCall != nil {
 			toolCallReq = *preReq.ChatAssistantMessageToolCall
 			if toolCallReq.Function.Name != nil && *toolCallReq.Function.Name != "" {
-				effectiveToolName = stripClientPrefix(*toolCallReq.Function.Name, clientName)
+				effectivePrefixedName = *toolCallReq.Function.Name
+				effectiveToolName = stripClientPrefix(effectivePrefixedName, clientName)
 				// The pre-hook may have rewritten the name: authorize the tool that
 				// CallTool will actually invoke, not only the one the code asked for.
-				if err := codemcp.AuthorizeCodeModeToolCall(nestedCtx, *toolCallReq.Function.Name, client.ExecutionConfig); err != nil {
+				if err := codemcp.AuthorizeCodeModeToolCall(nestedCtx, effectivePrefixedName, client.ExecutionConfig); err != nil {
 					return nil, err
 				}
 			}
@@ -417,6 +419,11 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 				Name:      effectiveToolName,
 				Arguments: effectiveArgs,
 			},
+		}
+		if s.clientManager != nil && client.ExecutionConfig != nil {
+			if t, ok := s.clientManager.GetToolsForClient(nestedCtx, client.ExecutionConfig.ID)[effectivePrefixedName]; ok {
+				codemcp.ApplyParamHeaders(conn, &callRequest, &t)
+			}
 		}
 
 		// The socket wait is upstream time, as for a direct tool call; overlapping calls count once.

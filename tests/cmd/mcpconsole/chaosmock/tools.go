@@ -51,6 +51,10 @@ type Tool struct {
 	// environment the system under test spawned its subprocess with.
 	ReplyEnv string `json:"reply_env,omitempty"`
 
+	// ReplyHeaders answers with the canonical request headers received on the
+	// tools/call HTTP request as JSON {"tool": ..., "headers": {...}}.
+	ReplyHeaders bool `json:"reply_headers,omitempty"`
+
 	// Progress is the notifications/progress a call reports, in order, before its result. They are
 	// sent only when the call carries a progressToken, as MCP asks of a server.
 	Progress []ProgressStep `json:"progress,omitempty"`

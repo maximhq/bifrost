@@ -925,6 +925,13 @@ func (m *ToolsManager) executeToolInternal(
 			Arguments: arguments,
 		},
 	}
+	var cachedTool *schemas.ChatTool
+	if m.clientManager != nil && executionConfig != nil {
+		if t, ok := m.clientManager.GetToolsForClient(ctx, executionConfig.ID)[toolName]; ok {
+			cachedTool = &t
+		}
+	}
+	ApplyParamHeaders(clientConn, &callRequest, cachedTool)
 
 	// ToolCallRetryConfig, not ConnectRetryConfig/PerCallConnectRetryConfig:
 	// unlike a bare connect, this call may not be idempotent, so it only gets
@@ -1134,6 +1141,11 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 			return ok
 		},
 		func(ctx context.Context, conn *client.Client) error {
+			if m.clientManager != nil && executionConfig != nil {
+				if t, ok := m.clientManager.GetToolsForClient(ctx, executionConfig.ID)[toolName]; ok {
+					ApplyParamHeaders(conn, &callRequest, &t)
+				}
+			}
 			var err error
 			retryResponse, err = CallUpstreamTool(ctx, conn, callRequest, true)
 			return err

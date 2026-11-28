@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -1012,6 +1013,175 @@ func upstreamContext(ctx context.Context, conn *client.Client, relayed mcp.Clien
 	return client.WithRequestClientCapabilities(ctx, answerable), answerable, hasCaller
 }
 
+// ApplyParamHeaders attaches SEP-2243 Mcp-Param-* headers derived from tool's
+// x-mcp-header input schema annotations when conn speaks a modern protocol
+// revision (2026-07-28+). mcp-go's Client only mirrors those headers when the
+// same Client instance ran tools/list; per-call ephemeral connections, reconnects,
+// and discovery-cached tools skip tools/list on the executing Client.
+//
+// Request.Method is cleared when outbound headers are attached because mcp-go's
+// outboundHeader drops Request.Header whenever Request.Method is non-empty
+// (callToolOnce passes MethodToolsCall directly).
+func clearParamHeaders(req *mcp.CallToolRequest) {
+	if req.Request.Method == "" {
+		req.Request.Method = string(mcp.MethodToolsCall)
+	}
+	if len(req.Header) == 0 {
+		return
+	}
+	for name := range req.Header {
+		if strings.HasPrefix(strings.ToLower(name), "mcp-param-") {
+			delete(req.Header, name)
+		}
+	}
+}
+
+func ApplyParamHeaders(conn *client.Client, req *mcp.CallToolRequest, tool *schemas.ChatTool) {
+	if conn == nil || req == nil || tool == nil || tool.Function == nil || tool.Function.Parameters == nil {
+		return
+	}
+	if tool.MCP != nil && tool.MCP.HasParamHeaders != nil {
+		if !*tool.MCP.HasParamHeaders {
+			clearParamHeaders(req)
+			return
+		}
+	} else if !schemas.OrderedMapHasMCPHeader(tool.Function.Parameters.Properties) {
+		clearParamHeaders(req)
+		return
+	}
+	if !mcp.IsModernProtocol(conn.ProtocolVersion()) {
+		clearParamHeaders(req)
+		return
+	}
+	props := sanitizeParamHeaderProperties(tool.Function.Parameters.Properties.ToMap())
+	if len(props) == 0 {
+		clearParamHeaders(req)
+		return
+	}
+	encoded, err := json.Marshal(req.Params)
+	if err != nil {
+		clearParamHeaders(req)
+		return
+	}
+	mcpTool := &mcp.Tool{
+		Name: req.Params.Name,
+		InputSchema: mcp.ToolInputSchema{
+			Type:       tool.Function.Parameters.Type,
+			Properties: props,
+		},
+	}
+	paramHeaders := mcp.GenerateParamHeaders(mcpTool, encoded)
+	if len(paramHeaders) == 0 {
+		clearParamHeaders(req)
+		return
+	}
+	clearParamHeaders(req)
+	req.Request.Method = ""
+	if req.Header == nil {
+		req.Header = make(http.Header, len(paramHeaders))
+	}
+	for name, value := range paramHeaders {
+		req.Header.Set(name, value)
+	}
+}
+
+func sanitizeParamHeaderProperties(props map[string]any) map[string]any {
+	sanitized := make(map[string]any, len(props))
+	for key, val := range props {
+		if clean, keep := sanitizeParamHeaderSchema(val); keep {
+			sanitized[key] = clean
+		}
+	}
+	return sanitized
+}
+
+func sanitizeParamHeaderSchema(schema any) (any, bool) {
+	switch typed := schema.(type) {
+	case bool:
+		return nil, false
+	case *schemas.OrderedMap:
+		if typed == nil {
+			return nil, false
+		}
+		return sanitizeParamHeaderSchemaMap(typed.ToMap()), true
+	case schemas.OrderedMap:
+		return sanitizeParamHeaderSchemaMap(typed.ToMap()), true
+	case map[string]any:
+		return sanitizeParamHeaderSchemaMap(typed), true
+	default:
+		return schema, true
+	}
+}
+
+func sanitizeParamHeaderSchemaMap(schema map[string]any) map[string]any {
+	copyMap := make(map[string]any, len(schema))
+	for key, val := range schema {
+		if key == "properties" {
+			switch props := val.(type) {
+			case map[string]any:
+				copyMap[key] = sanitizeParamHeaderProperties(props)
+			case *schemas.OrderedMap:
+				if props != nil {
+					copyMap[key] = sanitizeParamHeaderProperties(props.ToMap())
+				}
+			case schemas.OrderedMap:
+				copyMap[key] = sanitizeParamHeaderProperties(props.ToMap())
+			default:
+				copyMap[key] = val
+			}
+			continue
+		}
+		copyMap[key] = val
+	}
+	return copyMap
+}
+
+func schemaHasMCPHeader(props map[string]any) bool {
+	for _, prop := range props {
+		if valueHasMCPHeader(prop) {
+			return true
+		}
+	}
+	return false
+}
+
+func valueHasMCPHeader(v any) bool {
+	switch typed := v.(type) {
+	case map[string]any:
+		if headerName, ok := typed["x-mcp-header"].(string); ok && strings.TrimSpace(headerName) != "" {
+			return true
+		}
+		for _, nested := range typed {
+			if valueHasMCPHeader(nested) {
+				return true
+			}
+		}
+	case *schemas.OrderedMap:
+		return schemas.OrderedMapHasMCPHeader(typed)
+	case schemas.OrderedMap:
+		return schemas.OrderedMapHasMCPHeader(&typed)
+	case []any:
+		for _, item := range typed {
+			if valueHasMCPHeader(item) {
+				return true
+			}
+		}
+	case []schemas.OrderedMap:
+		for i := range typed {
+			if schemas.OrderedMapHasMCPHeader(&typed[i]) {
+				return true
+			}
+		}
+	case []map[string]any:
+		for _, item := range typed {
+			if valueHasMCPHeader(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // CallUpstreamTool sends call on conn. With relay, a gateway caller gets an upstream's input_required
 // result back unchanged when it can answer every request in it, or when the upstream only asks it to
 // retry later, and its retry's answers and requestState are sent upstream. Anyone else gets an
@@ -1724,8 +1894,9 @@ func fixBranchArraySchemas(branch map[string]any, logger schemas.Logger) {
 	}
 }
 
-// toolMetadata is the title, icons and output schema mcpTool declares, or nil when it declares none.
+// toolMetadata is the title, icons, output schema and header-binding flag mcpTool declares, or nil when it declares none.
 func toolMetadata(mcpTool *mcp.Tool) *schemas.MCPToolMetadata {
+	hasParamHeaders := mcpTool != nil && schemaHasMCPHeader(mcpTool.InputSchema.Properties)
 	outputSchema := mcpTool.RawOutputSchema
 	if outputSchema == nil && declaresOutputSchema(mcpTool.OutputSchema) {
 		outputSchema, _ = json.Marshal(mcpTool.OutputSchema)
@@ -1738,10 +1909,16 @@ func toolMetadata(mcpTool *mcp.Tool) *schemas.MCPToolMetadata {
 	if mcpTool.Meta != nil && (mcpTool.Meta.ProgressToken != nil || len(mcpTool.Meta.AdditionalFields) > 0) {
 		meta, _ = json.Marshal(mcpTool.Meta)
 	}
-	if mcpTool.Title == "" && len(mcpTool.Icons) == 0 && outputSchema == nil && meta == nil {
+	if mcpTool.Title == "" && len(mcpTool.Icons) == 0 && outputSchema == nil && meta == nil && !hasParamHeaders {
 		return nil
 	}
-	metadata := &schemas.MCPToolMetadata{Title: mcpTool.Title, Icons: mcpTool.Icons, OutputSchema: outputSchema, Meta: meta}
+	metadata := &schemas.MCPToolMetadata{
+		Title:           mcpTool.Title,
+		Icons:           mcpTool.Icons,
+		OutputSchema:    outputSchema,
+		Meta:            meta,
+		HasParamHeaders: schemas.Ptr(hasParamHeaders),
+	}
 	if meta != nil {
 		metadata.UIResourceURI, metadata.Visibility = appsUIMeta(meta)
 	}

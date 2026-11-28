@@ -2935,3 +2935,97 @@ func BenchmarkExecuteChatTool_PerCallHTTPUpstream(b *testing.B) {
 		})
 	}
 }
+
+// TestPerCallConnection_SendsParamHeadersAtModernProtocol verifies that tools/call over an
+// ephemeral per-call HTTP connection mirrors x-mcp-header annotated parameters into Mcp-Param-*
+// headers at protocol version 2026-07-28, and omits them on legacy protocol revisions (#10557).
+func TestPerCallConnection_SendsParamHeadersAtModernProtocol(t *testing.T) {
+	newAnnotatedUpstream := func() *server.MCPServer {
+		upstream := server.NewMCPServer("annotated-upstream", "1.0.0", server.WithToolCapabilities(true))
+		tool := mcpgo.NewTool("execute_action")
+		tool.InputSchema = mcpgo.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]any{
+				"action": map[string]any{
+					"type":         "string",
+					"x-mcp-header": "Action",
+				},
+				"params": map[string]any{
+					"type": "object",
+				},
+			},
+			Required: []string{"action"},
+		}
+		upstream.AddTool(tool, func(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			action, _ := req.GetArguments()["action"].(string)
+			return mcpgo.NewToolResultText(action), nil
+		})
+		return upstream
+	}
+
+	cases := []struct {
+		name           string
+		serverOpts     []server.StreamableHTTPOption
+		wantHeader     string
+		wantHeaderSent bool
+	}{
+		{
+			name:           "modern 2026-07-28 sends Mcp-Param-Action",
+			wantHeader:     "project.list",
+			wantHeaderSent: true,
+		},
+		{
+			name:           "legacy 2025-11-25 omits Mcp-Param-Action",
+			serverOpts:     []server.StreamableHTTPOption{server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125)},
+			wantHeaderSent: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var seenCallHeaders []http.Header
+			handler := server.NewStreamableHTTPServer(newAnnotatedUpstream(), tc.serverOpts...)
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(strings.NewReader(string(body)))
+				if strings.Contains(string(body), `"tools/call"`) {
+					mu.Lock()
+					seenCallHeaders = append(seenCallHeaders, r.Header.Clone())
+					mu.Unlock()
+				}
+				handler.ServeHTTP(w, r)
+			}))
+			t.Cleanup(ts.Close)
+
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			cfg := &schemas.MCPClientConfig{
+				ID:               "percall-param-headers",
+				Name:             "gitlab",
+				AuthType:         schemas.MCPAuthTypeHeaders,
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar(ts.URL),
+				ToolsToExecute:   []string{"*"},
+			}
+			require.NoError(t, m.AddClient(context.Background(), cfg))
+			t.Cleanup(func() { _ = m.RemoveClient(cfg.ID) })
+
+			msg, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("call-1"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("gitlab-execute_action"), Arguments: `{"action":"project.list","params":{}}`},
+			})
+			require.Nil(t, bErr)
+			require.NotNil(t, msg)
+			require.Equal(t, "project.list", *msg.Content.ContentStr)
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, seenCallHeaders, 1)
+			if tc.wantHeaderSent {
+				assert.Equal(t, tc.wantHeader, seenCallHeaders[0].Get("Mcp-Param-Action"))
+			} else {
+				assert.Empty(t, seenCallHeaders[0].Values("Mcp-Param-Action"))
+			}
+		})
+	}
+}

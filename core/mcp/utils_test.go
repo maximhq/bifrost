@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/mcpvouch"
@@ -1338,4 +1340,309 @@ func TestConvertMCPToolToBifrostSchema_MissingDescription(t *testing.T) {
 	bifrostTool = convertMCPToolToBifrostSchema(mcpTool, defaultLogger)
 	require.NotNil(t, bifrostTool.Function.Description)
 	assert.Equal(t, "Search the web", *bifrostTool.Function.Description)
+}
+
+func TestToolMetadata_HasParamHeaders(t *testing.T) {
+	plain := mcp.NewTool("plain")
+	assert.Nil(t, toolMetadata(&plain))
+
+	withTitle := mcp.NewTool("with_title")
+	withTitle.Title = "Plain Tool"
+	withTitleMeta := toolMetadata(&withTitle)
+	require.NotNil(t, withTitleMeta)
+	require.NotNil(t, withTitleMeta.HasParamHeaders)
+	assert.False(t, *withTitleMeta.HasParamHeaders)
+
+	top := mcp.NewTool("top")
+	top.InputSchema.Properties = map[string]any{
+		"action": map[string]any{"type": "string", "x-mcp-header": "Action"},
+	}
+	topMeta := toolMetadata(&top)
+	require.NotNil(t, topMeta)
+	require.NotNil(t, topMeta.HasParamHeaders)
+	assert.True(t, *topMeta.HasParamHeaders)
+
+	nested := mcp.NewTool("nested")
+	nested.InputSchema.Properties = map[string]any{
+		"filter": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"tenant": map[string]any{"type": "string", "x-mcp-header": "Tenant"},
+			},
+		},
+	}
+	nestedMeta := toolMetadata(&nested)
+	require.NotNil(t, nestedMeta)
+	require.NotNil(t, nestedMeta.HasParamHeaders)
+	assert.True(t, *nestedMeta.HasParamHeaders)
+
+	converted := convertMCPToolToBifrostSchema(&top, defaultLogger)
+	require.NotNil(t, converted.MCP)
+	require.NotNil(t, converted.MCP.HasParamHeaders)
+	assert.True(t, *converted.MCP.HasParamHeaders)
+	copied := schemas.DeepCopyChatTool(converted)
+	require.NotNil(t, copied.MCP)
+	require.NotNil(t, copied.MCP.HasParamHeaders)
+	assert.True(t, *copied.MCP.HasParamHeaders)
+
+	// Upgrade regression: a legacy persisted record with metadata (e.g. Title)
+	// and nil HasParamHeaders still mirrors Mcp-Param-* headers on 2026-07-28,
+	// both when restored via ApplyToolDetails and directly in ApplyParamHeaders.
+	var legacyDetails map[string]schemas.MCPToolDetails
+	require.NoError(t, json.Unmarshal([]byte(`{"srv-top":{"metadata":{"title":"Legacy"}}}`), &legacyDetails))
+	restoredTools := map[string]schemas.ChatTool{
+		"srv-top": {
+			Type:     schemas.ChatToolTypeFunction,
+			Function: converted.Function,
+		},
+	}
+	schemas.ApplyToolDetails(restoredTools, legacyDetails)
+	restored := restoredTools["srv-top"]
+	require.NotNil(t, restored.MCP)
+	require.NotNil(t, restored.MCP.HasParamHeaders)
+	assert.True(t, *restored.MCP.HasParamHeaders)
+
+	srv := server.NewMCPServer("legacy-restore", "1.0.0")
+	cl, err := client.NewInProcessClient(srv)
+	require.NoError(t, err)
+	require.NoError(t, cl.Start(context.Background()))
+	t.Cleanup(func() { _ = cl.Close() })
+	_, err = cl.Initialize(context.Background(), mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcp.Implementation{Name: "test", Version: "1.0.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	req := mcp.CallToolRequest{
+		Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+		Params:  mcp.CallToolParams{Name: "top", Arguments: map[string]any{"action": "list"}},
+	}
+	// Simulate direct legacy ChatTool where ApplyToolDetails has not backfilled nil.
+	restoredDirect := restored
+	restoredDirect.MCP = &schemas.MCPToolMetadata{Title: "Legacy"}
+	ApplyParamHeaders(cl, &req, &restoredDirect)
+	assert.Equal(t, "list", req.Header.Get("Mcp-Param-Action"))
+}
+
+func TestApplyParamHeaders_ClearsStaleHeadersOnLegacyRetry(t *testing.T) {
+	newConn := func(version string) *client.Client {
+		srv := server.NewMCPServer("retry-proto", "1.0.0")
+		cl, err := client.NewInProcessClient(srv)
+		require.NoError(t, err)
+		require.NoError(t, cl.Start(context.Background()))
+		t.Cleanup(func() { _ = cl.Close() })
+		_, err = cl.Initialize(context.Background(), mcp.InitializeRequest{
+			Params: mcp.InitializeParams{
+				ProtocolVersion: version,
+				ClientInfo:      mcp.Implementation{Name: "test", Version: "1.0.0"},
+			},
+		})
+		require.NoError(t, err)
+		return cl
+	}
+	modernConn := newConn(mcp.LATEST_PROTOCOL_VERSION)
+	legacyConn := newConn("2025-11-25")
+
+	tool := &schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: "action_tool",
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]any{
+					"action": map[string]any{"type": "string", "x-mcp-header": "Action"},
+				}),
+			},
+		},
+		MCP: &schemas.MCPToolMetadata{HasParamHeaders: schemas.Ptr(true)},
+	}
+
+	req := mcp.CallToolRequest{
+		Request: mcp.Request{
+			Method: string(mcp.MethodToolsCall),
+		},
+		Header: http.Header{"X-Keep": []string{"1"}},
+		Params: mcp.CallToolParams{Name: "action_tool", Arguments: map[string]any{"action": "list"}},
+	}
+
+	ApplyParamHeaders(modernConn, &req, tool)
+	assert.Equal(t, "list", req.Header.Get("Mcp-Param-Action"))
+	assert.Equal(t, "", req.Request.Method)
+
+	ApplyParamHeaders(legacyConn, &req, tool)
+	assert.Empty(t, req.Header.Values("Mcp-Param-Action"))
+	assert.Equal(t, "1", req.Header.Get("X-Keep"))
+	assert.Equal(t, string(mcp.MethodToolsCall), req.Request.Method)
+}
+
+func TestApplyParamHeaders_BooleanSiblingProperty(t *testing.T) {
+	srv := server.NewMCPServer("bool-schema", "1.0.0")
+	cl, err := client.NewInProcessClient(srv)
+	require.NoError(t, err)
+	require.NoError(t, cl.Start(context.Background()))
+	t.Cleanup(func() { _ = cl.Close() })
+	_, err = cl.Initialize(context.Background(), mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcp.Implementation{Name: "test", Version: "1.0.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	nestedProps := schemas.OrderedMapFromMap(map[string]any{
+		"mode":    map[string]any{"type": "string", "x-mcp-header": "Mode"},
+		"ignored": false,
+	})
+	tool := &schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: "action_tool",
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]any{
+					"action": map[string]any{"type": "string", "x-mcp-header": "Action"},
+					"extra":  true,
+					"nested": map[string]any{
+						"type":       "object",
+						"properties": nestedProps,
+					},
+				}),
+			},
+		},
+		MCP: &schemas.MCPToolMetadata{HasParamHeaders: schemas.Ptr(true)},
+	}
+
+	req := mcp.CallToolRequest{
+		Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+		Params: mcp.CallToolParams{
+			Name: "action_tool",
+			Arguments: map[string]any{
+				"action": "list",
+				"extra":  "ignored",
+				"nested": map[string]any{"mode": "fast", "ignored": true},
+			},
+		},
+	}
+
+	ApplyParamHeaders(cl, &req, tool)
+	assert.Equal(t, "list", req.Header.Get("Mcp-Param-Action"))
+	assert.Equal(t, "fast", req.Header.Get("Mcp-Param-Mode"))
+
+	extraVal, hasExtra := tool.Function.Parameters.Properties.Get("extra")
+	assert.True(t, hasExtra)
+	assert.Equal(t, true, extraVal)
+	ignoredVal, hasIgnored := nestedProps.Get("ignored")
+	assert.True(t, hasIgnored)
+	assert.Equal(t, false, ignoredVal)
+}
+
+func BenchmarkApplyParamHeaders(b *testing.B) {
+	newBenchClient := func(protocolVersion string) *client.Client {
+		srv := server.NewMCPServer("bench", "1.0.0")
+		cl, err := client.NewInProcessClient(srv)
+		require.NoError(b, err)
+		require.NoError(b, cl.Start(context.Background()))
+		b.Cleanup(func() { _ = cl.Close() })
+		_, err = cl.Initialize(context.Background(), mcp.InitializeRequest{
+			Params: mcp.InitializeParams{
+				ProtocolVersion: protocolVersion,
+				ClientInfo:      mcp.Implementation{Name: "bench", Version: "1.0.0"},
+			},
+		})
+		require.NoError(b, err)
+		return cl
+	}
+	modernConn := newBenchClient(mcp.LATEST_PROTOCOL_VERSION)
+	legacyConn := newBenchClient("2025-11-25")
+
+	unannotatedWithMeta := &schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: "echo",
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]any{
+					"message": map[string]any{"type": "string"},
+					"count":   map[string]any{"type": "integer"},
+				}),
+			},
+		},
+		MCP: &schemas.MCPToolMetadata{Title: "Echo", HasParamHeaders: schemas.Ptr(false)},
+	}
+	unannotatedPlain := &schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: "echo",
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]any{
+					"message": map[string]any{"type": "string"},
+					"count":   map[string]any{"type": "integer"},
+				}),
+			},
+		},
+	}
+	annotated := &schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: "action_tool",
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]any{
+					"action": map[string]any{"type": "string", "x-mcp-header": "Action"},
+				}),
+			},
+		},
+		MCP: &schemas.MCPToolMetadata{HasParamHeaders: schemas.Ptr(true)},
+	}
+
+	b.Run("unannotated_cached_metadata", func(b *testing.B) {
+		req := mcp.CallToolRequest{
+			Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+			Params:  mcp.CallToolParams{Name: "echo", Arguments: map[string]any{"message": "hi", "count": 1}},
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			ApplyParamHeaders(modernConn, &req, unannotatedWithMeta)
+		}
+	})
+
+	b.Run("unannotated_nil_metadata", func(b *testing.B) {
+		req := mcp.CallToolRequest{
+			Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+			Params:  mcp.CallToolParams{Name: "echo", Arguments: map[string]any{"message": "hi", "count": 1}},
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			ApplyParamHeaders(modernConn, &req, unannotatedPlain)
+		}
+	})
+
+	b.Run("annotated_legacy", func(b *testing.B) {
+		req := mcp.CallToolRequest{
+			Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+			Params:  mcp.CallToolParams{Name: "action_tool", Arguments: map[string]any{"action": "list"}},
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			ApplyParamHeaders(legacyConn, &req, annotated)
+		}
+	})
+
+	b.Run("annotated_modern", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			req := mcp.CallToolRequest{
+				Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+				Params:  mcp.CallToolParams{Name: "action_tool", Arguments: map[string]any{"action": "list"}},
+			}
+			ApplyParamHeaders(modernConn, &req, annotated)
+		}
+	})
 }
