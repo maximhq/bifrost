@@ -1020,6 +1020,8 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	// Before any settlement can run, so both terminal paths of a call dedup on one record.
+	ensureBillingClaims(ctx)
 	// Validate required headers are present
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
@@ -1167,6 +1169,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	billingNonce := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce)
+	billingClaims := billingClaimsOf(ctx)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -1257,7 +1260,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, requestStartedAt, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, requestStartedAt, billingClaims, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
 		}()
 	}
 
@@ -1274,6 +1277,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 //   - *schemas.MCPPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	// Before any settlement can run, so both terminal paths of a call dedup on one record.
+	ensureBillingClaims(ctx)
 	toolName := req.GetToolName()
 
 	// Skip everything but tool executions and prompt or resource reads
@@ -1429,6 +1434,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		Cost:             toolCost,
 		RequestID:        requestID,
 		BillingNonce:     billingNonce,
+		claims:           billingClaimsOf(ctx),
 		IsStreaming:      false,
 		IsFinalChunk:     true,
 		HasUsageData:     toolCost > 0, // Has usage data if we have a cost
@@ -1611,12 +1617,13 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - virtualKey: The raw virtual key token of the request (empty string if not present)
 //   - selectedKeyID: The selected provider key ID used for scoped pricing overrides
 //   - requestID: The request ID
+//   - claims: The request's billing idempotency record (nil falls back to the process-wide set)
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, requestStartedAt time.Time, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, requestStartedAt time.Time, claims *billingClaims, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
 	success := responseSucceeded(result)
 	billedReason := "success"
 
@@ -1690,6 +1697,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			Cost:             cost,
 			RequestID:        requestID,
 			BillingNonce:     billingNonce,
+			claims:           claims,
 			SkipRequestCount: skipRequestCount,
 			IsStreaming:      isStreaming,
 			IsFinalChunk:     isFinalChunk,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -58,6 +59,55 @@ type UsageUpdate struct {
 	// it makes it possible to assert we never bill both a success and a failure
 	// for the same physical call. Not used for dedup.
 	BilledReason string `json:"billed_reason,omitempty"`
+
+	claims *billingClaims // the request's billing idempotency record; nil uses the process-wide set
+}
+
+// billingClaimsContextKey names a request's billing idempotency record on its context.
+type billingClaimsContextKey struct{}
+
+// billingClaims records the terminal settlements already claimed for one request, keyed as
+// tryClaimBilling keys them. The governance pre-hooks put it on the request's context before any
+// settlement can run, so the success and cancellation terminal paths of one physical call see the
+// same record; it goes away with the request instead of waiting out the process-wide TTL. A request
+// settles a handful of attempts, so a slice is enough.
+type billingClaims struct {
+	mu   sync.Mutex
+	keys []string
+}
+
+// claim records key and reports whether it was not claimed before.
+func (c *billingClaims) claim(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if slices.Contains(c.keys, key) {
+		return false
+	}
+	c.keys = append(c.keys, key)
+	return true
+}
+
+// ensureBillingClaims puts a billing idempotency record on the request's context unless one is
+// there. A pre-hook that runs again for the same request keeps the first record, so both terminal
+// paths of every attempt claim against one record.
+func ensureBillingClaims(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	if _, ok := ctx.Value(billingClaimsContextKey{}).(*billingClaims); ok {
+		return
+	}
+	ctx.SetValue(billingClaimsContextKey{}, &billingClaims{})
+}
+
+// billingClaimsOf returns the request's billing idempotency record, or nil when its context has
+// none (a caller that bypassed the governance pre-hooks).
+func billingClaimsOf(ctx *schemas.BifrostContext) *billingClaims {
+	if ctx == nil {
+		return nil
+	}
+	claims, _ := ctx.Value(billingClaimsContextKey{}).(*billingClaims)
+	return claims
 }
 
 // UsageTracker manages VK-level usage tracking and budget management
@@ -301,11 +351,19 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 // in the fallback chain, so the fallback index tells a fallback's attempts from
 // the primary's. The success-vs-cancellation race for one physical call
 // matches on all four, which is what this dedup exists to guard.
+//
+// The claim goes on update.claims, the request's billing idempotency record, read from its
+// context when the update was built. Updates for one physical call share it, so the
+// terminal-settlement dedup happens on the request instead of in the process-wide set; an update
+// with no record falls back to that set.
 func (t *UsageTracker) tryClaimBilling(update *UsageUpdate) bool {
 	if update.RequestID == "" {
 		return true
 	}
 	key := fmt.Sprintf("%s:%s:%d:%d", update.BillingNonce, update.RequestID, update.FallbackIndex, update.AttemptNumber)
+	if update.claims != nil {
+		return update.claims.claim(key)
+	}
 	t.billedMu.Lock()
 	defer t.billedMu.Unlock()
 	if _, seen := t.billed[key]; seen {
