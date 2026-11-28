@@ -228,8 +228,9 @@ type OAuth2Config struct {
 
 	UseClientMetadataDocument bool `json:"use_client_metadata_document,omitempty"` // Register with Bifrost's Client ID Metadata Document even if the server does not advertise support
 
-	RequirePublicTarget bool   `json:"-"` // Server-set from the owning MCP client: OAuth requests may reach only public addresses
-	ClientMetadataURL   string `json:"-"` // Server-set: Bifrost's Client ID Metadata Document URL
+	RequirePublicTarget bool          `json:"-"` // Server-set from the owning MCP client: OAuth requests may reach only public addresses
+	ClientMetadataURL   string        `json:"-"` // Server-set: Bifrost's Client ID Metadata Document URL
+	TLSConfig           *MCPTLSConfig `json:"-"` // Server-set from the owning MCP client
 }
 
 // OauthToken represents OAuth access and refresh tokens

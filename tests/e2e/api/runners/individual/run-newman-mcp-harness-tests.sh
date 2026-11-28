@@ -296,6 +296,8 @@ start_example_server() {
 
 write_config() {
     local dir="$1"
+    local chaos_tls_ca_escaped=""
+    chaos_tls_ca_escaped="$(node -e 'fetch("http://127.0.0.1:" + process.argv[1] + "/control").then(r => r.json()).then(b => process.stdout.write(JSON.stringify(b.tls_cert_pem || "").slice(1, -1)))' "$CHAOS_PORT")"
     cat > "$dir/config.json" <<EOF
 {
   "\$schema": "https://www.getbifrost.ai/schema",
@@ -327,7 +329,8 @@ write_config() {
     { "client_id": "pud10-x", "name": "pud10_x", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud10/mcp", "auth_type": "headers", "headers": { "X-Api-Key": "admin-key" }, "per_user_discovery": true, "tools_to_execute": ["*"] },
     { "client_id": "pud11-p", "name": "pud11_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud11p/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "per_user_discovery": true, "tools_to_execute": ["*"] },
     { "client_id": "set35-c", "name": "set35_c", "endpoint_slug": "set35", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/set35/mcp", "auth_type": "none", "tool_sync_interval": "5s", "tools_to_execute": ["*"], "is_code_mode_client": true, "server_type_on_slug": "disabled" },
-    { "client_id": "pud68-o", "name": "pud68_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud68/mcp", "auth_type": "per_user_oauth", "per_user_discovery": true, "tools_to_execute": ["*"] }
+    { "client_id": "pud68-o", "name": "pud68_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud68/mcp", "auth_type": "per_user_oauth", "per_user_discovery": true, "tools_to_execute": ["*"] },
+    { "client_id": "auth68-p", "name": "auth68_p", "connection_type": "http", "connection_string": "https://127.0.0.1:$CHAOS_TLS_PORT/s/auth68/mcp", "auth_type": "oauth", "tls_config": { "ca_cert_pem": "$chaos_tls_ca_escaped" }, "tools_to_execute": ["*"] }
   ] },
   "providers": {
     "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],

@@ -92,7 +92,7 @@ func (p *OAuth2Provider) bindAuthorizationServerOnce(ctx context.Context, oauthC
 	if config == nil {
 		return false, fmt.Errorf("oauth config %s not found", oauthConfigID)
 	}
-	ctx = withRequirePublicTarget(ctx, p.requirePublicTargetFor(ctx, mcpClientID, config))
+	ctx = withMCPClient(ctx, p.clientForOAuth(ctx, mcpClientID, config))
 	metadata, err := DiscoverOAuthMetadata(ctx, config.ServerURL)
 	if err != nil {
 		logger.Warn("[OAuth] Could not confirm the authorization server for %s, signing in with the stored one: %v", config.ServerURL, err)

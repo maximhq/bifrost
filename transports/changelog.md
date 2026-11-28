@@ -91,6 +91,7 @@
 - **Virtual Key Budgets** - Updating the budget of a config.json virtual key no longer fails with `invalid reset duration format` (thanks [@High-PO](https://github.com/High-PO)!). Moving a quarterly budget to another window, or updating a team's or customer's rate-limit maximum alone, no longer fails with a 500, and a budget window added with Reset Usage starts at zero
 - **Team and Customer Saves** - Saving a customer or team no longer rewrites its teams, virtual keys or customer, and a team's virtual keys are charged to its new customer right after the change
 - **Duplicate Provider Configs** - A virtual key naming the same provider twice is refused with a 400
+- **MCP OAuth Custom CA** - Outbound MCP OAuth discovery, dynamic client registration, authorization-code exchange, token refresh and upstream ID-JAG token exchange honour the MCP client's `tls_config`, with `insecure_skip_verify` scoped to the MCP `connection_string` host (thanks [@wsj040303](https://github.com/wsj040303)!)
 - **MCP OAuth Consent** - The consent page no longer gets stuck when an expired SSO session is refreshed mid-flow, and abandoned client registrations are kept long enough for clients to retry
 - **OAuth Grant Expiry** - The OAuth Grants page uses the configured access token TTL
 - **OpenAPI MCP Tool Arguments** - OpenAPI-derived MCP tools give every argument a name clients accept, so they are no longer dropped
@@ -163,6 +164,7 @@ All new migrations add tables, nullable columns or indexes and never rewrite exi
 - [#9591](https://github.com/maximhq/bifrost/issues/9591) - [Bug]: /anthropic/v1/messages injects web_search_tool_result after a deferred server_tool_use, so the mixed-tool continuation 400s (tool_use without tool_result)
 - [#9721](https://github.com/maximhq/bifrost/issues/9721) - [Bug]: Anthropic→OpenAI conversion drops role on messages containing mcp_tool_use/mcp_tool_result blocks, causing 400 from all OpenAI-compatible providers
 - [#9731](https://github.com/maximhq/bifrost/issues/9731) - Mistral: every reasoning_effort is rewritten to "high" (Mistral now accepts low…max per model)
+- [#9749](https://github.com/maximhq/bifrost/issues/9749) - [Bug]: MCP OAuth2 doesn't use custom CA
 - [#9788](https://github.com/maximhq/bifrost/issues/9788) - [Bug]: ElevenLabs speech with_timestamps returns null char_start_times_ms / char_end_times_ms
 - [#9846](https://github.com/maximhq/bifrost/issues/9846) - [Feature]: Add option to show stop reason as a column.
 - [#10026](https://github.com/maximhq/bifrost/issues/10026) - [Bug]: prompt_cache auto_inject checks r.Model, not the canonical model

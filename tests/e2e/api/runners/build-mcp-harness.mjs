@@ -8684,6 +8684,111 @@ const AUTH65 = folder("AUTH-65 A hosted client metadata document", `Setup: ${EXT
   putConfig("AUTH-65", "teardown: restore the original config with no hosted URL", hostedUrl(null), [A.status(200)]),
 ]);
 
+// tlsSetup reads the fleet's self-signed TLS listener URL, Host header and escaped PEM certificate into <p>_tls, <p>_host and <p>_ca.
+const tlsSetup = (id, p) => request(id, "setup: read the fleet's TLS listener and its certificate", "GET", "/control", {
+  base: CHAOS, noAuth: true,
+  asserts: [A.status(200), A.custom("the fleet has a TLS listener", ["pm.expect(String(pm.response.json().tls_url || '').indexOf('https://'), 'body: ' + pm.response.text()).to.equal(0);"])],
+  extraTests: [
+    "var b = pm.response.json();",
+    `pm.collectionVariables.set(${lit(p + "_tls")}, b.tls_url);`,
+    `pm.collectionVariables.set(${lit(p + "_host")}, String(b.tls_url).replace('https://', ''));`,
+    `pm.collectionVariables.set(${lit(p + "_ca")}, JSON.stringify(b.tls_cert_pem).slice(1, -1));`,
+  ],
+});
+// tlsConsent consents on the fleet's HTTP loopback socket with the TLS listener's Host header so Newman need not trust the self-signed cert while Bifrost speaks HTTPS end-to-end.
+const tlsConsent = (id, title, p, tlsVar, hostVar, identity) => request(id, title, "GET", "", {
+  base: `{{${p}_au_local}}${identity ? "&login_hint=" + identity : ""}`, noAuth: true, noRedirect: true, noCookies: true,
+  headers: [{ key: "Host", value: `{{${hostVar}}}` }],
+  pre: [`pm.collectionVariables.set(${lit(p + "_au_local")}, String(pm.collectionVariables.get(${lit(p + "_au")})).replace(pm.collectionVariables.get(${lit(tlsVar)}), pm.variables.get('chaos_url')));`],
+  asserts: [A.status(302)],
+  extraTests: [`pm.collectionVariables.set(${lit(p + "_cb")}, pm.response.headers.get('Location'));`],
+});
+
+const AUTH66 = folder("AUTH-66 Shared OAuth over TLS with a custom CA across HTTP and SSE", `Setup: ${ALLOWLIST_TEXT}; fleet servers auth66 and auth66s as OAuth protected resources with dynamic registration reached on the fleet's self-signed TLS listener; shared OAuth clients over HTTP and SSE with tls_config.ca_cert_pem. STDIO carries no OAuth URL.`, [
+  ...allowlistOn("AUTH-66"),
+  tlsSetup("AUTH-66", "auth66"),
+  ...asServer("AUTH-66", "auth66"),
+  ...asServer("AUTH-66", "auth66s"),
+  createExpect("AUTH-66", "HTTP OAuth discovery without the custom CA fails with unknown authority", oauthBody("auth66-noca", "auth66_noca", "auth66", { connection_string: "{{auth66_tls}}/s/auth66/mcp" }), [A.status(400), A.msgContains("certificate signed by unknown authority")]),
+  createExpect("AUTH-66", "SSE OAuth discovery without the custom CA fails with unknown authority", oauthBody("auth66s-noca", "auth66s_noca", "auth66s", { connection_type: "sse", needs_session_stickiness: true, connection_string: "{{auth66_tls}}/s/auth66s/sse" }), [A.status(400), A.msgContains("certificate signed by unknown authority")]),
+  createOAuth("AUTH-66", "create the HTTP OAuth client with ca_cert_pem", oauthBody("auth66-c", "auth66", "auth66", { connection_string: "{{auth66_tls}}/s/auth66/mcp", tls_config: { ca_cert_pem: "{{auth66_ca}}" } }), "auth66", [statusIs("pending_oauth")]),
+  tlsConsent("AUTH-66", "consent for the HTTP client as id1", "auth66", "auth66_tls", "auth66_host", "id1"),
+  followCallback("AUTH-66", "callback disables redirects and returns 302 with status=success", "auth66", callbackSuccess()),
+  completeOAuth("AUTH-66", "complete the HTTP OAuth client", "auth66", [A.status(200)]),
+  getClient("AUTH-66", "auth66-c", "the HTTP client is healthy and masks ca_cert_pem", [clientState("healthy"), credStatus("active")]),
+  execTool("AUTH-66", "execute on the HTTP OAuth client", "auth66-echo_tool", [A.status(200)]),
+  saveOAuthCounts("AUTH-66", "auth66", "auth66"),
+  mockPost("AUTH-66", "auth66", "oauth/expire", "setup: expire id1's HTTP access token", {}),
+  execTool("AUTH-66", "execute refreshes the HTTP OAuth token over TLS", "auth66-echo_tool", [A.status(200)]),
+  mockGet("AUTH-66", "auth66", "HTTP client refreshed once over TLS", [A.custom("token_refresh +1", [refreshPlus("auth66", 1)]), identityCallsAre({ id1: 2 })]),
+  createOAuth("AUTH-66", "create the SSE OAuth client with ca_cert_pem", oauthBody("auth66s-c", "auth66s", "auth66s", { connection_type: "sse", needs_session_stickiness: true, connection_string: "{{auth66_tls}}/s/auth66s/sse", tls_config: { ca_cert_pem: "{{auth66_ca}}" } }), "auth66s", [statusIs("pending_oauth")]),
+  tlsConsent("AUTH-66", "consent for the SSE client as id2", "auth66s", "auth66_tls", "auth66_host", "id2"),
+  followCallback("AUTH-66", "SSE callback disables redirects and returns 302 with status=success", "auth66s", callbackSuccess()),
+  completeOAuth("AUTH-66", "complete the SSE OAuth client", "auth66s", [A.status(200)]),
+  getClient("AUTH-66", "auth66s-c", "the SSE client is healthy", [clientState("healthy"), credStatus("active")]),
+  execTool("AUTH-66", "execute on the SSE OAuth client", "auth66s-echo_tool", [A.status(200)]),
+  request("AUTH-66", "reauthorize the SSE OAuth client over TLS", "POST", "/api/mcp/client/auth66s-c/reauthorize", {
+    asserts: [A.status(200), statusIs("pending_oauth")],
+    extraTests: ["pm.collectionVariables.set('auth66s_au', pm.response.json().authorize_url);"],
+  }),
+  tlsConsent("AUTH-66", "consent for the reauthorized SSE client as id3", "auth66s", "auth66_tls", "auth66_host", "id3"),
+  followCallback("AUTH-66", "reauthorized SSE callback returns 302 with status=success", "auth66s", callbackSuccess()),
+  completeOAuth("AUTH-66", "complete the reauthorized SSE OAuth client", "auth66s", [A.status(200)]),
+  execTool("AUTH-66", "execute on the reauthorized SSE OAuth client", "auth66s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-66", "auth66s", "SSE calls ran under id2 then id3 over TLS", [identityCallsAre({ id2: 1, id3: 1 })]),
+  deleteClient("AUTH-66", "auth66s-c"),
+  deleteClient("AUTH-66", "auth66-c"),
+  restoreConfig("AUTH-66"),
+]);
+
+const AUTH67 = folder("AUTH-67 Per-user OAuth over TLS with a custom CA, completion and refresh", `Setup: ${PU_TEXT(false)}; fleet server auth67 on the self-signed TLS listener; a per_user_oauth HTTP client with tls_config.ca_cert_pem verified as admin, completed by alice, and refreshed after token expiry. Per-user OAuth over SSE is unsupported.`, [
+  ...puConfig("AUTH-67", false),
+  tlsSetup("AUTH-67", "auth67"),
+  ...asServer("AUTH-67", "auth67"),
+  createExpect("AUTH-67", "per_user_oauth discovery without the custom CA fails with unknown authority", { ...puBody("auth67"), client_id: "auth67-noca", name: "auth67_noca", connection_string: "{{auth67_tls}}/s/auth67/mcp" }, [A.status(400), A.msgContains("certificate signed by unknown authority")]),
+  createOAuth("AUTH-67", "create the per_user_oauth client with ca_cert_pem", { ...puBody("auth67"), connection_string: "{{auth67_tls}}/s/auth67/mcp", tls_config: { ca_cert_pem: "{{auth67_ca}}" } }, "auth67", [statusIs("pending_oauth")]),
+  tlsConsent("AUTH-67", "consent as admin", "auth67", "auth67_tls", "auth67_host", "admin"),
+  followCallback("AUTH-67", "admin callback disables redirects and returns 302 with status=success", "auth67", callbackSuccess()),
+  completeOAuth("AUTH-67", "complete the per_user_oauth client", "auth67", [A.status(200)]),
+  execTool("AUTH-67", "setup: execute as auth67-sess1 opens a per-user flow", "auth67-echo_tool", [A.status(400), keepFlow("auth67_f1")], { session: "auth67-sess1" }),
+  flowStart("AUTH-67", "start auth67-sess1's per-user flow", "auth67_f1"),
+  tlsConsent("AUTH-67", "consent for auth67-sess1 as alice", "auth67_f1", "auth67_tls", "auth67_host", "alice"),
+  followCallback("AUTH-67", "per-user callback disables redirects and lands on auth-success", "auth67_f1", [A.status(302), locationEnds(PU_SUCCESS)]),
+  execTool("AUTH-67", "execute as auth67-sess1 runs as alice", "auth67-echo_tool", [A.status(200)], { session: "auth67-sess1" }),
+  saveOAuthCounts("AUTH-67", "auth67", "auth67"),
+  mockPost("AUTH-67", "auth67", "oauth/expire", "setup: expire alice's access token", { identity: "alice" }),
+  execTool("AUTH-67", "execute refreshes alice's token over TLS", "auth67-echo_tool", [A.status(200)], { session: "auth67-sess1" }),
+  mockGet("AUTH-67", "auth67", "alice's two calls ran and refreshed once over TLS", [A.custom("token_refresh +1", [refreshPlus("auth67", 1)]), identityCallsAre({ alice: 2 })]),
+  deleteClient("AUTH-67", "auth67-u"),
+  restoreConfig("AUTH-67"),
+]);
+
+const AUTH68 = folder("AUTH-68 config.json OAuth client over TLS with a custom CA", `Setup: ${ALLOWLIST_TEXT}; fleet server auth68 on the self-signed TLS listener; ${BOOT_TEXT("auth68-p", "an oauth", "auth68")} carrying tls_config.ca_cert_pem from config.json.`, [
+  ...allowlistOn("AUTH-68"),
+  tlsSetup("AUTH-68", "auth68"),
+  ...asServer("AUTH-68", "auth68"),
+  getClient("AUTH-68", "auth68-p", "auth68-p booted pending_verification with ca_cert_pem masked", [clientState("pending_verification"), A.custom("ca_cert_pem is masked", [
+    "var t = pm.response.json().clients[0].config.tls_config || {};",
+    "var v = (t.ca_cert_pem || {}).value || '';",
+    "pm.expect(v, 'tls_config: ' + JSON.stringify(t)).to.not.equal('');",
+    "pm.expect(v).to.not.include('BEGIN CERTIFICATE');",
+  ])]),
+  clientPost("AUTH-68", "initiate-verification on auth68-p discovers over TLS with the config.json CA", "auth68-p", "initiate-verification", [A.status(200), initiateSaves("auth68_oc")], {
+    extraTests: ["pm.collectionVariables.set('auth68_au', pm.response.json().authorize_url);"],
+  }),
+  tlsConsent("AUTH-68", "consent for auth68-p as id1", "auth68", "auth68_tls", "auth68_host", "id1"),
+  followCallback("AUTH-68", "callback disables redirects and returns 302 with status=success", "auth68", callbackSuccess()),
+  completeOAuth("AUTH-68", "complete auth68-p", "auth68", [A.status(200)]),
+  getClient("AUTH-68", "auth68-p", "auth68-p is healthy", [clientState("healthy"), credStatus("active")]),
+  execTool("AUTH-68", "execute on auth68_p-echo_tool", "auth68_p-echo_tool", [A.status(200)]),
+  saveOAuthCounts("AUTH-68", "auth68", "auth68"),
+  mockPost("AUTH-68", "auth68", "oauth/expire", "setup: expire id1's access token", {}),
+  execTool("AUTH-68", "execute refreshes auth68-p's token over TLS", "auth68_p-echo_tool", [A.status(200)]),
+  mockGet("AUTH-68", "auth68", "auth68-p refreshed once over TLS", [A.custom("token_refresh +1", [refreshPlus("auth68", 1)]), identityCallsAre({ id1: 2 })]),
+  deleteClient("AUTH-68", "auth68-p"),
+  restoreConfig("AUTH-68"),
+]);
+
 // OAS-43: Bifrost fetches a client metadata document only from a public address, so the documents here are never fetched.
 const OAS43 = folder("OAS-43 Client metadata document client_ids on Bifrost's authorization server", "Setup: mcp_server_auth_mode oauth with issuer_url set to the base URL; no client is registered for these client_ids.", [
   readConfig("OAS-43"), setMode("OAS-43", "oauth"),
@@ -13583,7 +13688,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65, AUTH66, AUTH67, AUTH68]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),

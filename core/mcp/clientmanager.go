@@ -2,8 +2,6 @@ package mcp
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"maps"
@@ -3766,25 +3764,12 @@ func (m *MCPManager) buildTLSHTTPClientWithProxyAndResolver(config *schemas.MCPC
 		baseTransport = &http.Transport{}
 	}
 	// TLS customization from MCPTLSConfig, applied to every transport built below.
-	var tlsConfig *tls.Config
-	if tlsCfg := config.TLSConfig; tlsCfg != nil {
-		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-		if tlsCfg.InsecureSkipVerify {
-			m.logger.Warn("MCP client: skipping TLS verification — do not use in production")
-			tlsConfig.InsecureSkipVerify = true
-		} else if tlsCfg.CACertPEM != nil {
-			caPEM := tlsCfg.CACertPEM.GetValue()
-			if caPEM != "" {
-				rootCAs, err := x509.SystemCertPool()
-				if err != nil {
-					rootCAs = x509.NewCertPool()
-				}
-				if !rootCAs.AppendCertsFromPEM([]byte(caPEM)) {
-					return nil, misconfiguredError{errors.New("failed to parse MCP CA certificate PEM")}
-				}
-				tlsConfig.RootCAs = rootCAs
-			}
-		}
+	tlsConfig, err := network.BuildMCPTLSConfig(config.TLSConfig)
+	if err != nil {
+		return nil, misconfiguredError{err}
+	}
+	if tlsConfig != nil && tlsConfig.InsecureSkipVerify {
+		m.logger.Warn("MCP client: skipping TLS verification — do not use in production")
 	}
 	newTransport := func(proxySelector func(*http.Request) (*url.URL, error), dial func(ctx context.Context, netw, addr string) (net.Conn, error)) *http.Transport {
 		tr := baseTransport.Clone()

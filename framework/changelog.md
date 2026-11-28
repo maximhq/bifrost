@@ -1,3 +1,4 @@
+- fix: apply MCP TLS settings to OAuth discovery, registration, token refresh and upstream ID-JAG leg, scoping insecure_skip_verify to the MCP host [@wsj040303](https://github.com/wsj040303)
 - feat: model routers - `model_routers` and `model_router_targets` tables with config.json support, and the log-store tables and columns for phrase suggestions and routed requests
 - feat: client gateways - `oauth2_server_config.gateways` and device-code columns on `oauth2_authorize_requests` for Claude Code gateway sign-in
 - feat: datasheet overrides - `governance_datasheet_overrides` table merged over the synced datasheet, surviving upstream sync

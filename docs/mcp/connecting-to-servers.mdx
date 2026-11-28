@@ -1217,6 +1217,8 @@ Bifrost intelligently classifies errors as either **transient** (retryable) or *
 
 A `tls_config.ca_cert_pem` that does not parse as a PEM certificate is refused when the client is created or edited, before any connection is attempted.
 
+For OAuth clients, `tls_config.ca_cert_pem` also applies to Bifrost's outbound discovery, dynamic registration, authorization-code exchange, token refresh, and the upstream authorization-server leg of ID-JAG token exchange (never the SSO identity-provider leg). `tls_config.insecure_skip_verify` applies only to OAuth requests whose host matches the MCP `connection_string` host, so authorization servers on a different host keep full certificate verification. Custom TLS settings do not change which private destinations the OAuth allowlist permits, and the browser still needs to trust the authorization server's certificate independently.
+
 ### What Operations Are Retried
 
 Bifrost applies retry logic to these critical operations:
