@@ -632,6 +632,77 @@ func bedrockRestoreToolName(ctx context.Context, name string) string {
 	return name
 }
 
+// validateToolChoicePin checks if a tool_choice pin names a tool that was sent by the
+// client. It returns an error if the pin is unknown AND all sent tools have usable
+// names (so we can prove the pin was never sent). If any sent tool lacks a usable
+// name (e.g., server tools like web_search/bash that don't carry a name through the
+// Anthropic converter), we cannot prove the pin was unsent, so we return nil to
+// preserve the silent-drop behavior for stripped pins.
+// The rawPin must be the exact name the client sent (before aliasing). The error
+// message will use this raw name so the caller can match it to their request.
+func validateToolChoicePin(ctx context.Context, rawPin string, sentTools []schemas.ChatTool) error {
+	if rawPin == "" {
+		return nil
+	}
+	allHaveNames := true
+	for _, tool := range sentTools {
+		name := tool.Name
+		if tool.Function != nil && tool.Function.Name != "" {
+			name = tool.Function.Name
+		}
+		if name == "" {
+			allHaveNames = false
+			continue
+		}
+		if name == rawPin {
+			return nil // pin matches a sent tool
+		}
+	}
+	if allHaveNames {
+		return providerUtils.InvalidRequestErrorf(
+			"The tool %s at toolConfig.toolChoice.name is not defined in tools.",
+			rawPin,
+		)
+	}
+	// At least one sent tool had no usable name — we can't prove the pin
+	// was never sent, so skip the 400 and let the reconciliation logic
+	// handle it (silent drop if the pin names a stripped tool).
+	return nil
+}
+
+// validateResponsesToolChoicePin is the Responses API variant of validateToolChoicePin.
+// It checks if a tool_choice pin names a tool that was sent by the client.
+// The rawPin must be the exact name the client sent (before aliasing).
+func validateResponsesToolChoicePin(ctx context.Context, rawPin string, sentTools []schemas.ResponsesTool) error {
+	if rawPin == "" {
+		return nil
+	}
+	allHaveNames := true
+	for _, tool := range sentTools {
+		name := ""
+		if tool.Name != nil {
+			name = *tool.Name
+		}
+		if name == "" {
+			allHaveNames = false
+			continue
+		}
+		if name == rawPin {
+			return nil // pin matches a sent tool
+		}
+	}
+	if allHaveNames {
+		return providerUtils.InvalidRequestErrorf(
+			"The tool %s at toolConfig.toolChoice.name is not defined in tools.",
+			rawPin,
+		)
+	}
+	// At least one sent tool had no usable name — we can't prove the pin
+	// was never sent, so skip the 400 and let the reconciliation logic
+	// handle it (silent drop if the pin names a stripped tool).
+	return nil
+}
+
 // bedrockAliasToolUseID returns a Bedrock-safe toolUseId (<=64 chars, [a-zA-Z0-9_.:-]).
 // Deterministic, so a tool_use id and its tool_result id always alias to the same value.
 func bedrockAliasToolUseID(id string) string {
@@ -4073,15 +4144,6 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		}
 	}
 
-	// Empty-guard: Bedrock's Converse API rejects {"toolConfig": {"tools": []}}
-	// with a 400 "The provided request is not valid". If every incoming tool
-	// was filtered out above (e.g. only server tools the target provider
-	// doesn't support), omit ToolConfig entirely so the request is valid and
-	// the model simply answers without tool access.
-	if len(bedrockTools) == 0 {
-		return nil, droppedForModel, nil
-	}
-
 	toolConfig := &BedrockToolConfig{
 		Tools: bedrockTools,
 	}
@@ -4091,7 +4153,14 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		toolChoice := convertToolChoice(*params.ToolChoice)
 		if toolChoice != nil {
 			if toolChoice.Tool != nil && toolChoice.Tool.Name != "" {
-				toolChoice.Tool.Name = bedrockAliasToolName(ctx, toolChoice.Tool.Name)
+				// Capture the raw pin name BEFORE aliasing, so validation runs
+				// against the client-sent names and the error uses the raw name.
+				rawPin := toolChoice.Tool.Name
+				if err := validateToolChoicePin(ctx, rawPin, params.Tools); err != nil {
+					return nil, nil, err
+				}
+				// Validation passed — now alias the pin for downstream reconciliation.
+				toolChoice.Tool.Name = bedrockAliasToolName(ctx, rawPin)
 			}
 			// Reconcile: if the choice forces a specific tool by name,
 			// verify that name still exists in the filtered tool set.
@@ -4134,6 +4203,15 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 				toolConfig.ToolChoice = toolChoice
 			}
 		}
+	}
+
+	// Empty-guard: Bedrock's Converse API rejects {"toolConfig": {"tools": []}}
+	// with a 400 "The provided request is not valid". If every incoming tool
+	// was filtered out above (e.g. only server tools the target provider
+	// doesn't support), omit ToolConfig entirely so the request is valid and
+	// the model simply answers without tool access.
+	if len(bedrockTools) == 0 {
+		return nil, droppedForModel, nil
 	}
 
 	return toolConfig, droppedForModel, nil

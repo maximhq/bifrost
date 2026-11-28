@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -1039,6 +1040,405 @@ func TestBedrockCapabilityGatesReadDatasheet(t *testing.T) {
 	})
 }
 
+// TestConvertToolConfigFromFiltered_UnknownPinRejected locks in issue #9797:
+// a tool_choice pin naming a tool the client never sent must fail with a 400
+// naming the unknown tool, checked against the client-sent list before
+// server-tool filtering.
+func TestConvertToolConfigFromFiltered_UnknownPinRejected(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	model := "global.anthropic.claude-sonnet-4-6"
+	params := &schemas.ChatParameters{
+		Tools: []schemas.ChatTool{
+			{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+			},
+		},
+		ToolChoice: &schemas.ChatToolChoice{
+			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type:     schemas.ChatToolChoiceTypeFunction,
+				Function: &schemas.ChatToolChoiceFunction{Name: "nonexistent"},
+			},
+		},
+	}
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, model)
+	_, _, err := convertToolConfigFromFiltered(ctx, model, caps, params, params.Tools)
+	if err == nil {
+		t.Fatalf("expected error for unknown tool_choice pin, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "nonexistent") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
+	}
+}
+
+// TestConvertToolConfigFromFiltered_StrippedPinSilentDrop locks in that a pin
+// on a tool present in the client-sent list but stripped by server-tool
+// filtering (web_search on Bedrock) keeps the silent-drop behaviour: no error,
+// and the pin is not honoured.
+func TestConvertToolConfigFromFiltered_StrippedPinSilentDrop(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	model := "global.anthropic.claude-sonnet-4-6"
+	params := &schemas.ChatParameters{
+		Tools: []schemas.ChatTool{
+			{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+			},
+			// Server tool — stripped on Bedrock (non-Nova2 Claude).
+			{Type: schemas.ChatToolType("web_search_20260209"), Name: "web_search"},
+		},
+		ToolChoice: &schemas.ChatToolChoice{
+			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type:     schemas.ChatToolChoiceTypeFunction,
+				Function: &schemas.ChatToolChoiceFunction{Name: "web_search"},
+			},
+		},
+	}
+	// Mimic convertChatParameters: ValidateChatToolsForProvider strips web_search,
+	// so the filtered set carries only get_weather while params.Tools still
+	// contains web_search.
+	filtered := []schemas.ChatTool{params.Tools[0]}
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, model)
+	toolConfig, _, err := convertToolConfigFromFiltered(ctx, model, caps, params, filtered)
+	if err != nil {
+		t.Fatalf("expected no error for pinned-but-stripped tool, got %v", err)
+	}
+	if toolConfig == nil {
+		t.Fatalf("expected ToolConfig, got nil")
+	}
+	if toolConfig.ToolChoice != nil {
+		t.Errorf("expected silent drop of the stripped pin, got ToolChoice=%+v", toolConfig.ToolChoice)
+	}
+}
+
+// TestConvertToolConfigFromFiltered_ValidPinHonoured locks in that a pin on a
+// valid, present tool is still honoured.
+func TestConvertToolConfigFromFiltered_ValidPinHonoured(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	model := "global.anthropic.claude-sonnet-4-6"
+	params := &schemas.ChatParameters{
+		Tools: []schemas.ChatTool{
+			{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+			},
+		},
+		ToolChoice: &schemas.ChatToolChoice{
+			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type:     schemas.ChatToolChoiceTypeFunction,
+				Function: &schemas.ChatToolChoiceFunction{Name: "get_weather"},
+			},
+		},
+	}
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, model)
+	toolConfig, _, err := convertToolConfigFromFiltered(ctx, model, caps, params, params.Tools)
+	if err != nil {
+		t.Fatalf("expected no error for valid pin, got %v", err)
+	}
+	if toolConfig == nil || toolConfig.ToolChoice == nil || toolConfig.ToolChoice.Tool == nil {
+		t.Fatalf("expected tool_choice to pin get_weather, got %+v", toolConfig)
+	}
+	if toolConfig.ToolChoice.Tool.Name != "get_weather" {
+		t.Errorf("expected ToolChoice.Tool.Name=get_weather, got %q", toolConfig.ToolChoice.Tool.Name)
+	}
+}
+
+// TestConvertChatParameters_UnknownPinRejected is the handler-level (Chat path)
+// counterpart: convertChatParameters must surface the unknown-pin error as a 400.
+func TestConvertChatParameters_UnknownPinRejected(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6",
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{
+					Type:     schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+				},
+			},
+			ToolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type:     schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{Name: "nonexistent"},
+				},
+			},
+		},
+	}
+	bedrockReq := &BedrockConverseRequest{}
+	err := convertChatParameters(ctx, bifrostReq, bedrockReq, schemas.ResolveModelCaps(bifrostReq.Provider, bifrostReq.Model))
+	if err == nil {
+		t.Fatalf("expected error for unknown tool_choice pin, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "nonexistent") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
+	}
+}
+
+// TestToBedrockResponsesRequest_UnknownPinRejected locks in issue #9797 on the
+// Responses path: a tool_choice pin naming a tool the client never sent fails
+// with a 400 naming the unknown tool.
+func TestToBedrockResponsesRequest_UnknownPinRejected(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6",
+		Input:    []schemas.ResponsesMessage{glmUserMessage("What is the weather?")},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("get_weather"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+					},
+				},
+			},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: schemas.Ptr("nonexistent"),
+				},
+			},
+		},
+	}
+	_, err := ToBedrockResponsesRequest(ctx, req)
+	if err == nil {
+		t.Fatalf("expected error for unknown tool_choice pin, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "nonexistent") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
+	}
+}
+
+// TestToBedrockResponsesRequest_StrippedPinSilentDrop locks in that a pin on a
+// tool present in the client-sent list but stripped by server-tool filtering
+// (web_search on non-Nova2 Claude) keeps the silent-drop behaviour on the
+// Responses path.
+func TestToBedrockResponsesRequest_StrippedPinSilentDrop(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6",
+		Input:    []schemas.ResponsesMessage{glmUserMessage("What is the weather?")},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("get_weather"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+					},
+				},
+				// Server tool — stripped on Bedrock (non-Nova2 Claude).
+				{Type: schemas.ResponsesToolType("web_search_20260209"), Name: schemas.Ptr("web_search")},
+			},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: schemas.Ptr("web_search"),
+				},
+			},
+		},
+	}
+	bedrockReq, err := ToBedrockResponsesRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("expected no error for pinned-but-stripped tool, got %v", err)
+	}
+	if bedrockReq.ToolConfig != nil && bedrockReq.ToolConfig.ToolChoice != nil {
+		t.Errorf("expected silent drop of the stripped pin, got ToolChoice=%+v", bedrockReq.ToolConfig.ToolChoice)
+	}
+}
+
+// TestToBedrockResponsesRequest_ValidPinHonoured locks in that a pin on a valid,
+// present tool is still honoured on the Responses path.
+func TestToBedrockResponsesRequest_ValidPinHonoured(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6",
+		Input:    []schemas.ResponsesMessage{glmUserMessage("What is the weather?")},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("get_weather"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+					},
+				},
+			},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: schemas.Ptr("get_weather"),
+				},
+			},
+		},
+	}
+	bedrockReq, err := ToBedrockResponsesRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("expected no error for valid pin, got %v", err)
+	}
+	if bedrockReq.ToolConfig == nil || bedrockReq.ToolConfig.ToolChoice == nil || bedrockReq.ToolConfig.ToolChoice.Tool == nil {
+		t.Fatalf("expected tool_choice to pin get_weather, got %+v", bedrockReq.ToolConfig)
+	}
+	if bedrockReq.ToolConfig.ToolChoice.Tool.Name != "get_weather" {
+		t.Errorf("expected ToolChoice.Tool.Name=get_weather, got %q", bedrockReq.ToolConfig.ToolChoice.Tool.Name)
+	}
+}
+
+// TestToBedrockResponsesRequest_AnthropicRoute_WebSearchPinSilentDrop tests
+// the Anthropic /v1/messages route where web_search_20250305 arrives without
+// a Name field. The pin on "web_search" must be silently dropped (not 400).
+func TestToBedrockResponsesRequest_AnthropicRoute_WebSearchPinSilentDrop(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	webSearchType := anthropic.AnthropicToolTypeWebSearch20250305
+	toolType := anthropic.AnthropicToolTypeCustom
+	toolChoiceType := "tool"
+
+	anthropicReq := &anthropic.AnthropicMessageRequest{
+		Model: "global.anthropic.claude-sonnet-4-6",
+		Messages: []anthropic.AnthropicMessage{
+			{Role: "user", Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("What's the weather?")}},
+		},
+		Tools: []anthropic.AnthropicTool{
+			{Type: &toolType, Name: "get_weather", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+			{Type: &webSearchType, Name: "web_search"},
+		},
+		ToolChoice: &anthropic.AnthropicToolChoice{
+			Type: toolChoiceType,
+			Name: "web_search",
+		},
+		MaxTokens: 1024,
+	}
+
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	// Verify the Anthropic converter drops the Name for web_search
+	foundWebSearch := false
+	for _, tool := range bifrostReq.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeWebSearch {
+			foundWebSearch = true
+			if tool.Name != nil {
+				t.Fatalf("expected web_search tool to have nil Name from Anthropic converter, got %q", *tool.Name)
+			}
+		}
+	}
+	if !foundWebSearch {
+		t.Fatalf("expected web_search tool in converted request")
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("expected no error for web_search pin (silent drop), got %v", err)
+	}
+	if bedrockReq.ToolConfig != nil && bedrockReq.ToolConfig.ToolChoice != nil {
+		t.Errorf("expected silent drop of web_search pin, got ToolChoice=%+v", bedrockReq.ToolConfig.ToolChoice)
+	}
+}
+
+// TestToBedrockResponsesRequest_AnthropicRoute_BashPinSilentDrop tests the
+// Anthropic route where bash_20250124 arrives without a Name field. The pin
+// on "bash" must be silently dropped (not 400).
+func TestToBedrockResponsesRequest_AnthropicRoute_BashPinSilentDrop(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bashType := anthropic.AnthropicToolTypeBash20250124
+	toolType := anthropic.AnthropicToolTypeCustom
+	toolChoiceType := "tool"
+
+	anthropicReq := &anthropic.AnthropicMessageRequest{
+		Model: "global.anthropic.claude-sonnet-4-6",
+		Messages: []anthropic.AnthropicMessage{
+			{Role: "user", Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("Run ls")}},
+		},
+		Tools: []anthropic.AnthropicTool{
+			{Type: &toolType, Name: "get_weather", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+			{Type: &bashType, Name: "bash"},
+		},
+		ToolChoice: &anthropic.AnthropicToolChoice{
+			Type: toolChoiceType,
+			Name: "bash",
+		},
+		MaxTokens: 1024,
+	}
+
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	// Verify the Anthropic converter drops the Name for bash
+	foundBash := false
+	for _, tool := range bifrostReq.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeLocalShell {
+			foundBash = true
+			if tool.Name != nil {
+				t.Fatalf("expected bash tool to have nil Name from Anthropic converter, got %q", *tool.Name)
+			}
+		}
+	}
+	if !foundBash {
+		t.Fatalf("expected bash tool in converted request")
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("expected no error for bash pin (silent drop), got %v", err)
+	}
+	if bedrockReq.ToolConfig != nil && bedrockReq.ToolConfig.ToolChoice != nil {
+		t.Errorf("expected silent drop of bash pin, got ToolChoice=%+v", bedrockReq.ToolConfig.ToolChoice)
+	}
+}
+
+// TestToBedrockResponsesRequest_AnthropicRoute_UnknownPinRejected tests that
+// an unknown pin on the Anthropic route (where all sent tools have names)
+// is rejected with a 400 naming the raw pin.
+func TestToBedrockResponsesRequest_AnthropicRoute_UnknownPinRejected(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	toolType := anthropic.AnthropicToolTypeCustom
+	toolChoiceType := "tool"
+
+	anthropicReq := &anthropic.AnthropicMessageRequest{
+		Model: "global.anthropic.claude-sonnet-4-6",
+		Messages: []anthropic.AnthropicMessage{
+			{Role: "user", Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("What's the weather?")}},
+		},
+		Tools: []anthropic.AnthropicTool{
+			{Type: &toolType, Name: "get_weather", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+			{Type: &toolType, Name: "get_time", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+		},
+		ToolChoice: &anthropic.AnthropicToolChoice{
+			Type: toolChoiceType,
+			Name: "nonexistent_tool",
+		},
+		MaxTokens: 1024,
+	}
+
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	// All tools should have names
+	for _, tool := range bifrostReq.Params.Tools {
+		if tool.Name == nil {
+			t.Fatalf("expected all function tools to have names, got nil for %s", tool.Type)
+		}
+	}
+
+	_, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err == nil {
+		t.Fatalf("expected error for unknown tool_choice pin, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "nonexistent_tool") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
+	}
+}
+
 // codexRootOneOfSchema is the Codex automation_update shape: a tool whose
 // input_schema is a root-level oneOf, which Claude rejects on Converse.
 const codexRootOneOfSchema = `{"type":"object","oneOf":[{"type":"object","properties":{"mode":{"const":"create"},"name":{"type":"string"}},"required":["mode","name"],"additionalProperties":false},{"type":"object","properties":{"mode":{"const":"update"},"id":{"type":"string"}},"required":["mode","id"],"additionalProperties":false}]}`
@@ -1746,4 +2146,236 @@ func BenchmarkConverseToolStrict(b *testing.B) {
 			}
 		})
 	}
+}
+
+// TestConvertToolConfigFromFiltered_EmptyToolsUnknownPinRejected covers the
+// case where no tools are submitted and a named pin targets a tool that was
+// never sent. The unknown pin must be rejected before the empty-tool early
+// return so the request does not silently proceed without a 400.
+func TestConvertToolConfigFromFiltered_EmptyToolsUnknownPinRejected(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	model := "global.anthropic.claude-sonnet-4-6"
+	params := &schemas.ChatParameters{
+		ToolChoice: &schemas.ChatToolChoice{
+			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type:     schemas.ChatToolChoiceTypeFunction,
+				Function: &schemas.ChatToolChoiceFunction{Name: "nonexistent"},
+			},
+		},
+	}
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, model)
+	_, _, err := convertToolConfigFromFiltered(ctx, model, caps, params, nil)
+	if err == nil {
+		t.Fatalf("expected error for unknown tool_choice pin with empty tools, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "nonexistent") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
+	}
+}
+
+// TestConvertToolConfigFromFiltered_FilteredOnlyUnknownPinRejected covers the
+// case where every submitted tool is filtered out by model capabilities and a
+// named pin targets a tool that was never sent. The unknown pin must be
+// rejected before the empty-tool early return.
+func TestConvertToolConfigFromFiltered_FilteredOnlyUnknownPinRejected(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	model := "global.anthropic.claude-sonnet-4-6"
+	params := &schemas.ChatParameters{
+		Tools: []schemas.ChatTool{
+			{Type: schemas.ChatToolType("web_search_20260209"), Name: "web_search"},
+		},
+		ToolChoice: &schemas.ChatToolChoice{
+			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type:     schemas.ChatToolChoiceTypeFunction,
+				Function: &schemas.ChatToolChoiceFunction{Name: "never_sent"},
+			},
+		},
+	}
+	// All submitted tools are filtered out (web_search stripped on Bedrock),
+	// so the filtered set is empty.
+	filtered := []schemas.ChatTool{}
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, model)
+	_, _, err := convertToolConfigFromFiltered(ctx, model, caps, params, filtered)
+	if err == nil {
+		t.Fatalf("expected error for unknown pin when all tools filtered, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "never_sent") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
+	}
+}
+
+// TestConvertToolConfigFromFiltered_FilteredOnlySubmittedPinSilentDrop covers
+// the case where every submitted tool is filtered out and the named pin
+// targets a tool that was submitted but stripped. The pin must be silently
+// dropped with no error and no ToolConfig.
+func TestConvertToolConfigFromFiltered_FilteredOnlySubmittedPinSilentDrop(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	model := "global.anthropic.claude-sonnet-4-6"
+	params := &schemas.ChatParameters{
+		Tools: []schemas.ChatTool{
+			{Type: schemas.ChatToolType("web_search_20260209"), Name: "web_search"},
+		},
+		ToolChoice: &schemas.ChatToolChoice{
+			ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+				Type:     schemas.ChatToolChoiceTypeFunction,
+				Function: &schemas.ChatToolChoiceFunction{Name: "web_search"},
+			},
+		},
+	}
+	// All submitted tools are filtered out (web_search stripped), so the
+	// filtered set is empty.
+	filtered := []schemas.ChatTool{}
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, model)
+	toolConfig, _, err := convertToolConfigFromFiltered(ctx, model, caps, params, filtered)
+	if err != nil {
+		t.Fatalf("expected no error for submitted-but-filtered pin, got %v", err)
+	}
+	if toolConfig != nil {
+		t.Fatalf("expected nil ToolConfig when all tools filtered and pin dropped, got %+v", toolConfig)
+	}
+}
+
+// TestBedrockConverseIngress_UnknownPinRejected covers the native Bedrock
+// Converse route (/bedrock/model/{modelId}/converse): a toolConfig.toolChoice.tool
+// naming a tool absent from toolConfig.tools must be rejected with a 400 that
+// names the raw pin, after the Converse ingress is converted to the neutral
+// Responses request and back out through ToBedrockResponsesRequest (the egress
+// that runs validateResponsesToolChoicePin).
+func TestBedrockConverseIngress_UnknownPinRejected(t *testing.T) {
+	body := `{
+		"messages": [{"role": "user", "content": [{"text": "What's the weather?"}]}],
+		"toolConfig": {
+			"tools": [{"toolSpec": {"name": "get_weather", "description": "Get weather", "inputSchema": {"json": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}}],
+			"toolChoice": {"tool": {"name": "nonexistent_tool"}}
+		},
+		"inferenceConfig": {"maxTokens": 500}
+	}`
+	var converseReq BedrockConverseRequest
+	if err := json.Unmarshal([]byte(body), &converseReq); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	converseReq.ModelID = "bedrock/global.anthropic.claude-sonnet-4-6"
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	if err != nil {
+		t.Fatalf("ingress: %v", err)
+	}
+	// The ingress must carry the raw pin through to the neutral request so the
+	// egress validator sees the exact name the client sent.
+	if bifrostReq.Params == nil || bifrostReq.Params.ToolChoice == nil ||
+		bifrostReq.Params.ToolChoice.ResponsesToolChoiceStruct == nil ||
+		bifrostReq.Params.ToolChoice.ResponsesToolChoiceStruct.Name == nil ||
+		*bifrostReq.Params.ToolChoice.ResponsesToolChoiceStruct.Name != "nonexistent_tool" {
+		t.Fatalf("expected the raw pin to survive ingress, got %+v", bifrostReq.Params)
+	}
+
+	bifrostReq.Provider = schemas.Bedrock
+	_, err = ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err == nil {
+		t.Fatalf("expected error for unknown tool_choice pin on the Converse route, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "nonexistent_tool") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
+	}
+}
+
+// BenchmarkToolChoicePinValidation measures the request-path cost of the
+// tool_choice pin validation on both Bedrock egress converters, pinned (a named
+// pin that passes validation, so the validator runs its full loop) and unpinned
+// (no tool_choice, the common case where the validator is never reached). Run
+// with -benchmem; the pinned case is the one the plain-loop rewrite makes
+// cheaper than the previous map + per-tool aliasing.
+func BenchmarkToolChoicePinValidation(b *testing.B) {
+	chatTools := []schemas.ChatTool{{
+		Type:     schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+	}}
+	chatPinned := &schemas.ChatToolChoice{
+		ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+			Type:     schemas.ChatToolChoiceTypeFunction,
+			Function: &schemas.ChatToolChoiceFunction{Name: "get_weather"},
+		},
+	}
+	responsesTools := []schemas.ResponsesTool{{
+		Type:                  schemas.ResponsesToolTypeFunction,
+		Name:                  schemas.Ptr("get_weather"),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+	}}
+	responsesPinned := &schemas.ResponsesToolChoice{
+		ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+			Type: schemas.ResponsesToolChoiceTypeFunction,
+			Name: schemas.Ptr("get_weather"),
+		},
+	}
+
+	b.Run("chat_pinned", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "global.anthropic.claude-sonnet-4-6",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What's the weather?")}}},
+				Params:   &schemas.ChatParameters{Tools: chatTools, ToolChoice: chatPinned},
+			}
+			if _, err := ToBedrockChatCompletionRequest(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("chat_unpinned", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "global.anthropic.claude-sonnet-4-6",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What's the weather?")}}},
+				Params:   &schemas.ChatParameters{Tools: chatTools},
+			}
+			if _, err := ToBedrockChatCompletionRequest(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("responses_pinned", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    "global.anthropic.claude-sonnet-4-6",
+				Input:    []schemas.ResponsesMessage{glmUserMessage("What's the weather?")},
+				Params:   &schemas.ResponsesParameters{Tools: responsesTools, ToolChoice: responsesPinned},
+			}
+			if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("responses_unpinned", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    "global.anthropic.claude-sonnet-4-6",
+				Input:    []schemas.ResponsesMessage{glmUserMessage("What's the weather?")},
+				Params:   &schemas.ResponsesParameters{Tools: responsesTools},
+			}
+			if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

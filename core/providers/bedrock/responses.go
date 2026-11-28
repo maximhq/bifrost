@@ -2922,7 +2922,14 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	if bifrostReq.Params != nil && bifrostReq.Params.ToolChoice != nil {
 		bedrockToolChoice := convertResponsesToolChoice(*bifrostReq.Params.ToolChoice)
 		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && bedrockToolChoice.Tool.Name != "" {
-			bedrockToolChoice.Tool.Name = bedrockAliasToolName(ctx, bedrockToolChoice.Tool.Name)
+			// Capture the raw pin name BEFORE aliasing, so validation runs
+			// against the client-sent names and the error uses the raw name.
+			rawPin := bedrockToolChoice.Tool.Name
+			if err := validateResponsesToolChoicePin(ctx, rawPin, bifrostReq.Params.Tools); err != nil {
+				return nil, err
+			}
+			// Validation passed — now alias the pin for downstream reconciliation.
+			bedrockToolChoice.Tool.Name = bedrockAliasToolName(ctx, rawPin)
 			// Reconcile the pinned tool against the converted (filtered) tool set.
 			// Tools dropped by ValidateResponsesToolsForProvider above (e.g. an
 			// unsupported `mcp` server tool) never reach bedrockReq.ToolConfig.Tools,
