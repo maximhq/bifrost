@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"sync"
 	"testing"
@@ -1423,6 +1424,57 @@ func TestToolMetadata_HasParamHeaders(t *testing.T) {
 	restoredDirect.MCP = &schemas.MCPToolMetadata{Title: "Legacy"}
 	ApplyParamHeaders(cl, &req, &restoredDirect)
 	assert.Equal(t, "list", req.Header.Get("Mcp-Param-Action"))
+}
+
+func TestApplyParamHeaders_ClearsStaleHeadersOnLegacyRetry(t *testing.T) {
+	newConn := func(version string) *client.Client {
+		srv := server.NewMCPServer("retry-proto", "1.0.0")
+		cl, err := client.NewInProcessClient(srv)
+		require.NoError(t, err)
+		require.NoError(t, cl.Start(context.Background()))
+		t.Cleanup(func() { _ = cl.Close() })
+		_, err = cl.Initialize(context.Background(), mcp.InitializeRequest{
+			Params: mcp.InitializeParams{
+				ProtocolVersion: version,
+				ClientInfo:      mcp.Implementation{Name: "test", Version: "1.0.0"},
+			},
+		})
+		require.NoError(t, err)
+		return cl
+	}
+	modernConn := newConn(mcp.LATEST_PROTOCOL_VERSION)
+	legacyConn := newConn("2025-11-25")
+
+	tool := &schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: "action_tool",
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]any{
+					"action": map[string]any{"type": "string", "x-mcp-header": "Action"},
+				}),
+			},
+		},
+		MCP: &schemas.MCPToolMetadata{HasParamHeaders: schemas.Ptr(true)},
+	}
+
+	req := mcp.CallToolRequest{
+		Request: mcp.Request{
+			Method: string(mcp.MethodToolsCall),
+		},
+		Header: http.Header{"X-Keep": []string{"1"}},
+		Params: mcp.CallToolParams{Name: "action_tool", Arguments: map[string]any{"action": "list"}},
+	}
+
+	ApplyParamHeaders(modernConn, &req, tool)
+	assert.Equal(t, "list", req.Header.Get("Mcp-Param-Action"))
+	assert.Equal(t, "", req.Request.Method)
+
+	ApplyParamHeaders(legacyConn, &req, tool)
+	assert.Empty(t, req.Header.Values("Mcp-Param-Action"))
+	assert.Equal(t, "1", req.Header.Get("X-Keep"))
+	assert.Equal(t, string(mcp.MethodToolsCall), req.Request.Method)
 }
 
 func BenchmarkApplyParamHeaders(b *testing.B) {

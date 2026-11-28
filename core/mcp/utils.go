@@ -1022,26 +1022,45 @@ func upstreamContext(ctx context.Context, conn *client.Client, relayed mcp.Clien
 // Request.Method is cleared when outbound headers are attached because mcp-go's
 // outboundHeader drops Request.Header whenever Request.Method is non-empty
 // (callToolOnce passes MethodToolsCall directly).
+func clearParamHeaders(req *mcp.CallToolRequest) {
+	if req.Request.Method == "" {
+		req.Request.Method = string(mcp.MethodToolsCall)
+	}
+	if len(req.Header) == 0 {
+		return
+	}
+	for name := range req.Header {
+		if strings.HasPrefix(strings.ToLower(name), "mcp-param-") {
+			delete(req.Header, name)
+		}
+	}
+}
+
 func ApplyParamHeaders(conn *client.Client, req *mcp.CallToolRequest, tool *schemas.ChatTool) {
 	if conn == nil || req == nil || tool == nil || tool.Function == nil || tool.Function.Parameters == nil {
 		return
 	}
 	if tool.MCP != nil && tool.MCP.HasParamHeaders != nil {
 		if !*tool.MCP.HasParamHeaders {
+			clearParamHeaders(req)
 			return
 		}
 	} else if !schemas.OrderedMapHasMCPHeader(tool.Function.Parameters.Properties) {
+		clearParamHeaders(req)
 		return
 	}
 	if !mcp.IsModernProtocol(conn.ProtocolVersion()) {
+		clearParamHeaders(req)
 		return
 	}
 	props := tool.Function.Parameters.Properties.ToMap()
 	if len(props) == 0 {
+		clearParamHeaders(req)
 		return
 	}
 	encoded, err := json.Marshal(req.Params)
 	if err != nil {
+		clearParamHeaders(req)
 		return
 	}
 	mcpTool := &mcp.Tool{
@@ -1053,8 +1072,10 @@ func ApplyParamHeaders(conn *client.Client, req *mcp.CallToolRequest, tool *sche
 	}
 	paramHeaders := mcp.GenerateParamHeaders(mcpTool, encoded)
 	if len(paramHeaders) == 0 {
+		clearParamHeaders(req)
 		return
 	}
+	clearParamHeaders(req)
 	req.Request.Method = ""
 	if req.Header == nil {
 		req.Header = make(http.Header, len(paramHeaders))
