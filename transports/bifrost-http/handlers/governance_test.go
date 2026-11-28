@@ -2710,6 +2710,59 @@ func TestGetVirtualKeyQuota_ExternalResolverErrorFailsClosed(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeyQuota_ReportsEffectiveMaxLimit checks that each quota budget carries the
+// limit the gateway enforces. The response already exposes max_limit and the override fields,
+// but a caller that reads max_limit alone under-reports the limit while an override is active.
+func TestGetVirtualKeyQuota_ReportsEffectiveMaxLimit(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	budgets := []configstoreTables.TableBudget{
+		{ID: "b-plain", MaxLimit: 5, ResetDuration: "1d"},
+		{ID: "b-forever", MaxLimit: 5, ResetDuration: "1d", OverrideAmount: 5, OverrideMode: configstoreTables.BudgetOverrideModeForever},
+		{ID: "b-cycles", MaxLimit: 5, ResetDuration: "1d", OverrideAmount: 3, OverrideMode: configstoreTables.BudgetOverrideModeCycles, OverrideCyclesRemaining: 2},
+		{ID: "b-spent", MaxLimit: 5, ResetDuration: "1d", OverrideAmount: 3, OverrideMode: configstoreTables.BudgetOverrideModeCycles, OverrideCyclesRemaining: 0},
+	}
+	want := map[string]float64{"b-plain": 5, "b-forever": 10, "b-cycles": 8, "b-spent": 5}
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{ID: "vk-eff", Name: "Effective", IsActive: &active},
+		modelConfigs: []configstoreTables.TableModelConfig{
+			{
+				ID:        "mc-vk-eff",
+				Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID:   schemas.Ptr("vk-eff"),
+				ModelName: configstoreTables.ModelConfigAllModels,
+				Budgets:   budgets,
+			},
+		},
+	}
+	h := &GovernanceHandler{configStore: store}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp quotaResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp.Budgets) != len(budgets) {
+		t.Fatalf("expected %d budgets, got %#v", len(budgets), resp.Budgets)
+	}
+	for _, b := range resp.Budgets {
+		if b.EffectiveMaxLimit != want[b.ID] {
+			t.Errorf("budget %s: expected effective_max_limit %v, got %v (max_limit %v)", b.ID, want[b.ID], b.EffectiveMaxLimit, b.MaxLimit)
+		}
+	}
+	if !bytes.Contains(ctx.Response.Body(), []byte(`"effective_max_limit":10`)) {
+		t.Fatalf("expected raw response to carry \"effective_max_limit\":10, got %s", string(ctx.Response.Body()))
+	}
+}
+
 // TestGetVirtualKeyQuota_NoGovernanceReturnsEmpty verifies that a VK without any
 // VK-scoped model configs reports empty governance (not a stale direct-relationship
 // read) and still returns 200 with identity fields.

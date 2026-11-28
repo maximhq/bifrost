@@ -1099,7 +1099,13 @@ VirtualKeyBudgetUsage:
     - type: object
       required:
         - per_model_usage
+        - effective_max_limit
       properties:
+        effective_max_limit:
+          type: number
+          description: >
+            The limit the gateway enforces for this budget: `max_limit` plus an active override.
+            Equal to `max_limit` when the budget has no active override.
         per_model_usage:
           type: array
           description: Per-model actual usage within this budget's current cycle
