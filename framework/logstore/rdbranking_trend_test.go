@@ -122,16 +122,16 @@ func TestRankingTrendsZeroBaseline(t *testing.T) {
 	})
 }
 
-// Routing rule, provider key, alias and complexity tier are all filters on the
-// Logs page, so "how much went through this rule" could be checked one rule at a
-// time and "which rule takes the most traffic" could not be asked at all. Each
+// Model router, provider key, alias and complexity tier are all filters on the
+// Logs page, so "how much went through this router" could be checked one router at a
+// time and "which router takes the most traffic" could not be asked at all. Each
 // ranks like any other single-owner dimension: rows that never had one are left
 // out rather than bucketed, and the tool's own filters still apply.
 func TestRoutingDimensionsRank(t *testing.T) {
 	store, _ := newFanoutTestStore(t)
 	ctx := context.Background()
 	base := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
-	row := func(id, provider, rule, ruleName, key, keyName, alias, tier, mechanism string, cost float64) {
+	row := func(id, provider, router, routerName, key, keyName, alias, tier, mechanism string, cost float64) {
 		opt := func(v string) *string {
 			if v == "" {
 				return nil
@@ -141,13 +141,13 @@ func TestRoutingDimensionsRank(t *testing.T) {
 		require.NoError(t, store.Create(ctx, &Log{
 			ID: id, Timestamp: base, CreatedAt: base, Object: "chat_completion", Provider: provider, Model: "m",
 			Status: "success", Cost: &cost, TotalTokens: 10,
-			RoutingRuleID: opt(rule), RoutingRuleName: opt(ruleName), SelectedKeyID: key, SelectedKeyName: keyName,
+			ModelRouterID: opt(router), ModelRouterName: opt(routerName), SelectedKeyID: key, SelectedKeyName: keyName,
 			Alias: opt(alias), ComplexityTier: opt(tier), ComplexityMechanism: opt(mechanism),
 		}))
 	}
-	row("a", "anthropic", "rule-premium", "Premium tier", "key-1", "anthropic-primary", "smart", "COMPLEX", "semantic", 3)
-	row("b", "anthropic", "rule-premium", "Premium tier", "key-1", "anthropic-primary", "smart", "COMPLEX", "semantic", 2)
-	row("c", "openai", "rule-budget", "Budget tier", "key-2", "openai-primary", "fast", "SIMPLE", "llm", 1)
+	row("a", "anthropic", "router-premium", "Premium tier", "key-1", "anthropic-primary", "smart", "COMPLEX", "semantic", 3)
+	row("b", "anthropic", "router-premium", "Premium tier", "key-1", "anthropic-primary", "smart", "COMPLEX", "semantic", 2)
+	row("c", "openai", "router-budget", "Budget tier", "key-2", "openai-primary", "fast", "SIMPLE", "llm", 1)
 	row("d", "openai", "", "", "key-2", "openai-primary", "", "", "", 1)
 
 	start, end := base.Add(-time.Hour), base.Add(time.Hour)
@@ -158,11 +158,11 @@ func TestRoutingDimensionsRank(t *testing.T) {
 		return rankingByID(res)
 	}
 
-	rules := ranked(RankingDimensionRoutingRule, filters)
-	require.Len(t, rules, 2, "the request no rule handled names no rule")
-	assert.Equal(t, int64(2), rules["rule-premium"].TotalRequests)
-	assert.Equal(t, "Premium tier", rules["rule-premium"].Name, "a rule is reported by its name, not only its id")
-	assert.InDelta(t, 5.0, rules["rule-premium"].TotalCost, 1e-9)
+	routers := ranked(RankingDimensionModelRouter, filters)
+	require.Len(t, routers, 2, "the request no router took names no router")
+	assert.Equal(t, int64(2), routers["router-premium"].TotalRequests)
+	assert.Equal(t, "Premium tier", routers["router-premium"].Name, "a router is reported by its name, not only its id")
+	assert.InDelta(t, 5.0, routers["router-premium"].TotalCost, 1e-9)
 
 	keys := ranked(RankingDimensionSelectedKey, filters)
 	assert.Equal(t, int64(2), keys["key-2"].TotalRequests)
@@ -172,10 +172,10 @@ func TestRoutingDimensionsRank(t *testing.T) {
 	assert.Equal(t, int64(1), ranked(RankingDimensionComplexityTier, filters)["SIMPLE"].TotalRequests)
 	assert.Equal(t, int64(2), ranked(RankingDimensionComplexityMechanism, filters)["semantic"].TotalRequests)
 
-	// Composes with filters: which rules send traffic to Anthropic.
+	// Composes with filters: which routers send traffic to Anthropic.
 	toAnthropic := filters
 	toAnthropic.Providers = []string{"anthropic"}
-	assert.Len(t, ranked(RankingDimensionRoutingRule, toAnthropic), 1)
+	assert.Len(t, ranked(RankingDimensionModelRouter, toAnthropic), 1)
 
 	// The complexity columns are not in the hourly matview. Read from it, they
 	// would raise a shape error and trip the matview self-heal for a query that
@@ -184,7 +184,7 @@ func TestRoutingDimensionsRank(t *testing.T) {
 		assert.True(t, dimensionColumns[dimension].RawOnly, "%s must not use the matview path", dimension)
 	}
 	// Ranked for in-process callers without widening the HTTP rankings endpoint.
-	assert.False(t, ValidRankingDimensions[RankingDimensionRoutingRule])
+	assert.False(t, ValidRankingDimensions[RankingDimensionSelectedKey])
 }
 
 // Routing engines and tool-call names are comma-separated on the row, because a

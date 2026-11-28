@@ -64,7 +64,7 @@ type LogReader interface {
 // is named from a list rather than guessed - a guessed id returns an empty
 // result that reads exactly like a real finding of zero.
 type RoutingDiscoveryReader interface {
-	GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error)
+	GetAvailableModelRouters(ctx context.Context, limit int, query string) ([]KeyPair, error)
 	GetAvailableSelectedKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 	GetAvailableAliases(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)

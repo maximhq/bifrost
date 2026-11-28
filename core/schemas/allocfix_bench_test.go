@@ -159,7 +159,7 @@ func BenchmarkFixBatch_ReservedKey_MapLookup(b *testing.B) {
 var loggingIdentityKeys = []any{
 	BifrostContextKeySelectedKeyID, BifrostContextKeySelectedKeyName,
 	BifrostContextKeyGovernanceVirtualKeyID, BifrostContextKeyGovernanceVirtualKeyName,
-	BifrostContextKeyGovernanceRoutingRuleID, BifrostContextKeyGovernanceRoutingRuleName,
+	BifrostContextKeyModelRouterID, BifrostContextKeyModelRouterName,
 	BifrostContextKeySelectedPromptName, BifrostContextKeySelectedPromptVersion,
 	BifrostContextKeySelectedPromptID, BifrostContextKeyGovernanceTeamID,
 	BifrostContextKeyGovernanceTeamName, BifrostContextKeyGovernanceCustomerID,

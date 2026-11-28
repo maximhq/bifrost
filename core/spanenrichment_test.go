@@ -23,8 +23,8 @@ var contextDimSources = []struct {
 	{schemas.AttrBifrostSelectedKeyName, schemas.BifrostContextKeySelectedKeyName, "sel-key-name"},
 	{schemas.AttrBifrostVirtualKeyID, schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-id"},
 	{schemas.AttrBifrostVirtualKeyName, schemas.BifrostContextKeyGovernanceVirtualKeyName, "vk-name"},
-	{schemas.AttrBifrostRoutingRuleID, schemas.BifrostContextKeyGovernanceRoutingRuleID, "rr-id"},
-	{schemas.AttrBifrostRoutingRuleName, schemas.BifrostContextKeyGovernanceRoutingRuleName, "rr-name"},
+	{schemas.AttrBifrostModelRouterID, schemas.BifrostContextKeyModelRouterID, "router-id"},
+	{schemas.AttrBifrostModelRouterName, schemas.BifrostContextKeyModelRouterName, "router-name"},
 	{schemas.AttrBifrostTeamID, schemas.BifrostContextKeyGovernanceTeamID, "team-id"},
 	{schemas.AttrBifrostTeamName, schemas.BifrostContextKeyGovernanceTeamName, "team-name"},
 	{schemas.AttrBifrostProjectID, schemas.BifrostContextKeyGovernanceProjectID, "project-id"},
@@ -58,6 +58,8 @@ var derivedDimSources = []struct {
 	want     any
 }{
 	{schemas.AttrBifrostApp, schemas.BifrostContextKeyUserAgent, "claude-code/1.0", "Claude Code"},
+	// The deprecated routing rule id carries the model router (its name rides with the id).
+	{schemas.AttrBifrostRoutingRuleID, schemas.BifrostContextKeyModelRouterID, "router-id", "router-id"},
 }
 
 // TestDerivedContextSpanAttributesEmit pins the derivation, not just the wiring.
@@ -90,6 +92,7 @@ var dimsEmittedElsewhere = map[string]string{
 	schemas.AttrBifrostRoutingEngineUsed:   "framework ExtractedFields: framework/tracing/tracer.go",
 	schemas.AttrBifrostComplexityTier:      "context-sourced post-response: framework/tracing/tracer.go",
 	schemas.AttrBifrostComplexityMechanism: "context-sourced post-response: framework/tracing/tracer.go",
+	schemas.AttrBifrostRoutingRuleName:     "applyContextSpanAttributes, with the router id: the model router name under its deprecated name",
 }
 
 // TestContextSpanAttributesEmit drives applyContextSpanAttributes with every
@@ -185,7 +188,7 @@ func TestContextSpanEnrichmentMatchesAttributes(t *testing.T) {
 	typed := map[string]any{
 		schemas.AttrBifrostVirtualKeyID:    span.Enrichment.VirtualKeyID,
 		schemas.AttrBifrostSelectedKeyID:   span.Enrichment.SelectedKeyID,
-		schemas.AttrBifrostRoutingRuleID:   span.Enrichment.RoutingRuleID,
+		schemas.AttrBifrostModelRouterID:   span.Enrichment.ModelRouterID,
 		schemas.AttrBifrostTeamID:          span.Enrichment.TeamID,
 		schemas.AttrBifrostCustomerID:      span.Enrichment.CustomerID,
 		schemas.AttrBifrostBusinessUnitID:  span.Enrichment.BusinessUnitID,

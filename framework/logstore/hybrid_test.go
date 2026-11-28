@@ -2205,10 +2205,10 @@ func TestHybrid_BatchUpdateRefreshesObjectTags(t *testing.T) {
 	key := ObjectKey("test", ts, "tags")
 	require.Equal(t, "false", objStore.GetTags(key)["stream"])
 
-	vk, rule, output := "vk-1", "rule-1", "answer"
+	vk, router, output := "vk-1", "router-1", "answer"
 	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{
 		{ID: "tags", SelectedKeyID: "key-1", VirtualKeyID: &vk, Stream: true},
-		{ID: "tags", Status: "success", RoutingRuleID: &rule,
+		{ID: "tags", Status: "success", ModelRouterID: &router,
 			OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}},
 	}))
 	waitForUploads(t, func() bool {
@@ -2220,7 +2220,7 @@ func TestHybrid_BatchUpdateRefreshesObjectTags(t *testing.T) {
 	assert.Equal(t, "key-1", tags["selected_key_id"], "first entry's selected key")
 	assert.Equal(t, "vk-1", tags["virtual_key_id"], "first entry's virtual key")
 	assert.Equal(t, "true", tags["stream"], "first entry's stream flag")
-	assert.Equal(t, "rule-1", tags["routing_rule_id"], "second entry's routing rule")
+	assert.Equal(t, "router-1", tags["model_router_id"], "second entry's model router")
 	assert.Equal(t, "success", tags["status"], "second entry's status")
 	assert.Equal(t, "openai", tags["provider"], "fields the batch leaves zero keep the saved row's value")
 }

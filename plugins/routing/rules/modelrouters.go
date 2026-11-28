@@ -40,13 +40,20 @@ type ModelRouterMatcher struct {
 const modelRouterRoutesTable = "routing_model_router_routes"
 
 // modelRouterRoute is one enabled router's routing and its compiled
-// condition, nil when it has none.
+// condition, nil when it has none. The condition's text is kept for the
+// request's routing trail.
 type modelRouterRoute struct {
 	routerID string
 	name     string
 	priority int
 	program  cel.Program
+	expr     string
 }
+
+// modelRouterTrailLimit is how many "no match" lines one walk writes to a
+// request's routing trail. A gateway can hold thousands of routers, and the
+// trail is stored with the request's log.
+const modelRouterTrailLimit = 25
 
 // NewModelRouterMatcher builds an empty matcher over a table in live; the plugin fills it as it
 // serves each router. Close drops the table.
@@ -142,7 +149,7 @@ func (m *ModelRouterMatcher) Set(routerID, name string, routing configstore.Mode
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
 	key := scopeKey(routing.Scope, valueOrEmpty(routing.ScopeID))
-	updated := append(m.groupWithout(key, routerID), modelRouterRoute{routerID: routerID, name: name, priority: routing.Priority, program: program})
+	updated := append(m.groupWithout(key, routerID), modelRouterRoute{routerID: routerID, name: name, priority: routing.Priority, program: program, expr: routing.CelExpression})
 	sort.SliceStable(updated, func(i, j int) bool { return updated[i].priority < updated[j].priority })
 	m.storeGroupLocked(key, updated)
 	m.removeFromScopes(routerID, key)
@@ -214,6 +221,12 @@ func (m *ModelRouterMatcher) Match(ctx *schemas.BifrostContext, evaluation *Eval
 // later pass. A condition that fails to evaluate is logged on the request and
 // its router skipped.
 //
+// The walk writes the request's routing trail as the routing rules' did: what
+// is being routed and the scopes in their order, how many routers each scope
+// holds, and each router passed over with the values its condition read. It
+// writes at most modelRouterTrailLimit of those "no match" lines and counts
+// the rest in one.
+//
 // Conditions are evaluated only as far as the walk gets, so a request the
 // first router takes costs one evaluation, as it did when only the first
 // match counted.
@@ -225,10 +238,31 @@ func (m *ModelRouterMatcher) Walk(ctx *schemas.BifrostContext, evaluation *Evalu
 	if err != nil {
 		return fmt.Errorf("failed to extract routing variables: %w", err)
 	}
-	for _, level := range buildScopeChain(evaluation.Scope) {
+	chain := buildScopeChain(evaluation.Scope)
+	opened := false // the lines that open the trail are written
+	unmatched := 0  // routers whose condition did not hold
+walk:
+	for _, level := range chain {
 		group, _ := m.routes.Get(scopeKey(level.ScopeName, level.ScopeID))
+		if len(group) == 0 {
+			continue
+		}
+		if ctx != nil {
+			if !opened {
+				opened = true
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelInfo,
+					fmt.Sprintf("Evaluating model routers for model=%s, provider=%s, requestType=%s", evaluation.Model, evaluation.Provider, evaluation.RequestType))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelInfo, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(chain)))
+			}
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelInfo,
+				fmt.Sprintf("Evaluating scope %s: %d routers", level.ScopeName, len(group)))
+		}
 		for _, route := range group {
 			if skip != nil && skip(route.routerID) {
+				if ctx != nil {
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelInfo,
+						fmt.Sprintf("Model router '%s' skipped: already fired in this chain", route.name))
+				}
 				continue
 			}
 			if route.program != nil {
@@ -241,13 +275,22 @@ func (m *ModelRouterMatcher) Walk(ctx *schemas.BifrostContext, evaluation *Evalu
 					continue
 				}
 				if !matched {
+					unmatched++
+					if ctx != nil && unmatched <= modelRouterTrailLimit {
+						ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelInfo,
+							fmt.Sprintf("Model router '%s' [%s] → no match (%s)", route.name, route.expr, buildNoMatchContext(route.expr, variables)))
+					}
 					continue
 				}
 			}
 			if visit(route.routerID) {
-				return nil
+				break walk
 			}
 		}
+	}
+	if ctx != nil && unmatched > modelRouterTrailLimit {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelInfo,
+			fmt.Sprintf("%d more model routers did not match", unmatched-modelRouterTrailLimit))
 	}
 	return nil
 }

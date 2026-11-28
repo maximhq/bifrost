@@ -253,7 +253,7 @@ func TestBuildTags(t *testing.T) {
 		Object:        "chat.completion",
 		VirtualKeyID:  &vkID,
 		SelectedKeyID: "sk_789",
-		RoutingRuleID: &rrID,
+		ModelRouterID: &rrID,
 		Stream:        true,
 		Timestamp:     time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC),
 	}
@@ -265,7 +265,7 @@ func TestBuildTags(t *testing.T) {
 	assert.Equal(t, "chat.completion", tags["object_type"])
 	assert.Equal(t, "vk_123", tags["virtual_key_id"])
 	assert.Equal(t, "sk_789", tags["selected_key_id"])
-	assert.Equal(t, "rr_456", tags["routing_rule_id"])
+	assert.Equal(t, "rr_456", tags["model_router_id"])
 	assert.Equal(t, "true", tags["stream"])
 	assert.Equal(t, "false", tags["has_error"])
 	assert.Equal(t, "2026-04-03", tags["date"])

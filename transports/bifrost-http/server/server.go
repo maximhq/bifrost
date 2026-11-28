@@ -3536,19 +3536,6 @@ func (s *BifrostHTTPServer) GetAllRedactedVirtualKeys(ctx context.Context, ids [
 	return virtualKeys
 }
 
-// GetAllRedactedRoutingRules gets all redacted routing rules from the config store
-func (s *BifrostHTTPServer) GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule {
-	if s.Config == nil || s.Config.ConfigStore == nil {
-		return nil
-	}
-	routingRules, err := s.Config.ConfigStore.GetRedactedRoutingRules(ctx, ids)
-	if err != nil {
-		logger.Error("failed to get all redacted routing rules: %v", err)
-		return nil
-	}
-	return routingRules
-}
-
 // prometheusHTTPMiddleware records Prometheus HTTP metrics. The plugin is resolved per
 // request rather than captured once, for the same reason as the otel middleware: a config
 // reload swaps in a freshly constructed instance, and a pointer captured at startup kept

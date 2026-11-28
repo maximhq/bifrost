@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/framework/warp"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -132,6 +133,68 @@ func TestGetMCPLatencyHistogramServesPercentiles(t *testing.T) {
 	require.Len(t, body.Buckets, 1)
 	require.EqualValues(t, 3, body.Buckets[0].TotalRequests)
 	require.InDelta(t, 29, body.Buckets[0].P95Latency, 1e-9)
+}
+
+// TestRouterFiltersReadLogsFromBeforeRouters pins how a router filter and the router ranking read
+// logs written before model routers replaced routing rules, which name a rule and no router. A
+// router asks for the rules in its meta too; an old link naming a rule asks for the router made
+// from it; a rule no router names stays a rule filter; and a rule's ranking row adds to its router.
+func TestRouterFiltersReadLogsFromBeforeRouters(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	config := libtest.Config(t, nil, nil)
+	for _, router := range []configstore.ModelRouter{
+		{ID: "eu-azure", Name: "EU to Azure", Mode: tables.ModelRouterModeConditional, Meta: &tables.ModelRouterMeta{RoutingRuleIDs: []string{"eu-azure"}}},
+		{ID: "tier-simple", Name: "Simple tier", Mode: tables.ModelRouterModeConditional, Meta: &tables.ModelRouterMeta{RoutingRuleIDs: []string{"tier-simple", "tier-medium", "tier-complex"}}},
+		{ID: "support", Name: "Support desk", Mode: tables.ModelRouterModeConditional},
+	} {
+		require.NoError(t, config.ConfigStore.CreateModelRouter(ctx, &router))
+		_, ok, err := config.LiveStore.Collections.ModelRouters.Load(ctx, router.ID)
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	mgr := &dashboardLogManager{rankings: map[logstore.RankingDimension][]logstore.DimensionRankingWithTrend{
+		logstore.RankingDimensionModelRouter: {
+			{DimensionRankingEntry: logstore.DimensionRankingEntry{ID: "support", TotalRequests: 50, TotalCost: 5}},
+			{DimensionRankingEntry: logstore.DimensionRankingEntry{ID: "tier-simple", TotalRequests: 30, TotalTokens: 300, TotalCost: 3}},
+			{DimensionRankingEntry: logstore.DimensionRankingEntry{ID: "tier-medium", TotalRequests: 25, TotalTokens: 250, TotalCost: 2}},
+			{DimensionRankingEntry: logstore.DimensionRankingEntry{ID: "old-promo", TotalRequests: 4}},
+		},
+	}}
+	h := &LoggingHandler{logManager: mgr, config: config}
+	get := func(uri string, serve func(*fasthttp.RequestCtx)) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.SetRequestURI(uri)
+		rc := &fasthttp.RequestCtx{}
+		rc.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+		serve(rc)
+		require.Equal(t, fasthttp.StatusOK, rc.Response.StatusCode(), string(rc.Response.Body()))
+		return rc
+	}
+
+	for _, tc := range []struct {
+		query          string
+		routers, rules []string
+	}{
+		{"model_router_ids=tier-simple", []string{"tier-simple"}, []string{"tier-simple", "tier-medium", "tier-complex"}},
+		{"routing_rule_ids=tier-medium", []string{"tier-simple"}, []string{"tier-simple", "tier-medium", "tier-complex"}},
+		{"model_router_ids=support", []string{"support"}, nil},
+		{"routing_rule_ids=old-promo", nil, []string{"old-promo"}},
+	} {
+		get("/api/logs?"+tc.query, h.getLogs)
+		require.ElementsMatch(t, tc.routers, mgr.lastLLMFilters.ModelRouterIDs, tc.query)
+		require.ElementsMatch(t, tc.rules, mgr.lastLLMFilters.RoutingRuleIDs, tc.query)
+	}
+
+	rc := get("/api/logs/rankings?dimension=model_router", h.getDimensionRankings)
+	var ranked logstore.DimensionRankingResult
+	require.NoError(t, json.Unmarshal(rc.Response.Body(), &ranked))
+	counts := map[string]int64{}
+	for _, row := range ranked.Rankings {
+		counts[row.ID] = row.TotalRequests
+	}
+	require.Equal(t, map[string]int64{"tier-simple": 55, "support": 50, "old-promo": 4}, counts, "the merged rule's rows add to its router")
+	require.Equal(t, "tier-simple", ranked.Rankings[0].ID, "ranked by requests after merging")
 }
 
 func TestParseComplexityFilters(t *testing.T) {
@@ -1322,6 +1385,7 @@ type dashboardLogManager struct {
 	mcpStatsFunc           func(filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error)
 	mcpLatencyBucketSize   int64
 	projects               []loggingplugin.KeyPair
+	modelRouters           []loggingplugin.KeyPair
 	mcpLog                 *logstore.MCPToolLog
 	lastLLMFilters         logstore.SearchFilters
 	lastMCPFilters         logstore.MCPToolLogSearchFilters
@@ -1462,9 +1526,9 @@ func (m *dashboardLogManager) GetAvailableVirtualKeys(ctx context.Context, limit
 	return nil, nil
 }
 
-// GetAvailableRoutingRules implements the test double used by logging handler tests.
-func (m *dashboardLogManager) GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
-	return nil, nil
+// GetAvailableModelRouters implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableModelRouters(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return m.modelRouters, nil
 }
 
 // GetAvailableRoutingEngines implements the test double used by logging handler tests.
@@ -1816,11 +1880,6 @@ func (noRedactedKeys) GetAllRedactedVirtualKeys(ctx context.Context, ids []strin
 	return nil
 }
 
-// GetAllRedactedRoutingRules implements the test double used by logging handler tests.
-func (noRedactedKeys) GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule {
-	return nil
-}
-
 // TestProjectFilterReachesEveryLogQuery pins that project_ids narrows each route that reads logs:
 // the listing, the stats and every histogram, not just one of them. A filter that one route
 // drops returns another project's traffic in a report that claims to be this one's.
@@ -1882,6 +1941,42 @@ func TestFilterDataListsProjects(t *testing.T) {
 	if len(payload.Projects) != 1 || payload.Projects[0].ID != "proj-a" || payload.Projects[0].Name != "Atlas" {
 		t.Fatalf("expected the project pair under \"projects\", got %s", ctx.Response.Body())
 	}
+}
+
+// TestFilterDataListsModelRouters pins the logs filter's list of model routers: every router the
+// logs name is offered once, under the name it has now, and one that has since been deleted keeps
+// the name it was logged under, marked as deleted, so its logs can still be filtered. It is how a
+// routing rule's earlier logs stay reachable through the router the rule became.
+func TestFilterDataListsModelRouters(t *testing.T) {
+	SetLogger(&mockLogger{})
+	mgr := &dashboardLogManager{modelRouters: []loggingplugin.KeyPair{
+		{ID: "premium", Name: "Premium (old name)"},
+		{ID: "premium", Name: "Premium"},
+		{ID: "retired", Name: "Retired"},
+	}}
+	h := &LoggingHandler{logManager: mgr, redactedKeysManager: noRedactedKeys{}, config: &lib.Config{
+		ClientConfig: &configstore.ClientConfig{},
+		ConfigStore:  rankingNameStore{routers: map[string]string{"premium": "Premium tier"}},
+	}}
+	list := func(h *LoggingHandler) []loggingplugin.KeyPair {
+		var req fasthttp.Request
+		// A search query bypasses the response cache, which a bare handler does not carry.
+		req.SetRequestURI("/api/logs/filterdata?dimensions=model_routers&q=e")
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+		h.getAvailableFilterData(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var payload map[string][]loggingplugin.KeyPair
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &payload))
+		require.Contains(t, payload, "model_routers")
+		require.NotContains(t, payload, "routing_rules", "routing rules are no longer a filter")
+		return payload["model_routers"]
+	}
+	require.Equal(t, []loggingplugin.KeyPair{{ID: "premium", Name: "Premium tier"}, {ID: "retired", Name: "Retired (deleted)"}}, list(h))
+
+	// Without a config store to name them, routers keep the names they were logged under.
+	h.config = nil
+	require.Equal(t, mgr.modelRouters, list(h))
 }
 
 // TestCorrelationFilterParsing keeps scalar correlation filters identical across
@@ -1946,8 +2041,8 @@ func TestMCPAttributionFilterParsing(t *testing.T) {
 // namedRedactedKeys is a redaction lookup holding a fixed name per id, which
 // records every id list it was asked for.
 type namedRedactedKeys struct {
-	keys, vks, rules map[string]string
-	calls            *[][]string
+	keys, vks map[string]string
+	calls     *[][]string
 }
 
 // record notes the id list of one lookup.
@@ -1981,22 +2076,21 @@ func (n namedRedactedKeys) GetAllRedactedVirtualKeys(ctx context.Context, ids []
 	return out
 }
 
-// GetAllRedactedRoutingRules returns the known routing rules among ids.
-func (n namedRedactedKeys) GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule {
-	n.record(ids)
-	var out []tables.TableRoutingRule
-	for _, id := range ids {
-		if name, ok := n.rules[id]; ok {
-			out = append(out, tables.TableRoutingRule{ID: id, Name: name})
-		}
-	}
-	return out
-}
-
-// rankingNameStore serves team and customer names by id, the way RDBConfigStore does.
+// rankingNameStore serves team, customer and model router names by id, the way RDBConfigStore does.
 type rankingNameStore struct {
 	configstore.ConfigStore
-	teams, customers map[string]string
+	teams, customers, routers map[string]string
+}
+
+// GetModelRouterNames returns the names of the known model routers among ids.
+func (s rankingNameStore) GetModelRouterNames(ctx context.Context, ids []string) (map[string]string, error) {
+	names := map[string]string{}
+	for _, id := range ids {
+		if name, ok := s.routers[id]; ok {
+			names[id] = name
+		}
+	}
+	return names, nil
 }
 
 // GetRedactedTeams returns the known teams among ids.
@@ -2051,12 +2145,12 @@ func TestApplyCurrentRankingNames(t *testing.T) {
 		redactedKeysManager: namedRedactedKeys{
 			keys:  map[string]string{"key-1": "Key Now"},
 			vks:   map[string]string{"vk-1": "VK Now"},
-			rules: map[string]string{"rr-1": "Rule Now"},
 			calls: &calls,
 		},
 		config: &lib.Config{ConfigStore: rankingNameStore{
 			teams:     map[string]string{"team-1": "Team Now"},
 			customers: map[string]string{"cust-1": "Customer Now"},
+			routers:   map[string]string{"router-1": "Router Now"},
 		}},
 	}
 	RegisterRankingNameResolver(logstore.RankingDimensionUser, func(ctx context.Context, ids []string) (map[string]string, error) {
@@ -2074,7 +2168,8 @@ func TestApplyCurrentRankingNames(t *testing.T) {
 		{logstore.RankingDimensionTeam, rankingRows("team-1", "Team Old", "team-gone", "Team Deleted"),
 			map[string]string{"team-1": "Team Now", "team-gone": "Team Deleted"}},
 		{logstore.RankingDimensionCustomer, rankingRows("cust-1", "Customer Old"), map[string]string{"cust-1": "Customer Now"}},
-		{logstore.RankingDimensionRoutingRule, rankingRows("rr-1", "Rule Old"), map[string]string{"rr-1": "Rule Now"}},
+		{logstore.RankingDimensionModelRouter, rankingRows("router-1", "Router Old", "router-gone", "Router Deleted"),
+			map[string]string{"router-1": "Router Now", "router-gone": "Router Deleted"}},
 		{logstore.RankingDimensionSelectedKey, rankingRows("key-1", "Key Old"), map[string]string{"key-1": "Key Now"}},
 		{logstore.RankingDimensionUser, rankingRows("user-1", "alice-old"), map[string]string{"user-1": "Alice"}},
 		{logstore.RankingDimensionProject, rankingRows("proj-1", "Project From Logs"), map[string]string{"proj-1": "Project From Logs"}},
@@ -2123,7 +2218,7 @@ func TestRankingEndpointsShowCurrentNames(t *testing.T) {
 
 // TestApplyCurrentRankingNamesBatchesLookups pins that an uncapped ranking
 // (all=true) resolves names in bounded batches: the provider-key and
-// routing-rule lookups bind one parameter per id, so one call over every
+// model router lookups bind one parameter per id, so one call over every
 // ranked id could exceed the database's bind-parameter limit and silently
 // leave every row on its logged name.
 func TestApplyCurrentRankingNamesBatchesLookups(t *testing.T) {
@@ -2373,7 +2468,9 @@ func TestSearchLogs(t *testing.T) {
 	require.Equal(t, 1, result.Returned)
 	require.InDelta(t, 0.3, result.Threshold, 1e-9)
 
-	for _, bad := range []string{"limit=0", "limit=26", "limit=many"} {
+	// routing_rule_ids is no longer a filter, and the search does not filter on a model router:
+	// a filter that would be dropped is refused instead.
+	for _, bad := range []string{"limit=0", "limit=26", "limit=many", "routing_rule_ids=premium", "model_router_ids=premium"} {
 		ctx = get("/api/logs/search?query=refunds&" + bad)
 		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), bad)
 	}

@@ -278,18 +278,33 @@ func (p *RoutingPlugin) visitModelRouter(
 		choice.model = strings.TrimSpace(*target.Model)
 	}
 	recordModelRouter(ctx, routerID, name)
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelInfo, matchedRouterLine(router, name, tier, choice))
+	return choice, routerApplied
+}
+
+// matchedRouterLine is the routing trail's line for a router that chose a
+// target, written as a matched routing rule's was: the router and its
+// condition, the tier a classifier router gave the request, then the target's
+// weight, the provider and model the request has once it is applied, and the
+// fallbacks and first-token deadline the choice brings.
+func matchedRouterLine(router *configstore.ModelRouter, name, tier string, choice *routerChoice) string {
+	condition := ""
+	if router.Routing != nil && strings.TrimSpace(router.Routing.CelExpression) != "" {
+		condition = " [" + router.Routing.CelExpression + "]"
+	}
+	if tier != "" {
+		tier = "tier=" + tier + ", "
+	}
+	deadline := ""
+	if ms := choice.target.TTFTTimeoutMs; ms != nil && *ms > 0 {
+		deadline = fmt.Sprintf(", ttft_timeout=%s", time.Duration(*ms)*time.Millisecond)
+	}
 	chained := ""
 	if choice.chain {
 		chained = " [chain, continuing]"
 	}
-	if conditional {
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelInfo,
-			fmt.Sprintf("Model router '%s' → provider=%s, model=%s%s", name, choice.provider, choice.model, chained))
-	} else {
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelInfo,
-			fmt.Sprintf("Model router '%s' tier=%s → provider=%s, model=%s%s", name, tier, choice.provider, choice.model, chained))
-	}
-	return choice, routerApplied
+	return fmt.Sprintf("Model router '%s'%s → matched, %sselected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s%s",
+		name, condition, tier, choice.target.Weight, choice.provider, choice.model, configstoreTables.RoutingFallbackStrings(choice.fallbacks), deadline, chained)
 }
 
 // applyModelRouterChoice writes the walk's last choice onto the request and

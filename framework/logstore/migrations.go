@@ -359,6 +359,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_model_routing_columns"}, run: migrationAddModelRoutingColumns},
 	{IDs: []string{"logs_tune_retention_autovacuum"}, run: migrationTuneRetentionAutovacuum},
 	{IDs: []string{"logs_widen_model_router_id_columns"}, run: migrationWidenModelRouterIDColumns},
+	{IDs: []string{"logs_add_model_router_timestamp_index"}, run: migrationAddModelRouterTimestampIndex},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3013,11 +3014,6 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "logs",
-		name:  "idx_logs_model_router_id",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_model_router_id ON logs(model_router_id) WHERE model_router_id IS NOT NULL",
-	},
-	{
-		table: "logs",
 		name:  "idx_logs_session_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_session_id ON logs(session_id) WHERE session_id IS NOT NULL",
 	},
@@ -3212,11 +3208,17 @@ type ownerTimestampIndexDef struct {
 	name     string
 	column   string
 	replaces string
+	// where, when set, makes the composite partial, as its struct tag does.
+	where string
 }
 
 // createSQL returns the CONCURRENTLY build statement for the composite.
 func (d ownerTimestampIndexDef) createSQL() string {
-	return fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s(%s, timestamp)", d.name, d.table, d.column)
+	stmt := fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s(%s, timestamp)", d.name, d.table, d.column)
+	if d.where != "" {
+		stmt += " WHERE " + d.where
+	}
+	return stmt
 }
 
 // ownerTimestampIndexes back the logs and MCP lists filtered by virtual key,
@@ -3241,6 +3243,7 @@ var ownerTimestampIndexes = []ownerTimestampIndexDef{
 var rankingNameTimestampIndexes = []ownerTimestampIndexDef{
 	{table: "logs", name: "idx_logs_selected_key_ts", column: "selected_key_id", replaces: "idx_logs_selected_key_id"},
 	{table: "logs", name: "idx_logs_routing_rule_ts", column: "routing_rule_id", replaces: "idx_logs_routing_rule_id"},
+	modelRouterTimestampIndex,
 	{table: "logs", name: "idx_logs_customer_ts", column: "customer_id", replaces: "idx_logs_customer_id"},
 	{table: "logs", name: "idx_logs_business_unit_ts", column: "business_unit_id", replaces: "idx_logs_business_unit_id"},
 	{table: "logs", name: "idx_logs_project_ts", column: "project_id", replaces: "idx_logs_project_id"},
@@ -4637,6 +4640,22 @@ func migrationWidenModelRouterIDColumns(ctx context.Context, db *gorm.DB, logger
 		return fmt.Errorf("error while widening model router id columns: %w", err)
 	}
 	return nil
+}
+
+// modelRouterTimestampIndex backs the logs filtered and ranked by model router: a
+// (model_router_id, timestamp) composite over the rows a router took, partial like
+// the single-column index it replaces, since most requests are taken by no router.
+var modelRouterTimestampIndex = ownerTimestampIndexDef{
+	table: "logs", name: "idx_logs_model_router_ts", column: "model_router_id",
+	replaces: "idx_logs_model_router_id", where: "model_router_id IS NOT NULL",
+}
+
+// migrationAddModelRouterTimestampIndex builds modelRouterTimestampIndex on SQLite and
+// other non-Postgres databases, which ran logs_add_ranking_name_timestamp_indexes
+// before the composite was in its list; Postgres builds it in the background with
+// the other composites (ensureOwnerTimestampIndexes).
+func migrationAddModelRouterTimestampIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return runTimestampIndexMigration(ctx, db, logger, "logs_add_model_router_timestamp_index", []ownerTimestampIndexDef{modelRouterTimestampIndex})
 }
 
 // migrationAddSessionIDColumn adds the generic session identity resolved at

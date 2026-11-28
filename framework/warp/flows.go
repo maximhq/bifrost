@@ -947,8 +947,7 @@ var rankingDimensions = []struct {
 	{logstore.RankingDimensionProject, "the project on the request or its virtual key"},
 	{logstore.RankingDimensionApp, "the client app that sent the request"},
 	{logstore.RankingDimensionUserAgent, "the raw User-Agent string"},
-	{logstore.RankingDimensionRoutingRule, "the routing rule that handled the request, by name - requests no rule handled are left out, so compare against count_logs for the share"},
-	{logstore.RankingDimensionModelRouter, "the model router that classified the request for its complexity tier, by name - only requests a router classified"},
+	{logstore.RankingDimensionModelRouter, "the model router that routed the request, by name - requests no router took are left out, so compare against count_logs for the share"},
 	{logstore.RankingDimensionRoutingEngine, "the routing engines a request passed through, e.g. routing-rule, governance, loadbalancing - one request can pass through several, so totals can exceed the request count"},
 	{logstore.RankingDimensionSelectedKey, "the provider API key Bifrost sent the request with, by name - not the provider and not a virtual key; pair with status error to find a failing key"},
 	{logstore.RankingDimensionAlias, "the model alias the request was addressed to before Bifrost resolved it - empty when a request named its model directly - never a stand-in for the model; for which models were involved use query_model_performance"},
@@ -1161,7 +1160,7 @@ const filterSpaceCoverage = "These are values seen in logged traffic, not the co
 func describeFilterSpaceTool() Tool {
 	return Tool{
 		name: "describe_filter_space",
-		description: "Report who is asking, what teams/customers/business units they could mean, and the real values that appear in this deployment's logs - models, apps, stop reasons, virtual keys, routing rules, provider keys, aliases, routing engines, tool call names and metadata keys - up to 50 of each, not necessarily every one that exists. " +
+		description: "Report who is asking, what teams/customers/business units they could mean, and the real values that appear in this deployment's logs - models, apps, stop reasons, virtual keys, model routers, provider keys, aliases, routing engines, tool call names and metadata keys - up to 50 of each, not necessarily every one that exists. " +
 			"Call this before filtering by a name you are not certain about: guessing a model or key name returns an empty result that looks like a real finding. " +
 			"Every list here is what logged traffic contains, not what is configured - the result's coverage note says so - so a virtual key that exists but has not been used is absent here and is still found by describe_virtual_key by its exact name. " +
 			"If a deployment has more than 50 of something, this list is a sample, not the full set - pass search to narrow to the specific value you need rather than treating an absence here as proof it does not exist. " +
@@ -1238,7 +1237,7 @@ func describeFilterSpaceTool() Tool {
 			// The routing values, from the lookups behind the Logs page's own
 			// filter dropdowns. Run together: each is an independent indexed read.
 			var (
-				routingRules, providerKeys             []KeyPair
+				modelRouters, providerKeys             []KeyPair
 				aliases, routingEngines, toolCallNames []string
 				metadata                               map[string][]string
 				routingErrs                            [6]error
@@ -1246,7 +1245,7 @@ func describeFilterSpaceTool() Tool {
 			)
 			for index, lookup := range []func() error{
 				func() (err error) {
-					routingRules, err = deps.logManager.GetAvailableRoutingRules(ctx, limit, query)
+					modelRouters, err = deps.logManager.GetAvailableModelRouters(ctx, limit, query)
 					return
 				},
 				func() (err error) {
@@ -1279,7 +1278,7 @@ func describeFilterSpaceTool() Tool {
 					return nil, fmt.Errorf("could not list routing values: %w", err)
 				}
 			}
-			out["routing_rules"] = routingRules
+			out["model_routers"] = modelRouters
 			out["provider_keys"] = providerKeys
 			out["aliases"] = aliases
 			out["routing_engines"] = routingEngines
@@ -1332,7 +1331,7 @@ func describeFilterSpaceTool() Tool {
 			// says otherwise - a live run searched "team", got no teams whose
 			// names contain the word, and reported that no team had traffic.
 			if query != "" {
-				found := len(models) + len(apps) + len(stopReasons) + len(routingRules) + len(providerKeys) +
+				found := len(models) + len(apps) + len(stopReasons) + len(modelRouters) + len(providerKeys) +
 					len(aliases) + len(routingEngines) + len(toolCallNames) + len(metadata)
 				for _, values := range results {
 					found += len(values)

@@ -1362,8 +1362,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
-	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
-	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	modelRouterID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyModelRouterID)
+	modelRouterName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyModelRouterName)
 	complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
 	complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
 
@@ -1400,8 +1400,10 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"virtual_key_id":       virtualKeyID,
 		"virtual_key_name":     virtualKeyName,
 		"routing_engine_used":  routingEngineUsed,
-		"routing_rule_id":      routingRuleID,
-		"routing_rule_name":    routingRuleName,
+		"model_router_id":      modelRouterID,
+		"model_router_name":    modelRouterName,
+		"routing_rule_id":      modelRouterID,
+		"routing_rule_name":    modelRouterName,
 		"complexity_tier":      complexityTier,
 		"complexity_mechanism": complexityMechanism,
 		"selected_key_id":      selectedKeyID,
