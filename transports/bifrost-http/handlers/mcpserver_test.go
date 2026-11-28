@@ -2742,3 +2742,13 @@ func TestMCPGateway_ServerTypesOnSlug(t *testing.T) {
 
 // liveStoreForTest returns a new, empty live store closed when the test ends.
 var liveStoreForTest = livestoretest.New
+
+// TestSyncMCPServerOnANilHandlerDoesNothing: an MCP client change applied before the server has
+// built its MCP gateway handler, as one can be while the server boots, syncs nothing and does not
+// panic. The handler syncs every MCP server when it is built, so nothing is lost.
+func TestSyncMCPServerOnANilHandlerDoesNothing(t *testing.T) {
+	var h *MCPServerHandler
+	if err := h.SyncMCPServer(context.Background()); err != nil {
+		t.Fatalf("SyncMCPServer on a nil handler = %v, want nil", err)
+	}
+}

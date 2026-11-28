@@ -338,7 +338,14 @@ func runMCPStreamCompleter(completerSlot *atomic.Value) []schemas.PluginLogEntry
 // The lists are read without the trigger's identity: some syncs run on an admin's request,
 // and a client with per_user_discovery on would otherwise publish that admin's own discovery to
 // every caller. Such a client is served through placeholders instead (see mcpserverpercaller.go).
+//
+// A nil handler syncs nothing and returns nil: an MCP client change can be applied before the
+// server builds its handler (while it boots), and building the handler syncs every MCP server,
+// so the change is not lost.
 func (h *MCPServerHandler) SyncMCPServer(_ context.Context) error {
+	if h == nil {
+		return nil
+	}
 	ctx := context.Background()
 	h.syncMu.Lock()
 	defer h.syncMu.Unlock()
