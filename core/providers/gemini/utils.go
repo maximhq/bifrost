@@ -2352,6 +2352,25 @@ func inlineGeminiChatSystemReminder(message schemas.ChatMessage) *Content {
 	return content
 }
 
+// thoughtSignatureFromExtraContent reads extra_content.google.thought_signature, the base64 field
+// Google's OpenAI-compatible endpoint uses to carry a function call's thought signature.
+func thoughtSignatureFromExtraContent(extraContent json.RawMessage) []byte {
+	if len(extraContent) == 0 {
+		return nil
+	}
+	signature := gjson.GetBytes(extraContent, "google.thought_signature").String()
+	if signature == "" {
+		return nil
+	}
+	// the field's alphabet and padding are not specified, so accept all four base64 variants
+	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if decoded, err := encoding.DecodeString(signature); err == nil {
+			return decoded
+		}
+	}
+	return nil
+}
+
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
 func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
 	if len(allowedImageURLSchemes) == 0 {
@@ -2721,7 +2740,12 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 						}
 					}
 
-					if part.ThoughtSignature == nil {
+					// Google's OpenAI-compatible endpoint hands the signature back in extra_content
+					if len(part.ThoughtSignature) == 0 {
+						part.ThoughtSignature = thoughtSignatureFromExtraContent(toolCall.ExtraContent)
+					}
+
+					if len(part.ThoughtSignature) == 0 {
 						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
 					}
 
