@@ -11062,3 +11062,755 @@ func TestChatToolImages(t *testing.T) {
 		}
 	}
 }
+
+type uniqueTraceTracer struct {
+	schemas.NoOpTracer
+	seq atomic.Int64
+}
+
+func (t *uniqueTraceTracer) CreateTrace(_ string, _ ...string) string {
+	return fmt.Sprintf("trace-%d", t.seq.Add(1))
+}
+
+type observedContextIdentity struct {
+	requestID  string
+	traceID    string
+	virtualKey string
+	customVal  any
+	rootCtx    *schemas.BifrostContext
+}
+
+type identityRecordingPlugin struct {
+	mu            sync.Mutex
+	observed      []observedContextIdentity
+	capturedCtx   *schemas.BifrostContext
+	shortCircuit  bool
+	customKey     any
+	streamFactory func(ctx *schemas.BifrostContext) chan *schemas.BifrostStreamChunk
+}
+
+func (p *identityRecordingPlugin) GetName() string { return "identity-recording" }
+func (p *identityRecordingPlugin) Cleanup() error  { return nil }
+func (p *identityRecordingPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (p *identityRecordingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	reqID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	vk, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	var customVal any
+	if p.customKey != nil {
+		customVal = ctx.Value(p.customKey)
+	}
+
+	p.mu.Lock()
+	p.observed = append(p.observed, observedContextIdentity{
+		requestID:  reqID,
+		traceID:    traceID,
+		virtualKey: vk,
+		customVal:  customVal,
+		rootCtx:    ctx.Root(),
+	})
+	p.capturedCtx = ctx.Root()
+	p.mu.Unlock()
+
+	if p.shortCircuit {
+		switch req.RequestType {
+		case schemas.ChatCompletionStreamRequest:
+			if p.streamFactory != nil {
+				return req, &schemas.LLMPluginShortCircuit{Stream: p.streamFactory(ctx)}, nil
+			}
+			ch := make(chan *schemas.BifrostStreamChunk, 1)
+			ch <- &schemas.BifrostStreamChunk{
+				BifrostChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o-mini"},
+			}
+			close(ch)
+			return req, &schemas.LLMPluginShortCircuit{Stream: ch}, nil
+		case schemas.ChatCompletionRequest:
+			return req, &schemas.LLMPluginShortCircuit{
+				Response: &schemas.BifrostResponse{
+					ChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o-mini"},
+				},
+			}, nil
+		case schemas.ResponsesRequest:
+			return req, &schemas.LLMPluginShortCircuit{
+				Response: &schemas.BifrostResponse{
+					ResponsesResponse: &schemas.BifrostResponsesResponse{Model: "gpt-4o-mini"},
+				},
+			}, nil
+		case schemas.ListModelsRequest:
+			return req, &schemas.LLMPluginShortCircuit{
+				Response: &schemas.BifrostResponse{
+					ListModelsResponse: &schemas.BifrostListModelsResponse{},
+				},
+			}, nil
+		case schemas.ModelRetrieveRequest:
+			return req, &schemas.LLMPluginShortCircuit{
+				Response: &schemas.BifrostResponse{
+					ModelRetrieveResponse: &schemas.BifrostModelRetrieveResponse{},
+				},
+			}, nil
+		}
+	}
+	return req, nil, nil
+}
+
+func (p *identityRecordingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+type mcpIdentityRecordingPlugin struct {
+	schemas.MCPPluginNoOpHooks
+	mu        sync.Mutex
+	observed  []observedContextIdentity
+	customKey any
+}
+
+func (p *mcpIdentityRecordingPlugin) GetName() string { return "mcp-identity-recording" }
+func (p *mcpIdentityRecordingPlugin) Cleanup() error  { return nil }
+
+func (p *mcpIdentityRecordingPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	reqID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	vk, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	var customVal any
+	if p.customKey != nil {
+		customVal = ctx.Value(p.customKey)
+	}
+
+	p.mu.Lock()
+	p.observed = append(p.observed, observedContextIdentity{
+		requestID:  reqID,
+		traceID:    traceID,
+		virtualKey: vk,
+		customVal:  customVal,
+		rootCtx:    ctx.Root(),
+	})
+	p.mu.Unlock()
+
+	switch req.RequestType {
+	case schemas.MCPRequestTypeChatToolCall:
+		return req, &schemas.MCPPluginShortCircuit{
+			Response: &schemas.BifrostMCPResponse{
+				ChatMessage: &schemas.ChatMessage{
+					Role:    schemas.ChatMessageRoleTool,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("ok")},
+				},
+			},
+		}, nil
+	case schemas.MCPRequestTypeResponsesToolCall:
+		return req, &schemas.MCPPluginShortCircuit{
+			Response: &schemas.BifrostMCPResponse{
+				ResponsesMessage: &schemas.ResponsesMessage{},
+			},
+		}, nil
+	}
+	return req, nil, nil
+}
+
+func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
+	type customCtxKey struct{}
+
+	// Seed Init parent context with stale identity, governance, and custom keys to verify
+	// nil-context requests isolate from both sibling requests and the instance context.
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	initCtx.SetValue(schemas.BifrostContextKeyRequestID, "init-req-id")
+	initCtx.SetValue(schemas.BifrostContextKeyTraceID, "init-trace-id")
+	initCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "init-vk")
+	initCtx.SetValue(customCtxKey{}, "init-custom")
+	defer initCtx.Cancel()
+
+	tracer := &uniqueTraceTracer{}
+	plugin := &identityRecordingPlugin{shortCircuit: true, customKey: customCtxKey{}}
+	mcpPlugin := &mcpIdentityRecordingPlugin{customKey: customCtxKey{}}
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 10)
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		Tracer:     tracer,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		MCPPlugins: []schemas.MCPPlugin{mcpPlugin},
+		MCPConfig:  &schemas.MCPConfig{},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	// 1. Realtime turn with nil context, followed by cleanup.
+	rtHooks, rtErr := client.RunRealtimeTurnPreHooks(nil, &schemas.BifrostRequest{
+		RequestType:      schemas.RealtimeRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o-realtime"},
+	})
+	require.Nil(t, rtErr)
+	require.NotNil(t, rtHooks)
+	rtHooks.Cleanup()
+
+	// 2. Chat stream with nil context.
+	streamCh, streamErr := client.ChatCompletionStreamRequest(nil, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	})
+	require.Nil(t, streamErr)
+	for range streamCh {
+	}
+
+	// 3. Non-stream chat request with nil context.
+	_, chatErr := client.ChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	})
+	require.Nil(t, chatErr)
+
+	// 4. WebSocket stream pre-hooks with nil context.
+	wsHooks, wsErr := client.RunStreamPreHooks(nil, &schemas.BifrostRequest{
+		RequestType: schemas.WebSocketResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+		},
+	})
+	require.Nil(t, wsErr)
+	require.NotNil(t, wsHooks)
+	wsHooks.Cleanup()
+
+	// 5. Responses request with nil context.
+	_, respErr := client.ResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	})
+	require.Nil(t, respErr)
+
+	// 6. ListModels request with nil context.
+	_, listModelsErr := client.ListModelsRequest(nil, &schemas.BifrostListModelsRequest{
+		Provider: schemas.OpenAI,
+	})
+	require.Nil(t, listModelsErr)
+
+	// 7. ModelRetrieve request with nil context.
+	_, retrieveErr := client.ModelRetrieveRequest(nil, &schemas.BifrostModelRetrieveRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+	})
+	require.Nil(t, retrieveErr)
+
+	// 8. Standalone MCP chat tool execution with nil context.
+	_, mcpChatErr := client.ExecuteChatMCPTool(nil, &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-1"),
+		Type:     schemas.Ptr("function"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("alpha-echo"), Arguments: `{}`},
+	})
+	require.Nil(t, mcpChatErr)
+
+	// 9. Standalone MCP responses tool execution with nil context.
+	_, mcpRespErr := client.ExecuteResponsesMCPTool(nil, &schemas.ResponsesToolMessage{
+		CallID:    schemas.Ptr("call-2"),
+		Name:      schemas.Ptr("alpha-echo"),
+		Arguments: schemas.Ptr(`{}`),
+	})
+	require.Nil(t, mcpRespErr)
+
+	plugin.mu.Lock()
+	observed := append([]observedContextIdentity(nil), plugin.observed...)
+	plugin.mu.Unlock()
+	require.Len(t, observed, 7)
+
+	mcpPlugin.mu.Lock()
+	mcpObserved := append([]observedContextIdentity(nil), mcpPlugin.observed...)
+	mcpPlugin.mu.Unlock()
+	require.Len(t, mcpObserved, 2)
+
+	// Completed nil-context operations release their internal cancellation watchers.
+	assert.Error(t, observed[0].rootCtx.Err(), "realtime turn cleanup should cancel nil-context watcher")
+	require.Eventually(t, func() bool {
+		return observed[1].rootCtx.Err() != nil
+	}, 2*time.Second, 10*time.Millisecond, "completed stream should cancel nil-context watcher")
+	assert.Error(t, observed[2].rootCtx.Err(), "completed chat request should cancel nil-context watcher")
+	assert.Error(t, observed[3].rootCtx.Err(), "websocket pre-hooks cleanup should cancel nil-context watcher")
+	assert.Error(t, observed[4].rootCtx.Err(), "completed responses request should cancel nil-context watcher")
+	assert.Error(t, observed[5].rootCtx.Err(), "completed list models request should cancel nil-context watcher")
+	assert.Error(t, observed[6].rootCtx.Err(), "completed model retrieve request should cancel nil-context watcher")
+	assert.Error(t, mcpObserved[0].rootCtx.Err(), "completed chat MCP tool call should cancel nil-context watcher")
+	assert.Error(t, mcpObserved[1].rootCtx.Err(), "completed responses MCP tool call should cancel nil-context watcher")
+
+	seenReqIDs := make(map[string]struct{}, len(observed)+len(mcpObserved))
+	seenTraceIDs := make(map[string]struct{}, 3)
+	for i, item := range observed {
+		assert.NotEmpty(t, item.requestID, "call %d requestID should be populated", i)
+		assert.NotEqual(t, "init-req-id", item.requestID, "call %d must not inherit init request ID", i)
+		assert.Empty(t, item.virtualKey, "call %d must not inherit init virtual key", i)
+		assert.Nil(t, item.customVal, "call %d must not inherit init custom key", i)
+		assert.NotContains(t, seenReqIDs, item.requestID, "call %d reused a request ID", i)
+		seenReqIDs[item.requestID] = struct{}{}
+
+		// Unary LLM calls do not allocate a stream trace in core, so they must observe an
+		// empty trace ID rather than inheriting one from Init.
+		if i != 0 && i != 1 && i != 3 {
+			assert.Empty(t, item.traceID, "unary call %d must not inherit a stale trace ID", i)
+			continue
+		}
+		assert.NotEmpty(t, item.traceID, "call %d traceID should be populated", i)
+		assert.NotEqual(t, "init-trace-id", item.traceID, "call %d must not inherit init trace ID", i)
+		assert.NotContains(t, seenTraceIDs, item.traceID, "call %d reused a trace ID", i)
+		seenTraceIDs[item.traceID] = struct{}{}
+	}
+	for i, item := range mcpObserved {
+		assert.NotEmpty(t, item.requestID, "mcp call %d requestID should be populated", i)
+		assert.NotEqual(t, "init-req-id", item.requestID, "mcp call %d must not inherit init request ID", i)
+		assert.Empty(t, item.virtualKey, "mcp call %d must not inherit init virtual key", i)
+		assert.Nil(t, item.customVal, "mcp call %d must not inherit init custom key", i)
+		assert.Empty(t, item.traceID, "mcp call %d must not inherit init trace ID", i)
+		assert.NotContains(t, seenReqIDs, item.requestID, "mcp call %d reused a request ID", i)
+		seenReqIDs[item.requestID] = struct{}{}
+	}
+
+	// Explicit caller context keeps its caller-supplied values and is not canceled by Bifrost.
+	callerCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	callerCtx.SetValue(schemas.BifrostContextKeyRequestID, "caller-req-123")
+	callerCtx.SetValue(schemas.BifrostContextKeyTraceID, "caller-trace-456")
+	callerCtx.SetValue(customCtxKey{}, "caller-custom")
+	defer callerCtx.Cancel()
+
+	explicitCh, explicitErr := client.ChatCompletionStreamRequest(callerCtx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	})
+	require.Nil(t, explicitErr)
+	for range explicitCh {
+	}
+	assert.NoError(t, callerCtx.Err())
+
+	plugin.mu.Lock()
+	explicitObs := plugin.observed[len(plugin.observed)-1]
+	plugin.mu.Unlock()
+	assert.Equal(t, "caller-req-123", explicitObs.requestID)
+	assert.Equal(t, "caller-trace-456", explicitObs.traceID)
+	assert.Equal(t, "caller-custom", explicitObs.customVal)
+	assert.NoError(t, explicitObs.rootCtx.Err())
+
+	// Instance shutdown cancels an in-flight nil-context operation while it is still active.
+	activeHooks, activeErr := client.RunStreamPreHooks(nil, &schemas.BifrostRequest{
+		RequestType: schemas.WebSocketResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+		},
+	})
+	require.Nil(t, activeErr)
+	require.NotNil(t, activeHooks)
+	defer activeHooks.Cleanup()
+
+	plugin.mu.Lock()
+	activeNilRootCtx := plugin.capturedCtx
+	plugin.mu.Unlock()
+
+	require.NoError(t, activeNilRootCtx.Err())
+	client.Shutdown()
+	select {
+	case <-activeNilRootCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected active nil-context request context to cancel on client.Shutdown()")
+	}
+	assert.Error(t, activeNilRootCtx.Err())
+}
+
+func TestNilContextStreamForwardingStopsOnShutdown(t *testing.T) {
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer initCtx.Cancel()
+
+	secondChunkHandedOff := make(chan struct{})
+	producerDone := make(chan struct{})
+
+	plugin := &identityRecordingPlugin{
+		shortCircuit: true,
+		streamFactory: func(ctx *schemas.BifrostContext) chan *schemas.BifrostStreamChunk {
+			ch := make(chan *schemas.BifrostStreamChunk)
+			go func() {
+				defer close(producerDone)
+				defer close(ch)
+				select {
+				case ch <- &schemas.BifrostStreamChunk{
+					BifrostChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o-mini"},
+				}:
+				case <-ctx.Done():
+					return
+				}
+				select {
+				case ch <- &schemas.BifrostStreamChunk{
+					BifrostChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o-mini"},
+				}:
+					close(secondChunkHandedOff)
+				case <-ctx.Done():
+					return
+				}
+				<-ctx.Done()
+			}()
+			return ch
+		},
+	}
+
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 10)
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	streamCh, streamErr := client.ChatCompletionStreamRequest(nil, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	})
+	require.Nil(t, streamErr)
+	require.NotNil(t, streamCh)
+
+	// Consume only the first chunk, then abandon reading.
+	select {
+	case chunk, ok := <-streamCh:
+		require.True(t, ok)
+		require.NotNil(t, chunk)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first stream chunk")
+	}
+
+	// Wait until the forwarder has read chunk 2 from rawStream and blocked trying to send it.
+	select {
+	case <-secondChunkHandedOff:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for forwarder to accept second chunk")
+	}
+
+	// Shutting down the client must unblock forwarding and close the output stream promptly.
+	client.Shutdown()
+	shutdownDeadline := time.After(2 * time.Second)
+	select {
+	case _, ok := <-streamCh:
+		if ok {
+			// Forwarder may select wrapped <- chunk once concurrently before observing ctx.Done().
+			select {
+			case _, ok = <-streamCh:
+			case <-shutdownDeadline:
+				t.Fatal("nil-context stream forwarding blocked after client.Shutdown()")
+			}
+		}
+		assert.False(t, ok, "expected nil-context output stream to close on shutdown with stopped consumer")
+	case <-shutdownDeadline:
+		t.Fatal("nil-context stream forwarding blocked after client.Shutdown()")
+	}
+
+	select {
+	case <-producerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected producer goroutine to observe shutdown cancellation")
+	}
+}
+
+func TestConcurrentNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
+	type customCtxKey struct{}
+
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	initCtx.SetValue(schemas.BifrostContextKeyRequestID, "init-req-id")
+	initCtx.SetValue(schemas.BifrostContextKeyTraceID, "init-trace-id")
+	initCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "init-vk")
+	initCtx.SetValue(customCtxKey{}, "init-custom")
+	defer initCtx.Cancel()
+
+	tracer := &uniqueTraceTracer{}
+	plugin := &identityRecordingPlugin{shortCircuit: true, customKey: customCtxKey{}}
+	mcpPlugin := &mcpIdentityRecordingPlugin{customKey: customCtxKey{}}
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 10)
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		Tracer:     tracer,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		MCPPlugins: []schemas.MCPPlugin{mcpPlugin},
+		MCPConfig:  &schemas.MCPConfig{},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	const workers = 64
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var workerErrs []string
+	recordErr := func(msg string) {
+		errMu.Lock()
+		workerErrs = append(workerErrs, msg)
+		errMu.Unlock()
+	}
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			streamCh, streamErr := client.ChatCompletionStreamRequest(nil, &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+			})
+			if streamErr != nil {
+				recordErr(fmt.Sprintf("worker %d stream err: %v", idx, streamErr))
+			} else {
+				for range streamCh {
+				}
+			}
+
+			switch idx % 5 {
+			case 0:
+				if _, callErr := client.ChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4o-mini",
+					Input: []schemas.ChatMessage{{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+					}},
+				}); callErr != nil {
+					recordErr(fmt.Sprintf("worker %d chat err: %v", idx, callErr))
+				}
+			case 1:
+				if _, callErr := client.ResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4o-mini",
+					Input: []schemas.ResponsesMessage{{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+					}},
+				}); callErr != nil {
+					recordErr(fmt.Sprintf("worker %d responses err: %v", idx, callErr))
+				}
+			case 2:
+				if _, callErr := client.ListModelsRequest(nil, &schemas.BifrostListModelsRequest{
+					Provider: schemas.OpenAI,
+				}); callErr != nil {
+					recordErr(fmt.Sprintf("worker %d list models err: %v", idx, callErr))
+				}
+			case 3:
+				if _, callErr := client.ModelRetrieveRequest(nil, &schemas.BifrostModelRetrieveRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4o-mini",
+				}); callErr != nil {
+					recordErr(fmt.Sprintf("worker %d model retrieve err: %v", idx, callErr))
+				}
+			case 4:
+				if _, callErr := client.ExecuteChatMCPTool(nil, &schemas.ChatAssistantMessageToolCall{
+					ID:       schemas.Ptr("call-concurrent"),
+					Type:     schemas.Ptr("function"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("alpha-echo"), Arguments: `{}`},
+				}); callErr != nil {
+					recordErr(fmt.Sprintf("worker %d mcp err: %v", idx, callErr))
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	require.Empty(t, workerErrs)
+
+	plugin.mu.Lock()
+	llmObserved := append([]observedContextIdentity(nil), plugin.observed...)
+	plugin.mu.Unlock()
+	mcpPlugin.mu.Lock()
+	mcpObserved := append([]observedContextIdentity(nil), mcpPlugin.observed...)
+	mcpPlugin.mu.Unlock()
+
+	allObserved := make([]observedContextIdentity, 0, len(llmObserved)+len(mcpObserved))
+	allObserved = append(allObserved, llmObserved...)
+	allObserved = append(allObserved, mcpObserved...)
+	require.Len(t, allObserved, workers*2)
+
+	seenReqIDs := make(map[string]struct{}, len(allObserved))
+	seenTraceIDs := make(map[string]struct{}, workers)
+	for i, item := range allObserved {
+		assert.NotEmpty(t, item.requestID, "call %d missing requestID", i)
+		assert.NotEqual(t, "init-req-id", item.requestID, "call %d inherited init request ID", i)
+		assert.Empty(t, item.virtualKey, "call %d inherited init virtual key", i)
+		assert.Nil(t, item.customVal, "call %d inherited init custom value", i)
+		assert.NotContains(t, seenReqIDs, item.requestID, "call %d reused requestID", i)
+		seenReqIDs[item.requestID] = struct{}{}
+		if item.traceID != "" {
+			assert.NotEqual(t, "init-trace-id", item.traceID, "call %d inherited init trace ID", i)
+			assert.NotContains(t, seenTraceIDs, item.traceID, "call %d reused traceID", i)
+			seenTraceIDs[item.traceID] = struct{}{}
+		}
+	}
+	assert.Len(t, seenTraceIDs, workers)
+
+	require.Eventually(t, func() bool {
+		for _, item := range allObserved {
+			if item.rootCtx.Err() == nil {
+				return false
+			}
+		}
+		return true
+	}, 2*time.Second, 10*time.Millisecond, "expected all concurrent nil-context request watchers to cancel on completion")
+}
+
+func BenchmarkNewRequestContext(b *testing.B) {
+	b.Run("caller-ctx", func(b *testing.B) {
+		initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer initCtx.Cancel()
+		client := &Bifrost{ctx: initCtx}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			got, cancel := client.newRequestContext(ctx)
+			if got != ctx || cancel != nil {
+				b.Fatal("expected caller context passthrough with nil cancel")
+			}
+		}
+	})
+	b.Run("nil-ctx", func(b *testing.B) {
+		initCtx, initCancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer initCancel()
+		client := &Bifrost{ctx: initCtx}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			got, cancel := client.newRequestContext(nil)
+			if got == nil || cancel == nil {
+				b.Fatal("expected isolated context and cancel func")
+			}
+			cancel()
+		}
+	})
+}
+
+func TestNilContextLiveSessionContentDownloadCompletesAndCloses(t *testing.T) {
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer initCtx.Cancel()
+
+	releaseTail := make(chan struct{})
+	stallRelease := make(chan struct{})
+	defer close(stallRelease)
+
+	var reqCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := reqCount.Add(1)
+		w.Header().Set("Content-Type", "audio/wav")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("RIFF"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if n == 1 {
+			select {
+			case <-releaseTail:
+				_, _ = w.Write([]byte("....WAVEfmt "))
+			case <-r.Context().Done():
+			}
+			return
+		}
+		select {
+		case <-r.Context().Done():
+		case <-stallRelease:
+		}
+	}))
+	defer srv.Close()
+
+	plugin := &identityRecordingPlugin{shortCircuit: false}
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID:     "key-openai",
+		Value:  *schemas.NewSecretVar("dummy-test-key"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 1,
+	}})
+
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	// 1. Full streamed download keeps owned nil-ctx alive after LiveSessionContentRequest returns
+	// and cancels it once Body.Close finishes.
+	content, bifrostErr := client.LiveSessionContentRequest(nil, &schemas.BifrostLiveContentRequest{
+		Provider:  schemas.OpenAI,
+		SessionID: "live_123",
+	})
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, content)
+	require.NotNil(t, content.Body)
+
+	plugin.mu.Lock()
+	firstRootCtx := plugin.capturedCtx
+	plugin.mu.Unlock()
+	require.NotNil(t, firstRootCtx)
+	require.NoError(t, firstRootCtx.Err(), "nil-ctx must remain active while LiveContentResponse.Body is still open")
+
+	close(releaseTail)
+	body, readErr := io.ReadAll(content.Body)
+	require.NoError(t, readErr)
+	assert.Equal(t, "RIFF....WAVEfmt ", string(body))
+	require.NoError(t, firstRootCtx.Err(), "nil-ctx must stay active until Body.Close is called")
+
+	require.NoError(t, content.Body.Close())
+	assert.Error(t, firstRootCtx.Err(), "Body.Close must cancel owned nil-ctx watcher")
+
+	// 2. Early Close before EOF cancels the owned context first so an unconsumed recording does
+	// not block waiting for the upstream stream to finish.
+	partial, partialErr := client.LiveSessionContentRequest(nil, &schemas.BifrostLiveContentRequest{
+		Provider:  schemas.OpenAI,
+		SessionID: "live_123",
+	})
+	require.Nil(t, partialErr)
+	require.NotNil(t, partial)
+	require.NotNil(t, partial.Body)
+
+	plugin.mu.Lock()
+	secondRootCtx := plugin.capturedCtx
+	plugin.mu.Unlock()
+	require.NotNil(t, secondRootCtx)
+	require.NoError(t, secondRootCtx.Err())
+
+	buf := make([]byte, 4)
+	n, err := io.ReadFull(partial.Body, buf)
+	require.NoError(t, err)
+	assert.Equal(t, "RIFF", string(buf[:n]))
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- partial.Body.Close()
+	}()
+	select {
+	case closeErr := <-closed:
+		require.NoError(t, closeErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("early Body.Close blocked waiting on stalled upstream stream")
+	}
+	assert.Error(t, secondRootCtx.Err(), "early Body.Close must cancel owned nil-ctx watcher")
+}

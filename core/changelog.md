@@ -66,5 +66,9 @@
 - fix: gemini - audio `fileData` parts are no longer treated as transcription
 - fix: vertex - model listing on `us` and `eu` keys uses the regional endpoint host, and token errors show the underlying cause
 - fix: streams cancelled before the upstream's first byte run their terminal post-hooks
+- fix: core - isolate per-request identity and cancellation for nil-context Go SDK calls
+  <Warning>
+  Behaviour change for Go SDK users passing a `nil` `*schemas.BifrostContext`: nil-context requests no longer inherit values from `bifrost.ctx` or the `Init` parent context (`BifrostContextKeyVirtualKey`, `BifrostContextKeyAPIKeyName`, `BifrostContextKeyAPIKeyID`, `BifrostContextKeyAvailableProviders`, or custom plugin keys). Pass an explicit `*schemas.BifrostContext` when sharing key selection, governance, or custom values across calls.
+  </Warning>
 - chore: brotli 1.2.8 and dependency updates
 - chore: upgraded Go to 1.27.4
