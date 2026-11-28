@@ -971,16 +971,24 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		}
 	}
 	bedrockReq.ServiceTier = bedrockServiceTierForModel(caps, bifrostReq.Params.ServiceTier)
+	// TopK — prefer the promoted neutral field; fall back to ExtraParams.
+	topK := bifrostReq.Params.TopK
 	// Add extra parameters
-	if len(bifrostReq.Params.ExtraParams) > 0 {
-		bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
-		if err := applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq); err != nil {
-			return err
+	extraParams := newConverseExtraParams(bifrostReq.Params.ExtraParams)
+	rawTopK, hasExtraTopK := extraParams.m["top_k"]
+	if (topK != nil || hasExtraTopK) && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+		if extraTopK, ok := schemas.SafeExtractIntPointer(rawTopK); ok {
+			extraParams.consume("top_k")
+			if topK == nil {
+				topK = extraTopK
+			}
 		}
-		if len(bedrockReq.ExtraParams) == 0 {
-			bedrockReq.ExtraParams = nil
-		}
+		applyAnthropicTopK(caps, topK, bedrockReq)
 	}
+	if err := applyBedrockExtraParams(&extraParams, bedrockReq); err != nil {
+		return err
+	}
+	bedrockReq.ExtraParams = extraParams.result()
 	if bedrockReq.OutputConfig != nil {
 		setNativeStructuredOutputStrict(ctx, bifrostReq.Model, bedrockReq)
 	}
@@ -1389,10 +1397,26 @@ func invokeChatGuardTagging(request *schemas.BifrostChatRequest) (*schemas.Bifro
 	return &reqCopy, body, nil
 }
 
-// applyBedrockExtraParams lifts the Bedrock-specific extra params into the typed request.
+// applyAnthropicTopK sends a Claude caller's top_k through additionalModelRequestFields, the
+// only place Converse takes it (the invoke route does the same). The caller checks that the
+// model is a Claude model. Models that reject top_k (adaptive-only thinking) get none, matching
+// the Anthropic provider. Runs before applyBedrockExtraParams so an explicit
+// additionalModelRequestFieldPaths entry still wins.
+func applyAnthropicTopK(caps schemas.ModelCaps, topK *int, bedrockReq *BedrockConverseRequest) {
+	if topK == nil || caps.AdaptiveOnlyThinking(anthropic.DefaultAdaptiveOnlyThinking(caps.Model())) {
+		return
+	}
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+	}
+	bedrockReq.AdditionalModelRequestFields.Set("top_k", *topK)
+}
+
+// applyBedrockExtraParams lifts the Bedrock-specific extra params into the typed request and
+// consumes them from params.
 // The only error is a malformed guardrailConfig.tagSuffix, which the converters return as-is.
-func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *BedrockConverseRequest) error {
-	if guardrailConfig, exists := extraParams["guardrailConfig"]; exists {
+func applyBedrockExtraParams(params *converseExtraParams, bedrockReq *BedrockConverseRequest) error {
+	if guardrailConfig, exists := params.m["guardrailConfig"]; exists {
 		if gc, ok := guardrailConfig.(map[string]interface{}); ok {
 			config := &BedrockGuardrailConfig{}
 			if identifier, ok := gc["guardrailIdentifier"].(string); ok {
@@ -1413,7 +1437,7 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 				}
 				config.TagSuffix = suffix
 			}
-			delete(extraParams, "guardrailConfig")
+			params.consume("guardrailConfig")
 			// A config naming no guardrail (e.g. only a tagSuffix lifted from an InvokeModel
 			// body whose identifier travelled in headers) applies nothing, so the tags stay
 			// literal rather than becoming guardContent entries for a guardrail AWS never sees.
@@ -1424,9 +1448,9 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 		}
 	}
 
-	if requestFields, exists := extraParams["additionalModelRequestFieldPaths"]; exists {
+	if requestFields, exists := params.m["additionalModelRequestFieldPaths"]; exists {
 		if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
-			delete(extraParams, "additionalModelRequestFieldPaths")
+			params.consume("additionalModelRequestFieldPaths")
 			bedrockReq.AdditionalModelRequestFields = mergeAdditionalModelRequestFields(
 				bedrockReq.AdditionalModelRequestFields,
 				orderedFields,
@@ -1434,9 +1458,9 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 		}
 	}
 
-	if responseFields, exists := extraParams["additionalModelResponseFieldPaths"]; exists {
+	if responseFields, exists := params.m["additionalModelResponseFieldPaths"]; exists {
 		if fields, ok := responseFields.([]string); ok {
-			delete(extraParams, "additionalModelResponseFieldPaths")
+			params.consume("additionalModelResponseFieldPaths")
 			bedrockReq.AdditionalModelResponseFieldPaths = fields
 		} else if fieldsInterface, ok := responseFields.([]interface{}); ok {
 			stringFields := make([]string, 0, len(fieldsInterface))
@@ -1446,26 +1470,26 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 				}
 			}
 			if len(stringFields) > 0 {
-				delete(extraParams, "additionalModelResponseFieldPaths")
+				params.consume("additionalModelResponseFieldPaths")
 				bedrockReq.AdditionalModelResponseFieldPaths = stringFields
 			}
 		}
 	}
 
-	if perfConfig, exists := extraParams["performanceConfig"]; exists {
+	if perfConfig, exists := params.m["performanceConfig"]; exists {
 		if pc, ok := perfConfig.(map[string]interface{}); ok {
 			config := &BedrockPerformanceConfig{}
 			if latency, ok := pc["latency"].(string); ok {
 				config.Latency = &latency
 			}
-			delete(extraParams, "performanceConfig")
+			params.consume("performanceConfig")
 			bedrockReq.PerformanceConfig = config
 		}
 	}
 
-	if promptVars, exists := extraParams["promptVariables"]; exists {
+	if promptVars, exists := params.m["promptVariables"]; exists {
 		if vars, ok := promptVars.(map[string]interface{}); ok {
-			delete(extraParams, "promptVariables")
+			params.consume("promptVariables")
 			variables := make(map[string]BedrockPromptVariable)
 			for k, v := range vars {
 				if valueMap, ok := v.(map[string]interface{}); ok {
@@ -1482,9 +1506,9 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 		}
 	}
 
-	if reqMetadata, exists := extraParams["requestMetadata"]; exists {
+	if reqMetadata, exists := params.m["requestMetadata"]; exists {
 		if metadata, ok := schemas.SafeExtractStringMap(reqMetadata); ok {
-			delete(extraParams, "requestMetadata")
+			params.consume("requestMetadata")
 			bedrockReq.RequestMetadata = metadata
 		}
 	}
@@ -2015,15 +2039,41 @@ func bedrockTopLevelCacheControl(extraParams map[string]interface{}) *schemas.Ca
 	return cc
 }
 
-// withoutTopLevelCacheControl returns extraParams minus "cache_control", cloning only when the key
-// is present. The map belongs to the Bifrost request, which fallbacks reuse, so it is never written.
-func withoutTopLevelCacheControl(extraParams map[string]interface{}) map[string]interface{} {
-	if _, ok := extraParams["cache_control"]; !ok {
-		return extraParams
+// converseExtraParams is the caller's ExtraParams as the Converse converters see them. The map
+// belongs to the Bifrost request, which fallbacks reuse, so it is copied the first time a
+// converter consumes a key (cache_control, stop, top_k, guardrailConfig, ...). A request that
+// consumes nothing passes the caller's map through without a copy.
+type converseExtraParams struct {
+	m      map[string]interface{}
+	copied bool
+}
+
+// newConverseExtraParams wraps extraParams and drops the top-level "cache_control", which the
+// converters handle on their own.
+func newConverseExtraParams(extraParams map[string]interface{}) converseExtraParams {
+	p := converseExtraParams{m: extraParams}
+	p.consume("cache_control")
+	return p
+}
+
+// consume removes key, copying the caller's map first if it has not been copied yet.
+func (p *converseExtraParams) consume(key string) {
+	if _, ok := p.m[key]; !ok {
+		return
 	}
-	out := maps.Clone(extraParams)
-	delete(out, "cache_control")
-	return out
+	if !p.copied {
+		p.m = maps.Clone(p.m)
+		p.copied = true
+	}
+	delete(p.m, key)
+}
+
+// result returns what is left for the request body, nil when nothing is.
+func (p *converseExtraParams) result() map[string]interface{} {
+	if len(p.m) == 0 {
+		return nil
+	}
+	return p.m
 }
 
 // applyBedrockAutomaticCachePoint translates Anthropic automatic caching (a top-level

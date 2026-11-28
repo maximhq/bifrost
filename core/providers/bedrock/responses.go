@@ -2799,19 +2799,24 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			}
 		}
 		if bifrostReq.Params.ExtraParams != nil {
-			bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
-			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
-				delete(bedrockReq.ExtraParams, "stop")
+			extraParams := newConverseExtraParams(bifrostReq.Params.ExtraParams)
+			if stop, ok := schemas.SafeExtractStringSlice(extraParams.m["stop"]); ok {
+				extraParams.consume("stop")
 				if !caps.FieldUnsupported(schemas.FieldStop, !converseAcceptsStopSequences(capModel)) {
 					inferenceConfig.StopSequences = stop
 				}
 			}
-			if err := applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq); err != nil {
+			// The Anthropic Messages ingress carries top_k here; Converse has no typed slot for it.
+			if rawTopK, ok := extraParams.m["top_k"]; ok && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+				if topK, ok := schemas.SafeExtractIntPointer(rawTopK); ok {
+					extraParams.consume("top_k")
+					applyAnthropicTopK(caps, topK, bedrockReq)
+				}
+			}
+			if err := applyBedrockExtraParams(&extraParams, bedrockReq); err != nil {
 				return nil, err
 			}
-			if len(bedrockReq.ExtraParams) == 0 {
-				bedrockReq.ExtraParams = nil
-			}
+			bedrockReq.ExtraParams = extraParams.result()
 		}
 		if bedrockReq.OutputConfig != nil {
 			setNativeStructuredOutputStrict(ctx, bifrostReq.Model, bedrockReq)

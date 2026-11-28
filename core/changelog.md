@@ -47,6 +47,7 @@
 - fix: bedrock - `/anthropic/v1/messages` with `output_config.format` streams one well-formed text block, and plain-text answers are no longer lost
 - fix: bedrock - honour `network_config.base_url` and apply the dial-time address policy to the net/http client
 - fix: bedrock - a caller's `anthropic_beta` on Converse is merged with derived betas (thanks [@fus3r](https://github.com/fus3r)!)
+- fix: bedrock - `top_k` for Claude models that accept it (not the adaptive-only-thinking ones such as Opus 4.7+, Sonnet/Haiku 5+ and Fable) reaches Converse as `additionalModelRequestFields.top_k` on the `/anthropic/v1/messages` and chat routes instead of being dropped (thanks [@bardrop](https://github.com/bardrop)!)
 - fix: bedrock - InvokeModel keeps `tool_reference` blocks inside a client `tool_result` (thanks [@kunalgoesbyken](https://github.com/kunalgoesbyken)!)
 - fix: bedrock - Claude Responses requests with computer tools go through InvokeModel, and replayed `tool_use` blocks keep `toolset_name` (thanks [@davidelct](https://github.com/davidelct)!)
 - fix: vertex - Anthropic betas are sent in the `anthropic-beta` header, including on CountTokens
