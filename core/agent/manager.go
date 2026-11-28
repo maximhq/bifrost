@@ -2069,7 +2069,7 @@ func (m *Manager) fetchOAuthAccessToken(ctx context.Context, auth *schemas.Upstr
 	}
 	defer resp.Body.Close()
 	defer tokenClient.CloseIdleConnections()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return "", time.Time{}, fmt.Errorf("acquire OAuth access token: unexpected HTTP status %s", resp.Status)
 	}
 	var tokenResponse struct {
@@ -2247,7 +2247,7 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	if capture != nil && resp != nil && resp.Body != nil {
 		resp.Body = &captureReadCloser{ReadCloser: resp.Body, capture: capture, expected: resp.ContentLength}
 	}
-	if err == nil && resp != nil && resp.StatusCode != http.StatusOK && clone.Method == http.MethodPost && !isHTTPJSONErrorResponse(clone, resp) {
+	if err == nil && resp != nil && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) && clone.Method == http.MethodPost && !isHTTPJSONErrorResponse(clone, resp) {
 		if capture != nil {
 			// Closing the HTTP body interrupts a stalled read. Capture must not
 			// delay a status-only SDK error indefinitely just to record its body.
