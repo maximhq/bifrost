@@ -44,11 +44,16 @@ func NewOtelClientGRPC(endpoint string, headers map[string]string, tlsCACert str
 
 // Emit sends a trace to the OpenTelemetry collector
 func (c *OtelClientGRPC) Emit(ctx context.Context, rs []*ResourceSpan) error {
+	_, err := c.emit(ctx, rs)
+	return err
+}
+
+func (c *OtelClientGRPC) emit(ctx context.Context, rs []*ResourceSpan) (traceExportResult, error) {
 	if c.headers != nil {
 		ctx = metadata.NewOutgoingContext(ctx, metadata.New(c.headers))
 	}
-	_, err := c.client.Export(ctx, &collectorpb.ExportTraceServiceRequest{ResourceSpans: rs})
-	return err
+	reply, err := c.client.Export(ctx, &collectorpb.ExportTraceServiceRequest{ResourceSpans: rs})
+	return traceExportResult{partialSuccess: reply.GetPartialSuccess(), headers: c.headers}, err
 }
 
 // Close closes the gRPC connection

@@ -39,12 +39,14 @@ type MetricsExporter struct {
 	meter    metric.Meter
 
 	// Bifrost metrics - counters
-	upstreamRequestsTotal *syncInt64Counter
-	successRequestsTotal  *syncInt64Counter
-	errorRequestsTotal    *syncInt64Counter
-	inputTokensTotal      *syncInt64Counter
-	outputTokensTotal     *syncInt64Counter
-	cacheHitsTotal        *syncInt64Counter
+	upstreamRequestsTotal    *syncInt64Counter
+	successRequestsTotal     *syncInt64Counter
+	errorRequestsTotal       *syncInt64Counter
+	inputTokensTotal         *syncInt64Counter
+	outputTokensTotal        *syncInt64Counter
+	cacheHitsTotal           *syncInt64Counter
+	traceRejectedSpansTotal  *syncInt64Counter
+	tracePartialExportsTotal *syncInt64Counter
 
 	// Provider-side prompt cache token counters (distinct from cacheHitsTotal, which
 	// counts Bifrost's own semantic-cache hits).
@@ -335,6 +337,18 @@ func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 }
 
 func (m *MetricsExporter) initMetrics() {
+	m.traceRejectedSpansTotal = &syncInt64Counter{
+		name:  "bifrost_otel_trace_rejected_spans_total",
+		desc:  "Spans rejected in OTLP trace export acknowledgements",
+		unit:  "{span}",
+		meter: m.meter,
+	}
+	m.tracePartialExportsTotal = &syncInt64Counter{
+		name:  "bifrost_otel_trace_partial_exports_total",
+		desc:  "OTLP trace exports acknowledged with rejected spans",
+		unit:  "{export}",
+		meter: m.meter,
+	}
 	// Bifrost upstream metrics
 	m.upstreamRequestsTotal = &syncInt64Counter{
 		name:  "bifrost_upstream_requests_total",
@@ -552,6 +566,12 @@ func (m *MetricsExporter) Shutdown(ctx context.Context) error {
 		return m.provider.Shutdown(ctx)
 	}
 	return nil
+}
+
+func (m *MetricsExporter) recordTraceRejection(ctx context.Context, rejected int64, profileIndex int) {
+	profile := metric.WithAttributes(attribute.Int("bifrost.otel.profile_index", profileIndex))
+	m.traceRejectedSpansTotal.Add(ctx, rejected, profile)
+	m.tracePartialExportsTotal.Add(ctx, 1, profile)
 }
 
 // RecordUpstreamRequest records an upstream request metric

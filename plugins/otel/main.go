@@ -433,7 +433,8 @@ type otelTarget struct {
 	serviceName                      string
 	url                              string
 	traceType                        TraceType
-	client                           OtelClient
+	client                           traceExporter
+	profileIndex                     int
 	metricsExporter                  *MetricsExporter
 	requestHeaders                   []string
 	disableContentLogging            bool
@@ -455,6 +456,10 @@ type otelTarget struct {
 	breakerOpenUntil    atomic.Int64 // UnixNano; exports are skipped until this instant
 	suppressedExports   atomic.Int64
 	failedExports       atomic.Int64
+	unreadableAcks      atomic.Int64
+	partialReplies      atomic.Int64
+	partialExports      atomic.Int64
+	rejectedSpans       atomic.Int64
 }
 
 // tripBreaker records a failed export and opens the circuit once the failure threshold
@@ -637,6 +642,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	}
 
 	target := &otelTarget{
+		profileIndex:                     index,
 		serviceName:                      serviceName,
 		traceType:                        profile.TraceType,
 		requestHeaders:                   slices.Clone(profile.RequestHeaders),
@@ -989,7 +995,8 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			// on the export — and the only bound at all on the gRPC path.
 			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)
 			defer cancel()
-			if err := t.client.Emit(emitCtx, []*ResourceSpan{resourceSpan}); err != nil {
+			result, err := t.client.emit(emitCtx, []*ResourceSpan{resourceSpan})
+			if err != nil {
 				t.tripBreaker()
 				if n := t.failedExports.Load(); n == 1 || n%exportLogThrottle == 0 {
 					logger.Error("failed to emit trace %s to %s: %v (%d failed exports so far)", trace.TraceID, t.url, err, n)
@@ -997,21 +1004,49 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 				return
 			}
 			t.resetBreaker()
+			if result.ackWarning != "" {
+				if n := t.unreadableAcks.Add(1); n == 1 || n%exportLogThrottle == 0 {
+					logger.Warn("[otel] trace collector for profile %d returned 2xx with unreadable acknowledgement (%s); export counted as succeeded (%d unreadable acknowledgements so far)",
+						t.profileIndex, result.ackWarning, n)
+				}
+			} else if result.partialSuccess != nil {
+				t.recordPartialSuccess(ctx, result)
+			}
 		}(t)
 	}
 	wg.Wait()
 	return nil
 }
 
-// ExportStats reports per-target export health: how many exports failed and how many
-// were suppressed by an open circuit breaker. A rising suppressed count means the
-// target's endpoint is being treated as dead — usually a misconfigured collector URL.
-func (p *OtelPlugin) ExportStats() map[string]struct{ Failed, Suppressed int64 } {
-	stats := make(map[string]struct{ Failed, Suppressed int64 }, len(p.targets))
+func (t *otelTarget) recordPartialSuccess(ctx context.Context, result traceExportResult) {
+	rejected := result.partialSuccess.GetRejectedSpans()
+	if rejected > 0 {
+		t.rejectedSpans.Add(rejected)
+		t.partialExports.Add(1)
+		if t.metricsExporter != nil {
+			t.metricsExporter.recordTraceRejection(ctx, rejected, t.profileIndex)
+		}
+	} else if result.partialSuccess.GetErrorMessage() == "" {
+		return
+	}
+
+	if n := t.partialReplies.Add(1); n == 1 || n%exportLogThrottle == 0 {
+		logger.Warn("[otel] trace collector for profile %d acknowledged an export with rejected_spans=%d, diagnostic=%q (%d partial acknowledgements so far)",
+			t.profileIndex, rejected, result.diagnostic(), n)
+	}
+}
+
+// ExportStats reports per-target export health: how many exports failed or were
+// suppressed by an open circuit breaker, and how many spans or exports the
+// collector acknowledged as partially rejected.
+func (p *OtelPlugin) ExportStats() map[string]struct{ Failed, Suppressed, RejectedSpans, PartialExports int64 } {
+	stats := make(map[string]struct{ Failed, Suppressed, RejectedSpans, PartialExports int64 }, len(p.targets))
 	for _, t := range p.targets {
-		stats[t.url] = struct{ Failed, Suppressed int64 }{
-			Failed:     t.failedExports.Load(),
-			Suppressed: t.suppressedExports.Load(),
+		stats[t.url] = struct{ Failed, Suppressed, RejectedSpans, PartialExports int64 }{
+			Failed:         t.failedExports.Load(),
+			Suppressed:     t.suppressedExports.Load(),
+			RejectedSpans:  t.rejectedSpans.Load(),
+			PartialExports: t.partialExports.Load(),
 		}
 	}
 	return stats
