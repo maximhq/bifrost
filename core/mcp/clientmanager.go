@@ -191,7 +191,7 @@ func (m *MCPManager) dialClientConn(ctx *schemas.BifrostContext, state *schemas.
 		}
 		// Build, start, and initialize with a single retry loop covering the
 		// whole connect handshake — same recreate-fresh-per-attempt shape as
-		// connectToMCPClient's shared-connect path (each attempt closes the
+		// connectToMCPClient's shared HTTP path (each attempt closes the
 		// previous attempt's client and builds a new one) but with
 		// PerCallConnectRetryConfig, not ConnectRetryConfig: unlike the shared
 		// dial, this runs synchronously in front of a live tool call with no
@@ -3189,7 +3189,7 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 			mutForWire = &clone
 		}
 
-		// Start the transport (with internal retries). Each retry uses a fresh client.
+		// Build and start a fresh transport, closing any discarded attempt first.
 		m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
 		transportRetryConfig := ConnectRetryConfig
 		// A spec that does not parse will not parse on the next attempt either:
@@ -3202,55 +3202,53 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 			}
 			return isTransientError(err)
 		}
-		if startErr := ExecuteWithRetry(
-			dialCtx,
-			func() error {
-				// Close previous client if this is a retry attempt
-				if externalClient != nil {
-					if closeErr := externalClient.Close(); closeErr != nil {
-						m.logger.Warn("%s Failed to close external client during retry: %v", MCPLogPrefix, closeErr)
-					}
+		startTransport := func() error {
+			// Close previous client if this is a retry attempt
+			if externalClient != nil {
+				if closeErr := externalClient.Close(); closeErr != nil {
+					m.logger.Warn("%s Failed to close external client during retry: %v", MCPLogPrefix, closeErr)
 				}
-				// Create a fresh client for this attempt
-				var createErr error
-				switch config.ConnectionType {
-				case schemas.MCPConnectionTypeHTTP:
-					externalClient, connectionInfo, createErr = m.createHTTPConnection(m.ctx, config, mutForWire, "")
-				case schemas.MCPConnectionTypeSTDIO:
-					externalClient, connectionInfo, createErr = m.createSTDIOConnection(m.ctx, config, mutForWire)
-				case schemas.MCPConnectionTypeSSE:
-					externalClient, connectionInfo, createErr = m.createSSEConnection(m.ctx, config, mutForWire)
-				case schemas.MCPConnectionTypeInProcess:
-					externalClient, connectionInfo, createErr = m.createInProcessConnection(m.ctx, config)
-				case schemas.MCPConnectionTypeOpenAPI:
-					externalClient, connectionInfo, createErr = m.createOpenAPIConnection(ctx, config, preReq.Headers)
-				default:
-					return fmt.Errorf("unknown connection type: %s", config.ConnectionType)
-				}
-				if createErr != nil {
-					return createErr
-				}
-				// Create per-attempt timeout context for Start operation
-				// Each attempt has a deadline to prevent indefinite hangs
-				var perAttemptCtx context.Context
-				if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
-					// For STDIO/SSE: use longLivedCtx directly without additional timeout
-					// The subprocess needs the context to stay valid for the entire connection lifetime
-					// Do NOT defer cancel - the context manages the subprocess lifetime.
-					perAttemptCtx = longLivedCtx
-					m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
-				} else {
-					// HTTP already has timeout
-					perAttemptCtx = ctx
-				}
-				return externalClient.Start(perAttemptCtx)
-			},
-			transportRetryConfig,
-			m.logger,
-		); startErr != nil {
-			return nil, fmt.Errorf("failed to start MCP client transport: %w", startErr)
+			}
+			// Create a fresh client for this attempt
+			var createErr error
+			switch config.ConnectionType {
+			case schemas.MCPConnectionTypeHTTP:
+				externalClient, connectionInfo, createErr = m.createHTTPConnection(m.ctx, config, mutForWire, "")
+			case schemas.MCPConnectionTypeSTDIO:
+				externalClient, connectionInfo, createErr = m.createSTDIOConnection(m.ctx, config, mutForWire)
+			case schemas.MCPConnectionTypeSSE:
+				externalClient, connectionInfo, createErr = m.createSSEConnection(m.ctx, config, mutForWire)
+			case schemas.MCPConnectionTypeInProcess:
+				externalClient, connectionInfo, createErr = m.createInProcessConnection(m.ctx, config)
+			case schemas.MCPConnectionTypeOpenAPI:
+				externalClient, connectionInfo, createErr = m.createOpenAPIConnection(ctx, config, preReq.Headers)
+			default:
+				return fmt.Errorf("unknown connection type: %s", config.ConnectionType)
+			}
+			if createErr != nil {
+				return createErr
+			}
+			// Create per-attempt timeout context for Start operation
+			// Each attempt has a deadline to prevent indefinite hangs
+			var perAttemptCtx context.Context
+			if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+				// For STDIO/SSE: use longLivedCtx directly without additional timeout
+				// The subprocess needs the context to stay valid for the entire connection lifetime
+				// Do NOT defer cancel - the context manages the subprocess lifetime.
+				perAttemptCtx = longLivedCtx
+				m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
+			} else {
+				// HTTP already has timeout
+				perAttemptCtx = ctx
+			}
+			return externalClient.Start(perAttemptCtx)
 		}
-		m.logger.Debug("%s [%s] Transport started successfully", MCPLogPrefix, config.Name)
+		if config.ConnectionType != schemas.MCPConnectionTypeHTTP {
+			if startErr := ExecuteWithRetry(dialCtx, startTransport, transportRetryConfig, m.logger); startErr != nil {
+				return nil, fmt.Errorf("failed to start MCP client transport: %w", startErr)
+			}
+			m.logger.Debug("%s [%s] Transport started successfully", MCPLogPrefix, config.Name)
+		}
 
 		// Initialize with retry. Capture InitializeResult so the gate response can expose
 		// ServerInfo / ProtocolVersion / Capabilities.
@@ -3268,6 +3266,15 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 		if initErr := ExecuteWithRetry(
 			dialCtx,
 			func() error {
+				// HTTP Start and Initialize share one retry budget and a fresh client.
+				// Initialize can fail after the transport has saved a session ID (for
+				// example, when the initialized notification fails). Reusing that
+				// client can reinitialize a partially established session.
+				if config.ConnectionType == schemas.MCPConnectionTypeHTTP {
+					if startErr := startTransport(); startErr != nil {
+						return fmt.Errorf("failed to start MCP client transport: %w", startErr)
+					}
+				}
 				var initCtx context.Context
 				if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
 					var initCancel context.CancelFunc
