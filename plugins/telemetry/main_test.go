@@ -80,6 +80,61 @@ func waitForCounter(t *testing.T, reg *prometheus.Registry, name string, want fl
 	}
 }
 
+// histogramCount sums the observation count of the named histogram family across every
+// series. PostLLMHook's intermediate-chunk branch observes a stream-latency histogram and
+// then returns, so this reaching N is proof that N such goroutines have run to completion
+// and can no longer touch the request counters.
+func histogramCount(t *testing.T, reg *prometheus.Registry, name string) uint64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var total uint64
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			total += m.GetHistogram().GetSampleCount()
+		}
+	}
+	return total
+}
+
+// waitForHistogramCount polls until the named histogram has recorded want observations.
+func waitForHistogramCount(t *testing.T, reg *prometheus.Registry, name string, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if got := histogramCount(t, reg, name); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("histogram %s count = %d, want %d (timed out)", name, histogramCount(t, reg, name), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// assertCounterSettlesAt waits for the named counter to reach want and then keeps reading it
+// for settleFor, failing the moment it moves. A single read after a fixed sleep cannot tell
+// "the goroutines are done" from "the late one has not landed yet"; PostLLMHook records in an
+// unsynchronised goroutine and the plugin exposes no handle to wait on, so the check is a
+// sustained observation rather than one sample.
+func assertCounterSettlesAt(t *testing.T, reg *prometheus.Registry, name string, want float64) {
+	t.Helper()
+	const settleFor = 250 * time.Millisecond
+	waitForCounter(t, reg, name, want)
+	deadline := time.Now().Add(settleFor)
+	for time.Now().Before(deadline) {
+		if got := counterTotal(t, reg, name); got != want {
+			t.Fatalf("counter %s moved to %v during the %s settle window, want a steady %v", name, got, settleFor, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // usageCase describes one usage-bearing response type and the input/output tokens the plugin
 // must record for it.
 type usageCase struct {
@@ -282,6 +337,165 @@ func TestCancelledStreamPricesResolvedModel(t *testing.T) {
 				t.Fatalf("CalculateCostForUsage = %v, want > 0 (pricing row not matched)", wantCost)
 			}
 			waitForCounter(t, p.registry, "bifrost_cost_total", wantCost)
+		})
+	}
+}
+
+// errorSeriesLabels returns the labels of every bifrost_error_requests_total series the
+// registry holds, so a test can assert the failure was filed under the right method,
+// status_code and error_type rather than merely counted somewhere.
+func errorSeriesLabels(t *testing.T, reg *prometheus.Registry) []map[string]string {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var out []map[string]string
+	for _, mf := range fams {
+		if mf.GetName() != "bifrost_error_requests_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			out = append(out, labels)
+		}
+	}
+	return out
+}
+
+// policyBlockedError builds the 403 a governance policy raises for a blocked model, as core
+// reports it to post hooks: ExtraFields are already populated, so provider and model are set
+// and PostLLMHook's empty-label early return does not apply.
+func policyBlockedError(rt schemas.RequestType) *schemas.BifrostError {
+	bErr := &schemas.BifrostError{
+		StatusCode: new(403),
+		Error:      &schemas.ErrorField{Message: "model blocked by policy"},
+	}
+	bErr.ExtraFields.RequestType = rt
+	bErr.ExtraFields.Provider = schemas.OpenAI
+	bErr.ExtraFields.OriginalModelRequested = "gpt-test"
+	bErr.ExtraFields.ErrorType = schemas.ErrorTypePolicyModelBlocked
+	return bErr
+}
+
+// TestErrorCounterRecordsStreamFailureBeforeStreamStart is the regression for the missing
+// chat_completion_stream series. A stream request rejected before the stream starts reaches
+// post hooks straight from the pre-dispatch short-circuit path, which never sets the stream
+// end indicator, so PostLLMHook treated it as an intermediate chunk and returned above the
+// error counter: the caller got a 403 that bifrost_error_requests_total never recorded,
+// while the identical 403 on a non-stream request was recorded.
+//
+// The non-stream and final-chunk cases are controls, not decoration -- all three callers
+// here saw the same 403, and only the third was dropped.
+func TestErrorCounterRecordsStreamFailureBeforeStreamStart(t *testing.T) {
+	cases := []struct {
+		name        string
+		reqType     schemas.RequestType
+		endOfStream bool
+	}{
+		{name: "non_stream", reqType: schemas.ChatCompletionRequest},
+		{name: "stream_with_final_chunk", reqType: schemas.ChatCompletionStreamRequest, endOfStream: true},
+		{name: "stream_before_stream_start", reqType: schemas.ChatCompletionStreamRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPlugin(t)
+			ctx := newHookContext(tc.reqType)
+			if tc.endOfStream {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+			if _, _, err := p.PostLLMHook(ctx, nil, policyBlockedError(tc.reqType)); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+
+			waitForCounter(t, p.registry, "bifrost_error_requests_total", 1)
+			// The count alone would also pass with the failure filed under the wrong method
+			// or error_type, which is the shape the report describes: a counter that moved
+			// but holds no chat_completion_stream series.
+			want := map[string]string{
+				"method":      string(tc.reqType),
+				"status_code": "403",
+				"error_type":  string(schemas.ErrorTypePolicyModelBlocked),
+			}
+			series := errorSeriesLabels(t, p.registry)
+			matched := false
+			for _, labels := range series {
+				all := true
+				for k, v := range want {
+					if labels[k] != v {
+						all = false
+						break
+					}
+				}
+				if all {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				t.Fatalf("no bifrost_error_requests_total series matching %v; present: %v", want, series)
+			}
+		})
+	}
+}
+
+// TestErrorCounterCountsOneRequestPerStream bounds the blast radius of the fix above: a
+// failed stream now passes the intermediate-chunk return, and must not pass it twice. Both
+// sequences end in the terminal call that reports a stream failure -- every path that
+// delivers one sets the end indicator to true first -- so each is one request and belongs
+// in the counters once.
+//
+// The second sequence is the discriminating one. Skipping the intermediate-chunk return for
+// any failed stream, rather than only for one that never started, makes the mid-stream call
+// record a request of its own and the terminal call record it again. No current path
+// delivers that shape, so this guards the condition rather than a reachable regression.
+//
+// On waiting for the goroutines: a content chunk's goroutine observes a stream-latency
+// histogram and then returns, so that histogram reaching 2 proves both intermediate
+// goroutines finished without reaching the request counters. An erroring intermediate chunk
+// carries no result, so it observes nothing and leaves no such marker -- there the counters
+// are watched over a settle window instead, because the goroutine is unsynchronised and the
+// plugin offers nothing to wait on.
+func TestErrorCounterCountsOneRequestPerStream(t *testing.T) {
+	for _, errorOnIntermediateChunk := range []bool{false, true} {
+		name := "content_chunks_then_failure"
+		if errorOnIntermediateChunk {
+			name = "error_on_intermediate_chunk_then_failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			p := newTestPlugin(t)
+			ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+
+			chunk := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+			chunk.PopulateExtraFields(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "gpt-test", "gpt-test")
+			for range 2 {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, false)
+				var chunkErr *schemas.BifrostError
+				var chunkResp *schemas.BifrostResponse = chunk
+				if errorOnIntermediateChunk {
+					chunkErr, chunkResp = policyBlockedError(schemas.ChatCompletionStreamRequest), nil
+				}
+				if _, _, err := p.PostLLMHook(ctx, chunkResp, chunkErr); err != nil {
+					t.Fatalf("PostLLMHook chunk: %v", err)
+				}
+			}
+
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			if _, _, err := p.PostLLMHook(ctx, nil, policyBlockedError(schemas.ChatCompletionStreamRequest)); err != nil {
+				t.Fatalf("PostLLMHook terminal: %v", err)
+			}
+
+			if !errorOnIntermediateChunk {
+				// Both intermediate goroutines observed their latency and returned, so
+				// neither can reach the request counters after this point.
+				waitForHistogramCount(t, p.registry, "bifrost_stream_first_token_latency_seconds", 2)
+			}
+
+			assertCounterSettlesAt(t, p.registry, "bifrost_error_requests_total", 1)
+			assertCounterSettlesAt(t, p.registry, "bifrost_upstream_requests_total", 1)
 		})
 	}
 }

@@ -1,4 +1,5 @@
 - feat: `bifrost_provider_queue_wait_seconds` histogram for time spent waiting for a provider worker
 - fix: `bifrost_upstream_latency_seconds` excludes provider queue wait (thanks [@sam-klaviyo](https://github.com/sam-klaviyo)!)
 - fix: `bifrost_active_requests` no longer leaks on streams cancelled before headers
+- fix: `bifrost_error_requests_total` now records streaming requests that fail before the stream starts (governance or plugin rejections)
 - chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0
