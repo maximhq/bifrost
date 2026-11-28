@@ -805,7 +805,7 @@ func (m *MCPManager) refreshServerInstructions(ctx context.Context, config *sche
 	}
 	// Discovery also lists tools; only the instructions are taken, since the caller's
 	// own path is authoritative for tools and two writers could disagree.
-	discovery, err := m.discoverWithHeaders(attemptCtx, config, headers, 0)
+	discovery, err := m.discoverWithHeaders(attemptCtx, config, headers, 0, skipWarnPartial)
 	if err != nil {
 		m.logger.Debug("%s Instructions refresh failed for %s: %v — keeping the installed text", MCPLogPrefix, config.Name, err)
 		return false
@@ -958,7 +958,7 @@ func (m *MCPManager) RefreshClientTools(ctx context.Context, clientID string) (i
 		bfCtx := schemas.NewBifrostContext(attemptCtx, schemas.NoDeadline)
 		bfCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 
-		tools, err := m.runListToolsWithHooks(bfCtx, conn, config.Name)
+		tools, err := m.runListToolsWithHooks(bfCtx, conn, config.Name, skipWarnSync)
 		if err != nil {
 			return 0, fmt.Errorf("failed to list tools for MCP client %s: %w", config.Name, err)
 		}
@@ -1329,12 +1329,12 @@ func (m *MCPManager) newVerifyTransport(config *schemas.MCPClientConfig, url str
 //   - map[string]schemas.ChatTool: discovered tools keyed by prefixed name
 //   - error: any error during verification
 func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (*schemas.MCPDiscovery, error) {
-	return m.verifyPerUserOAuthConnection(ctx, config, accessToken, 0)
+	return m.verifyPerUserOAuthConnection(ctx, config, accessToken, 0, skipWarnUnsaved)
 }
 
 // verifyPerUserOAuthConnection is VerifyPerUserOAuthConnection; eachList > 0 gives each resources and
 // prompts list its own budget (see listResourcesAndPrompts).
-func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string, eachList time.Duration) (*schemas.MCPDiscovery, error) {
+func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string, eachList time.Duration, mode skipWarnMode) (*schemas.MCPDiscovery, error) {
 	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
 		return nil, fmt.Errorf("connection URL is required for per-user OAuth verification")
 	}
@@ -1460,7 +1460,7 @@ func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *s
 
 	// Discover tools through the list_tools plugin gate. PostHook may filter or augment
 	// the discovered set.
-	tools, err := m.runListToolsWithHooks(verifyCtx, tempClient, config.Name)
+	tools, err := m.runListToolsWithHooks(verifyCtx, tempClient, config.Name, mode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover tools during verification: %w", err)
 	}
@@ -1509,11 +1509,11 @@ func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *s
 //   - map[string]schemas.ChatTool: discovered tools keyed by prefixed name
 //   - error: any error during verification
 func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (*schemas.MCPDiscovery, error) {
-	return m.verifyHeadersConnection(ctx, config, userHeaders, 0)
+	return m.verifyHeadersConnection(ctx, config, userHeaders, 0, skipWarnUnsaved)
 }
 
 // verifyHeadersConnection is VerifyHeadersConnection; eachList as in verifyPerUserOAuthConnection.
-func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string, eachList time.Duration) (*schemas.MCPDiscovery, error) {
+func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string, eachList time.Duration, mode skipWarnMode) (*schemas.MCPDiscovery, error) {
 	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
 		return nil, fmt.Errorf("connection URL is required for per-user headers verification")
 	}
@@ -1641,7 +1641,7 @@ func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schema
 		return nil, fmt.Errorf("headers verification was short-circuited by plugin; cannot discover tools without a live connection")
 	}
 
-	tools, err := m.runListToolsWithHooks(verifyCtx, tempClient, config.Name)
+	tools, err := m.runListToolsWithHooks(verifyCtx, tempClient, config.Name, mode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover tools during verification: %w", err)
 	}
@@ -1678,13 +1678,13 @@ func (m *MCPManager) performAdminToolDiscovery(ctx context.Context, config *sche
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve admin credential: %w", err)
 	}
-	return m.discoverWithHeaders(ctx, config, headers, eachList)
+	return m.discoverWithHeaders(ctx, config, headers, eachList, skipWarnSync)
 }
 
 // discoverWithHeaders runs the one-shot connect-discover-close cycle with a
 // credential already resolved by the caller: the bearer it carries for the
 // OAuth-shaped auth types, the headers themselves for the rest.
-func (m *MCPManager) discoverWithHeaders(ctx context.Context, config *schemas.MCPClientConfig, headers http.Header, eachList time.Duration) (*schemas.MCPDiscovery, error) {
+func (m *MCPManager) discoverWithHeaders(ctx context.Context, config *schemas.MCPClientConfig, headers http.Header, eachList time.Duration, mode skipWarnMode) (*schemas.MCPDiscovery, error) {
 	// Empty AuthType is "headers" everywhere else (see UpdateClient); without this it
 	// fell to the default below and refused discovery for any client that never set one.
 	authType := config.AuthType
@@ -1701,13 +1701,13 @@ func (m *MCPManager) discoverWithHeaders(ctx context.Context, config *schemas.MC
 		if accessToken == "" {
 			return nil, fmt.Errorf("admin credential resolved no access token")
 		}
-		return m.verifyPerUserOAuthConnection(ctx, config, accessToken, eachList)
+		return m.verifyPerUserOAuthConnection(ctx, config, accessToken, eachList, mode)
 	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone:
 		userHeaders := make(map[string]string, len(headers))
 		for k := range headers {
 			userHeaders[k] = headers.Get(k)
 		}
-		return m.verifyHeadersConnection(ctx, config, userHeaders, eachList)
+		return m.verifyHeadersConnection(ctx, config, userHeaders, eachList, mode)
 	default:
 		return nil, fmt.Errorf("admin tool discovery not supported for auth_type %q", authType)
 	}
@@ -1833,6 +1833,7 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 	m.logger.Debug("%s Closed client transport connection for MCP server '%s'", MCPLogPrefix, client.Name)
 	// Drop the client's discovery from the store
 	m.discoveryStore.DeleteDiscovery(m.ctx, m.configOrDialed(id, client))
+	m.skippedToolWarned.forget(client.Name)
 
 	delete(m.clientMap, id)
 	m.dropPerCallConn(id)
@@ -2296,6 +2297,11 @@ func (m *MCPManager) UpdateClient(id string) (retErr error) {
 		if oldMax, newMax := m.maxProtocolVersionFor(oldConfig), m.maxProtocolVersionFor(newConfig); oldMax != newMax {
 			m.dropPerCallConn(id)
 			renegotiate = client.Conn != nil && !wasDisabled && needsRenegotiation(client.Conn.ProtocolVersion(), oldMax, newMax)
+		}
+
+		// Warnings are recorded under the client name: drop the old name's on a rename.
+		if oldName := client.Name; oldName != newConfig.Name {
+			m.skippedToolWarned.forget(oldName)
 		}
 
 		// The entry now reflects the new record.
@@ -3355,7 +3361,7 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 		m.logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name)
 		toolRetrievalCtx, toolRetrievalCancel := context.WithTimeout(dialCtx, MCPClientConnectionEstablishTimeout)
 		defer toolRetrievalCancel()
-		t, err := m.runListToolsWithHooks(toolRetrievalCtx, externalClient, config.Name)
+		t, err := m.runListToolsWithHooks(toolRetrievalCtx, externalClient, config.Name, skipWarnSync)
 		if err != nil {
 			listToolsErr = err
 			// Debug, not Warn: every reconnect attempt during an outage lands

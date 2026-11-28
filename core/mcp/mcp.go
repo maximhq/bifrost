@@ -57,6 +57,7 @@ type MCPManager struct {
 	perCallConnsMu         sync.Mutex                     // Serializes building a perCallConn on a miss
 	maxProtocolVersion     atomic.Value                   // Global max protocol version (string); see ResolveMaxProtocolVersion
 	pendingRenegotiation   sync.Map                       // client ID -> struct{}: a protocol version change not yet applied to its connection
+	skippedToolWarned      skippedToolWarnings            // invalid tools already warned about, per client, so each sync does not repeat the warning
 
 	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
 	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the

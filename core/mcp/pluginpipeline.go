@@ -467,7 +467,7 @@ func drainMCPPluginLogs(ctx *schemas.BifrostContext) {
 // A PreHook short-circuit with Response is treated as a synthetic tool list (used as-is).
 // A PreHook short-circuit with Error returns the error; the caller decides whether to
 // keep existing state.
-func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Client, clientName string) (map[string]schemas.ChatTool, error) {
+func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Client, clientName string, mode skipWarnMode) (map[string]schemas.ChatTool, error) {
 	req := &schemas.BifrostMCPRequest{
 		RequestType:                schemas.MCPRequestTypeListTools,
 		ClientName:                 clientName,
@@ -481,7 +481,7 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 		// gate — notably BifrostContextKeyMCPExtraHeaders — are visible to the wire
 		// call. BifrostContext.Value walks parent-ward only, so the outer ctx cannot
 		// see writes made to its gateCtx child.
-		detailed, opErr := retrieveExternalToolsDetailed(gateCtx, conn, clientName, m.logger)
+		detailed, opErr := retrieveExternalToolsDetailed(gateCtx, conn, clientName, m.logger, &m.skippedToolWarned, mode)
 		if opErr != nil {
 			return nil, opErr
 		}

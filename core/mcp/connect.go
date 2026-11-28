@@ -195,7 +195,7 @@ func (m *MCPManager) discoverForCaller(ctx *schemas.BifrostContext, state *schem
 
 	listCtx, cancel := context.WithTimeout(ctx, ConnectionCheckTimeout)
 	defer cancel()
-	tools, err := m.runListToolsWithHooks(listCtx, conn, config.Name)
+	tools, err := m.runListToolsWithHooks(listCtx, conn, config.Name, skipWarnPartial)
 	if err != nil {
 		return 0, fmt.Errorf("failed to list the tools of MCP client %s: %w", config.Name, err)
 	}

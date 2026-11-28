@@ -29,6 +29,7 @@ syncmap	core/mcp	MCPManager.pendingRenegotiation	core: OSS core cannot import li
 syncmap	core/mcp	MCPManager.perCallConns	core: OSS core cannot import livestore
 syncmap	core/mcp	MCPManager.reconnectingClients	core: OSS core cannot import livestore
 lockedmap	core/mcp	memoryDiscoveryStore.discoveries	core: OSS core cannot import livestore
+syncmap	core/mcp	skippedToolWarnings.clients	core: OSS core cannot import livestore
 lockedmap	core/network	HTTPClientFactory.fasthttpClients	core: OSS core cannot import livestore
 lockedmap	core/network	HTTPClientFactory.httpClients	core: OSS core cannot import livestore
 lockedmap	core/network	HTTPClientFactory.liveFasthttp	core: OSS core cannot import livestore
