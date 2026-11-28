@@ -1,0 +1,173 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- if and $np.allowExternal $np.ingressFrom }}
+{{- fail "ERROR: networkPolicy.ingressFrom is set while networkPolicy.allowExternal is true, so it would be ignored and the Bifrost API port would accept every source. Set allowExternal to false to admit only ingressFrom, or remove ingressFrom." }}
+{{- end }}
+{{- $vs := .Values.vectorStore }}
+{{- /* Same conditions as the store Deployments: a policy exists only for a store the chart runs. */}}
+{{- $postgres := and (eq .Values.storage.mode "postgres") .Values.postgresql.enabled (not .Values.postgresql.external.enabled) }}
+{{- $redis := and $vs.enabled (eq $vs.type "redis") $vs.redis.enabled (not $vs.redis.external.enabled) }}
+{{- $qdrant := and $vs.enabled (eq $vs.type "qdrant") $vs.qdrant.enabled (not $vs.qdrant.external.enabled) }}
+{{- $weaviate := and $vs.enabled (eq $vs.type "weaviate") $vs.weaviate.enabled (not $vs.weaviate.external.enabled) }}
+{{- $cluster := .Values.bifrost.cluster }}
+{{- /* allowExternal: false with an empty ingressFrom admits nobody: an empty "from" would mean every source. */}}
+{{- $openToClients := or $np.allowExternal (not (empty $np.ingressFrom)) }}
+{{- $stores := list }}
+{{- if $postgres }}{{ $stores = append $stores (dict "component" "database" "ports" (list 5432)) }}{{ end }}
+{{- if $redis }}{{ $stores = append $stores (dict "component" "redis" "ports" (list 6379)) }}{{ end }}
+{{- if $qdrant }}{{ $stores = append $stores (dict "component" "vectorstore-qdrant" "ports" (list 6333 6334)) }}{{ end }}
+{{- if $weaviate }}{{ $stores = append $stores (dict "component" "vectorstore" "ports" (list 8080 50051)) }}{{ end }}
+{{- /* External stores: their configured ports, to any destination, since a NetworkPolicy cannot match host
+       names. Ports given as env.VAR references are unknown at render time and belong in egress.ports. */}}
+{{- $external := list }}
+{{- $logs := .Values.storage.logsStore }}
+{{- $usesPostgres := or (eq .Values.storage.mode "postgres") (eq (toString .Values.storage.configStore.type) "postgres") (eq (toString $logs.type) "postgres") }}
+{{- if and $usesPostgres .Values.postgresql.external.enabled }}{{ $external = append $external .Values.postgresql.external.port }}{{ end }}
+{{- if dig "postgres" "enabled" false $logs }}{{ $external = append $external $logs.postgres.port }}{{ end }}
+{{- if eq (toString $logs.type) "clickhouse" }}
+{{- $ch := $logs.clickhouse | default dict }}
+{{- $http := eq (toString (dig "protocol" "native" $ch)) "http" }}
+{{- $external = append $external (dig "port" (ternary (ternary 8443 9440 $http) (ternary 8123 9000 $http) (dig "secure" false $ch)) $ch) }}
+{{- end }}
+{{- if and $vs.enabled (eq $vs.type "redis") $vs.redis.external.enabled }}{{ $external = append $external $vs.redis.external.port }}{{ end }}
+{{- if and $vs.enabled (eq $vs.type "qdrant") $vs.qdrant.external.enabled }}{{ $external = append $external $vs.qdrant.external.port }}{{ end }}
+{{- if and $vs.enabled (eq $vs.type "weaviate") $vs.weaviate.external.enabled }}
+{{- $w := $vs.weaviate.external }}
+{{- $external = append $external (regexFind ":[0-9]+$" (toString $w.host) | trimPrefix ":" | default (ternary 443 80 (eq $w.scheme "https"))) }}
+{{- with regexFind ":[0-9]+$" (toString $w.grpcHost) | trimPrefix ":" }}{{ $external = append $external . }}{{ end }}
+{{- end }}
+{{- $externalPorts := list }}
+{{- range $external }}{{ if regexMatch "^[0-9]+$" (toString .) }}{{ $externalPorts = append $externalPorts (toString . | atoi) }}{{ end }}{{ end }}
+{{- $externalPorts = $externalPorts | uniq }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bifrost.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "bifrost.serverSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    {{- if $np.egress.enabled }}
+    - Egress
+    {{- end }}
+  {{- if or $openToClients $cluster.enabled }}
+  ingress:
+    {{- if $openToClients }}
+    - ports:
+        - port: {{ .Values.bifrost.port }}
+          protocol: TCP
+      {{- if not $np.allowExternal }}
+      from:
+        {{- toYaml $np.ingressFrom | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- if $cluster.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "bifrost.serverSelectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ $cluster.gossip.port }}
+          protocol: TCP
+        - port: {{ $cluster.gossip.port }}
+          protocol: UDP
+        {{- if $cluster.grpc }}
+        - port: {{ $cluster.grpc.port }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- if $np.egress.enabled }}
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- /* An empty ports list would allow every port, so the rule is left out. */}}
+    {{- with $np.egress.ports }}
+    - ports:
+        {{- toYaml . | nindent 8 }}
+      {{- with $np.egress.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- with $externalPorts }}
+    - ports:
+        {{- range . }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- range $stores }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "bifrost.selectorLabels" $ | nindent 14 }}
+              app.kubernetes.io/component: {{ .component }}
+      ports:
+        {{- range .ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- if $cluster.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "bifrost.serverSelectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ $cluster.gossip.port }}
+          protocol: TCP
+        - port: {{ $cluster.gossip.port }}
+          protocol: UDP
+        {{- if $cluster.grpc }}
+        - port: {{ $cluster.grpc.port }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+  {{- end }}
+{{- range $stores }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bifrost.fullname" $ }}-{{ .component }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "bifrost.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ .component }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "bifrost.serverSelectorLabels" $ | nindent 14 }}
+      ports:
+        {{- range .ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- if and (eq .component "redis") $vs.redis.metrics.enabled $openToClients }}
+    {{- /* The exporter is scraped by Prometheus, so it follows the Bifrost API's ingress rule. */}}
+    - ports:
+        - port: {{ include "bifrost.redis.metricsPort" $ }}
+          protocol: TCP
+      {{- if not $np.allowExternal }}
+      from:
+        {{- toYaml $np.ingressFrom | nindent 8 }}
+      {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}
