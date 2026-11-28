@@ -352427,6 +352427,251 @@
           ]
         }
       ]
+    },
+    {
+      "name": "393. Responses-to-Chat streamed tool calls (responses-chat-parallel-tools) (#9498)",
+      "description": "Regression for #9498: a streaming Chat request routed to the OpenAI Responses API must preserve each function call index and arguments, including parallel calls. reasoning.mode=standard selects the Responses route; each case requires the conversion marker and checks every reconstructed Chat tool call. The local deterministic Go test covers parallel calls and terminal-only upstream arguments; the live parallel-enabled request permits the model to return one or more calls.",
+      "item": [
+        {
+          "name": "openai/gpt-6-luna chat->responses parallel streamed tools (responses-chat-parallel-tools) - #9498",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converted streamed tool calls keep indexes and arguments - #9498', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + text).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'expected SSE: ' + text).to.include('event-stream');",
+                  "  var calls = {}; var converted = false; var frames = 0; var streamError = false;",
+                  "  text.split('\\n').forEach(function (line) {",
+                  "    if (/^event:[ \\t]*error[ \\t]*\\r?$/.test(line)) { streamError = true; return; }",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    var frame = JSON.parse(payload); frames++;",
+                  "    if (frame.error != null) { streamError = true; }",
+                  "    if (frame.extra_fields && frame.extra_fields.converted_request_type === 'responses') { converted = true; }",
+                  "    var choice = frame.choices && frame.choices[0];",
+                  "    var parts = (choice && choice.delta && choice.delta.tool_calls) || [];",
+                  "    parts.forEach(function (part) {",
+                  "      pm.expect(part.index, 'missing tool call index: ' + text).to.be.a('number');",
+                  "      var call = calls[part.index] || {id: '', name: '', args: ''};",
+                  "      if (part.id) { pm.expect(call.id === '' || call.id === part.id, 'two call IDs share index ' + part.index + ': ' + text).to.be.true; call.id = part.id; }",
+                  "      if (part.function) { if (part.function.name) { call.name += part.function.name; } if (part.function.arguments) { call.args += part.function.arguments; } }",
+                  "      calls[part.index] = call;",
+                  "    });",
+                  "  });",
+                  "  pm.expect(frames, 'no JSON SSE frames: ' + text).to.be.above(0);",
+                  "  pm.expect(streamError, 'stream error event: ' + text).to.eql(false);",
+                  "  pm.expect(converted, 'Chat to Responses conversion did not fire: ' + text).to.be.true;",
+                  "  var indexes = Object.keys(calls).sort(function (a, b) { return Number(a) - Number(b); });",
+                  "  pm.expect(indexes.length, 'no tool calls: ' + text).to.be.above(0);",
+                  "  var ids = Object.create(null);",
+                  "  indexes.forEach(function (index, position) {",
+                  "    pm.expect(Number(index), 'non-contiguous tool call indexes: ' + text).to.eql(position);",
+                  "    var call = calls[index];",
+                  "    pm.expect(call.id, 'missing tool call ID: ' + text).to.be.a('string').and.not.empty;",
+                  "    pm.expect(ids[call.id], 'duplicate tool call ID: ' + text).to.be.undefined;",
+                  "    ids[call.id] = true;",
+                  "    pm.expect(['read', 'glob'].indexOf(call.name) !== -1, 'unexpected tool name: ' + text).to.be.true;",
+                  "    var args = JSON.parse(call.args);",
+                  "    if (call.name === 'read') { pm.expect(args.filePath, 'read argument missing: ' + text).to.be.a('string').and.not.empty; }",
+                  "    if (call.name === 'glob') { pm.expect(args.pattern, 'glob argument missing: ' + text).to.be.a('string').and.not.empty; }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call both functions now: read the file /tmp/example.txt and glob for *.go. Use both tools in the same response.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read\",\n        \"description\": \"Read a file\",\n        \"strict\": true,\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"filePath\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"filePath\"\n          ],\n          \"additionalProperties\": false\n        }\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"glob\",\n        \"description\": \"Find files matching a pattern\",\n        \"strict\": true,\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"pattern\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"pattern\"\n          ],\n          \"additionalProperties\": false\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"parallel_tool_calls\": true,\n  \"reasoning\": {\n    \"mode\": \"standard\"\n  },\n  \"max_completion_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai/gpt-6-luna chat->responses single streamed tools (responses-chat-parallel-tools) - #9498",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converted streamed tool calls keep indexes and arguments - #9498', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + text).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'expected SSE: ' + text).to.include('event-stream');",
+                  "  var calls = {}; var converted = false; var frames = 0; var streamError = false;",
+                  "  text.split('\\n').forEach(function (line) {",
+                  "    if (/^event:[ \\t]*error[ \\t]*\\r?$/.test(line)) { streamError = true; return; }",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    var frame = JSON.parse(payload); frames++;",
+                  "    if (frame.error != null) { streamError = true; }",
+                  "    if (frame.extra_fields && frame.extra_fields.converted_request_type === 'responses') { converted = true; }",
+                  "    var choice = frame.choices && frame.choices[0];",
+                  "    var parts = (choice && choice.delta && choice.delta.tool_calls) || [];",
+                  "    parts.forEach(function (part) {",
+                  "      pm.expect(part.index, 'missing tool call index: ' + text).to.be.a('number');",
+                  "      var call = calls[part.index] || {id: '', name: '', args: ''};",
+                  "      if (part.id) { pm.expect(call.id === '' || call.id === part.id, 'two call IDs share index ' + part.index + ': ' + text).to.be.true; call.id = part.id; }",
+                  "      if (part.function) { if (part.function.name) { call.name += part.function.name; } if (part.function.arguments) { call.args += part.function.arguments; } }",
+                  "      calls[part.index] = call;",
+                  "    });",
+                  "  });",
+                  "  pm.expect(frames, 'no JSON SSE frames: ' + text).to.be.above(0);",
+                  "  pm.expect(streamError, 'stream error event: ' + text).to.eql(false);",
+                  "  pm.expect(converted, 'Chat to Responses conversion did not fire: ' + text).to.be.true;",
+                  "  pm.expect(Object.keys(calls).sort(), 'wrong tool call indexes: ' + text).to.eql(['0']);",
+                  "  var byName = {}; var ids = {};",
+                  "  Object.keys(calls).forEach(function (index) { var call = calls[index]; pm.expect(call.id, 'missing tool call ID: ' + text).to.be.a('string').and.not.empty; pm.expect(ids[call.id], 'duplicate tool call ID: ' + text).to.be.undefined; ids[call.id] = true; pm.expect(byName[call.name], 'duplicate tool name: ' + text).to.be.undefined; byName[call.name] = JSON.parse(call.args); });",
+                  "  pm.expect(byName.read, 'read call or arguments missing: ' + text).to.exist;",
+                  "  pm.expect(byName.read.filePath, 'read argument missing: ' + text).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call read now for the file /tmp/example.txt.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read\",\n        \"description\": \"Read a file\",\n        \"strict\": true,\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"filePath\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"filePath\"\n          ],\n          \"additionalProperties\": false\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"parallel_tool_calls\": false,\n  \"reasoning\": {\n    \"mode\": \"standard\"\n  },\n  \"max_completion_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai/gpt-5.3-codex chat->responses mixed streamed tools (responses-chat-parallel-tools) - #9498",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mixed streamed calls keep indexes and payloads - #9498', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + text).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'expected SSE: ' + text).to.include('event-stream');",
+                  "  var calls = {}; var converted = false; var frames = 0; var streamError = false;",
+                  "  text.split('\\n').forEach(function (line) {",
+                  "    if (/^event:[ \\t]*error[ \\t]*\\r?$/.test(line)) { streamError = true; return; }",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    var frame = JSON.parse(payload); frames++;",
+                  "    if (frame.error != null) { streamError = true; }",
+                  "    if (frame.extra_fields && frame.extra_fields.converted_request_type === 'responses') { converted = true; }",
+                  "    var choice = frame.choices && frame.choices[0];",
+                  "    ((choice && choice.delta && choice.delta.tool_calls) || []).forEach(function (part) {",
+                  "      pm.expect(part.index, 'missing tool call index: ' + text).to.be.a('number');",
+                  "      var call = calls[part.index] || {id: '', type: '', name: '', args: '', input: ''};",
+                  "      if (part.id) { pm.expect(call.id === '' || call.id === part.id, 'two call IDs share index ' + part.index + ': ' + text).to.be.true; call.id = part.id; }",
+                  "      if (part.type) { call.type = part.type; }",
+                  "      if (part.function) { if (part.function.name) { call.name += part.function.name; } if (part.function.arguments) { call.args += part.function.arguments; } }",
+                  "      if (part.custom) { if (part.custom.name) { call.name += part.custom.name; } if (part.custom.input) { call.input += part.custom.input; } }",
+                  "      calls[part.index] = call;",
+                  "    });",
+                  "  });",
+                  "  pm.expect(frames, 'no JSON SSE frames: ' + text).to.be.above(0);",
+                  "  pm.expect(streamError, 'stream error event: ' + text).to.eql(false);",
+                  "  pm.expect(converted, 'Chat to Responses conversion did not fire: ' + text).to.be.true;",
+                  "  var indexes = Object.keys(calls).sort(function (a, b) { return Number(a) - Number(b); });",
+                  "  pm.expect(indexes.length, 'no tool calls: ' + text).to.be.above(0);",
+                  "  var ids = Object.create(null);",
+                  "  indexes.forEach(function (index, position) {",
+                  "    pm.expect(Number(index), 'non-contiguous tool call indexes: ' + text).to.eql(position);",
+                  "    var call = calls[index];",
+                  "    pm.expect(call.id, 'missing tool call ID: ' + text).to.be.a('string').and.not.empty;",
+                  "    pm.expect(ids[call.id], 'duplicate tool call ID: ' + text).to.be.undefined; ids[call.id] = true;",
+                  "    pm.expect(['read', 'code_exec'].indexOf(call.name) !== -1, 'unexpected tool name: ' + text).to.be.true;",
+                  "    if (call.name === 'read') { pm.expect(call.type, 'read type: ' + text).to.eql('function'); var args = JSON.parse(call.args); pm.expect(args.filePath, 'read argument missing: ' + text).to.be.a('string').and.not.empty; }",
+                  "    if (call.name === 'code_exec') { pm.expect(call.type, 'code_exec type: ' + text).to.eql('custom'); pm.expect(call.input, 'custom input missing: ' + text).to.be.a('string').and.not.empty; }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call both tools in the same response: read /tmp/example.txt and use code_exec to run Python that prints 1.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read\",\n        \"description\": \"Read a file\",\n        \"strict\": true,\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"filePath\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"filePath\"\n          ],\n          \"additionalProperties\": false\n        }\n      }\n    },\n    {\n      \"type\": \"custom\",\n      \"custom\": {\n        \"name\": \"code_exec\",\n        \"description\": \"Execute raw Python source\",\n        \"format\": {\n          \"type\": \"text\"\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"parallel_tool_calls\": true,\n  \"max_completion_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

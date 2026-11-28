@@ -963,7 +963,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 	roleSent := false
 	var identity chatStreamIdentity
 	var streamedInput map[string]struct{} // custom calls whose input arrived as deltas
-	var toolIndexes map[int]uint16        // chat tool call index by Responses output index
+	var toolState schemas.ResponsesToChatStreamState
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -979,8 +979,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				// chat→responses: convert responses stream chunk back to chat
 				if event := result.ResponsesStreamResponse; event != nil {
 					event, streamedInput = customInputAsDelta(event, streamedInput)
-					if converted := event.ToBifrostChatResponse(); converted != nil {
-						toolIndexes = setChatToolCallIndex(converted, event, toolIndexes)
+					if converted := toolState.Convert(event); converted != nil {
 						roleSent = setAssistantRoleOnce(converted, roleSent)
 						identity.apply(converted)
 						converted.ExtraFields.ConvertedRequestType = targetType
@@ -991,30 +990,6 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 		}
 		return postHookRunner(ctx, result, bifrostErr)
 	}
-}
-
-// setChatToolCallIndex numbers a converted stream's tool calls in the order their items were added.
-func setChatToolCallIndex(chunk *schemas.BifrostChatResponse, event *schemas.BifrostResponsesStreamResponse, indexes map[int]uint16) map[int]uint16 {
-	if event.OutputIndex == nil || len(chunk.Choices) == 0 {
-		return indexes
-	}
-	choice := chunk.Choices[0].ChatStreamResponseChoice
-	if choice == nil || choice.Delta == nil || len(choice.Delta.ToolCalls) == 0 {
-		return indexes
-	}
-	index, ok := indexes[*event.OutputIndex]
-	if !ok {
-		if event.Type != schemas.ResponsesStreamResponseTypeOutputItemAdded {
-			return indexes
-		}
-		if indexes == nil {
-			indexes = make(map[int]uint16)
-		}
-		index = uint16(len(indexes))
-		indexes[*event.OutputIndex] = index
-	}
-	choice.Delta.ToolCalls[0].Index = index
-	return indexes
 }
 
 // customInputAsDelta returns a custom_tool_call_input.done event as a delta when no delta
