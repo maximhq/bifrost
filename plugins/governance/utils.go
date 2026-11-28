@@ -690,7 +690,8 @@ func (p *GovernancePlugin) aliasTargets(ctx *schemas.BifrostContext) grant.Alias
 //
 // A budget's scope is applied here, once, so that what is checked, logged and charged agree: an
 // MCP tool execution answers only to "mcp" and "shared" budgets, every other request only to "model"
-// and "shared" ones. See BudgetsForRequestKind.
+// and "shared" ones. See BudgetsForRequestKind. Rate limits are filtered the same way, by
+// RateLimitsForRequestKind.
 func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, requestType schemas.RequestType, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
 	g := ctx.Grant()
 	if g == nil {
@@ -713,6 +714,7 @@ func resolveLimitsWith(ctx *schemas.BifrostContext, store GovernanceStore, acces
 		return nil, err
 	}
 	budgets = BudgetsForRequestKind(ctx, store, budgets, traffic)
+	rateLimits = RateLimitsForRequestKind(ctx, store, rateLimits, traffic)
 	limits := grant.NewLimits(budgets, rateLimits)
 	g.SetLimits(limits)
 	return limits, nil

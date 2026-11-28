@@ -6787,8 +6787,15 @@ func TestModelConfigAppliesTo(t *testing.T) {
 	assert.True(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "*", Budgets: budgets("")}, configstoreTables.LimitScopeMCP), "an unset scope reads as shared")
 	assert.False(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "*", Budgets: budgets(configstoreTables.LimitScopeModel)}, configstoreTables.LimitScopeMCP))
 	assert.False(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "*"}, configstoreTables.LimitScopeMCP))
+	assert.True(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "*", RequestLimits: []configstoreTables.TableRateLimit{{Scope: configstoreTables.LimitScopeMCP}}}, configstoreTables.LimitScopeMCP), "an mcp request limit reaches MCP traffic")
+	assert.False(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "*", RequestLimits: []configstoreTables.TableRateLimit{{Scope: configstoreTables.LimitScopeModel}}}, configstoreTables.LimitScopeMCP))
 	assert.False(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "*", Provider: &openai, Budgets: budgets(configstoreTables.LimitScopeShared)}, configstoreTables.LimitScopeMCP))
 	assert.False(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "gpt-4o", Budgets: budgets(configstoreTables.LimitScopeShared)}, configstoreTables.LimitScopeMCP))
+	combined := int64(5)
+	assert.True(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "*", RateLimit: &configstoreTables.TableRateLimit{RequestMaxLimit: &combined}}, configstoreTables.LimitScopeMCP),
+		"a legacy combined rate limit's request limit is shared, so MCP traffic counts on it")
+	assert.False(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "*", RateLimit: &configstoreTables.TableRateLimit{TokenMaxLimit: &combined}}, configstoreTables.LimitScopeMCP),
+		"Max Tokens alone counts model traffic only")
 	// Model traffic names a model, so a narrower row is charged by it as well.
 	assert.True(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "gpt-4o", Budgets: budgets(configstoreTables.LimitScopeModel)}, configstoreTables.LimitScopeModel))
 	assert.False(t, modelConfigAppliesTo(&configstoreTables.TableModelConfig{ModelName: "*", Budgets: budgets(configstoreTables.LimitScopeMCP)}, configstoreTables.LimitScopeModel))

@@ -8,6 +8,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -229,6 +230,10 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 		modelBudgets, modelRateLimits := r.store.GlobalModelLimits(ctx, evaluationRequest.Provider, evaluationRequest.Model)
 		budgets = append(budgets, modelBudgets...)
 		rateLimits = append(rateLimits, modelRateLimits...)
+		// Filtered by scope as settled limits are (see resolveLimitsWith).
+		traffic := configstoreTables.RequestScope(evaluationRequest.RequestType)
+		budgets = BudgetsForRequestKind(ctx, r.store, budgets, traffic)
+		rateLimits = RateLimitsForRequestKind(ctx, r.store, rateLimits, traffic)
 	}
 
 	// Rate limits before budgets, as they always have been: a rate limit refuses a request that

@@ -20545,6 +20545,8 @@ var excludedGoFields = map[string]map[string]bool{
 		"teams":        true, // GORM relation
 		"virtual_keys": true, // GORM relation
 		"team_count":   true, // Response-only count (gorm:"-"), set by the customer list read path
+		// GORM relation; config.json declares request limits as governance.rate_limits[] with customer_id
+		"request_limits": true,
 	},
 	"tables.TableTeam": {
 		"config_hash":  true,
@@ -20554,6 +20556,8 @@ var excludedGoFields = map[string]map[string]bool{
 		"rate_limit":   true, // GORM relation
 		"customer":     true, // GORM relation
 		"virtual_keys": true, // GORM relation
+		// GORM relation; config.json declares request limits as governance.rate_limits[] with team_id
+		"request_limits": true,
 	},
 	"tables.TableVirtualKey": {
 		"previous_value_expires_at": true, // Key-rotation runtime state; excluded from the config hash
@@ -20567,6 +20571,8 @@ var excludedGoFields = map[string]map[string]bool{
 		"team":                      true, // GORM relation
 		"customer":                  true, // GORM relation
 		"business_unit":             true, // Response-only (gorm:"-"), resolved on read from business_unit_id
+		// API-only projection (gorm:"-") of the key's VK-scoped model configs, like model_budgets
+		"request_limits": true,
 	},
 	"tables.TableVirtualKeyProviderConfig": {
 		"rate_limit":     true, // GORM relation
@@ -20579,6 +20585,8 @@ var excludedGoFields = map[string]map[string]bool{
 		// which never consults it, so exposing it in the schema would advertise a
 		// config key that silently does nothing.
 		"model_budgets": true,
+		// API-only projection (gorm:"-"), for the same reason as model_budgets
+		"request_limits": true,
 	},
 	"tables.TableVirtualKeyMCPConfig": {
 		"mcp_client": true, // GORM relation
@@ -28924,4 +28932,270 @@ func TestValidateGovernanceBudgetScopesKeepsCustomersWithoutAnIDApart(t *testing
 	gov.Customers[1].Budgets[0].ID = "b-a2"
 	gov.Customers[0].Budgets = append(gov.Customers[0].Budgets, configstoreTables.TableBudget{ID: "b-a-dup", MaxLimit: 5, ResetDuration: "1M", Scope: configstoreTables.LimitScopeModel})
 	require.Error(t, validateGovernanceBudgetScopes(&ConfigData{Governance: &gov}, func(string, ...any) {}), "one customer's own duplicate still fails")
+}
+
+// TestValidateGovernanceRequestLimits pins the load-time rules on request limits declared in
+// governance.rate_limits: one declared owner, request fields only, a scope the owner can be charged
+// for, and one per owner, reset duration and scope.
+func TestValidateGovernanceRequestLimits(t *testing.T) {
+	provider := "openai"
+	max, tokens := int64(5), int64(100)
+	rule := func(id, duration string, scope configstoreTables.LimitScope, owner func(*configstoreTables.TableRateLimit)) configstoreTables.TableRateLimit {
+		d := duration
+		rl := configstoreTables.TableRateLimit{ID: id, RequestMaxLimit: &max, RequestResetDuration: &d, Scope: scope}
+		owner(&rl)
+		return rl
+	}
+	team := func(rl *configstoreTables.TableRateLimit) { rl.TeamID = bifrost.Ptr("team-1") }
+	modelConfig := func(id string) func(*configstoreTables.TableRateLimit) {
+		return func(rl *configstoreTables.TableRateLimit) { rl.ModelConfigID = bifrost.Ptr(id) }
+	}
+	holders := configstore.GovernanceConfig{
+		Teams:     []configstoreTables.TableTeam{{ID: "team-1"}},
+		Customers: []configstoreTables.TableCustomer{{ID: "cust-1"}},
+		ModelConfigs: []configstoreTables.TableModelConfig{
+			{ID: "mc-all", ModelName: "*"},
+			{ID: "mc-openai", ModelName: "*", Provider: &provider},
+		},
+	}
+	cases := []struct {
+		name    string
+		limits  []configstoreTables.TableRateLimit
+		wantErr string
+	}{
+		{name: "same period across scopes is allowed", limits: []configstoreTables.TableRateLimit{
+			rule("a", "1h", "", team), rule("b", "1h", configstoreTables.LimitScopeMCP, team), rule("c", "1h", configstoreTables.LimitScopeModel, team),
+		}},
+		{name: "same period and scope is refused", limits: []configstoreTables.TableRateLimit{
+			rule("a", "1h", "", team), rule("b", "1h", configstoreTables.LimitScopeShared, team),
+		}, wantErr: "duplicate request_reset_duration 1h for scope shared"},
+		{name: "an undeclared owner is refused", limits: []configstoreTables.TableRateLimit{
+			rule("a", "1h", "", func(rl *configstoreTables.TableRateLimit) { rl.CustomerID = bifrost.Ptr("nobody") }),
+		}, wantErr: "is not declared"},
+		{name: "two owners are refused", limits: []configstoreTables.TableRateLimit{
+			rule("a", "1h", "", func(rl *configstoreTables.TableRateLimit) { team(rl); rl.CustomerID = bifrost.Ptr("cust-1") }),
+		}, wantErr: "exactly one of"},
+		{name: "a token limit is refused", limits: []configstoreTables.TableRateLimit{
+			rule("a", "1h", "", func(rl *configstoreTables.TableRateLimit) { team(rl); rl.TokenMaxLimit = &tokens }),
+		}, wantErr: "cannot carry a token limit"},
+		{name: "the all-models config takes model", limits: []configstoreTables.TableRateLimit{rule("a", "1h", configstoreTables.LimitScopeModel, modelConfig("mc-all"))}},
+		{name: "the all-models config takes mcp", limits: []configstoreTables.TableRateLimit{rule("a", "1h", configstoreTables.LimitScopeMCP, modelConfig("mc-all"))}},
+		{name: "a provider tier takes model", limits: []configstoreTables.TableRateLimit{rule("a", "1h", configstoreTables.LimitScopeModel, modelConfig("mc-openai"))}},
+		{name: "a provider tier refuses mcp", limits: []configstoreTables.TableRateLimit{rule("a", "1h", configstoreTables.LimitScopeMCP, modelConfig("mc-openai"))}, wantErr: "only supported on request limits that apply to all models and providers"},
+		{name: "a scope on an unowned rate limit is refused", limits: []configstoreTables.TableRateLimit{
+			{ID: "a", RequestMaxLimit: &max, RequestResetDuration: bifrost.Ptr("1h"), Scope: configstoreTables.LimitScopeMCP},
+		}, wantErr: "only valid on a request limit owned"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gov := holders
+			gov.RateLimits = tc.limits
+			err := validateGovernanceRequestLimits(&ConfigData{Governance: &gov})
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// TestSQLite_RequestLimitsFromConfig pins the config.json form: governance.rate_limits[] items naming
+// an owner are stored as that owner's request limits with their scopes (an omitted one meaning
+// shared), and an unchanged file writes nothing on the next load.
+func TestSQLite_RequestLimitsFromConfig(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	dir := createTempDir(t)
+	limit := func(n int64) *int64 { return &n }
+	configData := makeConfigDataWithProvidersAndDir(nil, dir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Teams:     []configstoreTables.TableTeam{{ID: "team-1", Name: "team-1"}},
+		Customers: []configstoreTables.TableCustomer{{ID: "cust-1", Name: "cust-1"}},
+		ModelConfigs: []configstoreTables.TableModelConfig{
+			{ID: "mc-global", ModelName: "*", Scope: configstoreTables.ModelConfigScopeGlobal},
+		},
+		RateLimits: []configstoreTables.TableRateLimit{
+			{ID: "team-shared", RequestMaxLimit: limit(100), RequestResetDuration: bifrost.Ptr("1h"), TeamID: bifrost.Ptr("team-1")},
+			{ID: "team-mcp", RequestMaxLimit: limit(10), RequestResetDuration: bifrost.Ptr("1h"), Scope: configstoreTables.LimitScopeMCP, TeamID: bifrost.Ptr("team-1")},
+			{ID: "cust-model", RequestMaxLimit: limit(50), RequestResetDuration: bifrost.Ptr("1d"), Scope: configstoreTables.LimitScopeModel, CustomerID: bifrost.Ptr("cust-1")},
+			{ID: "mc-model", RequestMaxLimit: limit(7), RequestResetDuration: bifrost.Ptr("1m"), Scope: configstoreTables.LimitScopeModel, ModelConfigID: bifrost.Ptr("mc-global")},
+			{ID: "mc-global-mcp", RequestMaxLimit: limit(3), RequestResetDuration: bifrost.Ptr("1m"), Scope: configstoreTables.LimitScopeMCP, ModelConfigID: bifrost.Ptr("mc-global")},
+		},
+	}
+	createConfigFile(t, dir, configData)
+
+	first, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	team, err := first.ConfigStore.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	assert.Len(t, team.RequestLimits, 2)
+	customer, err := first.ConfigStore.GetCustomer(ctx, "cust-1")
+	require.NoError(t, err)
+	require.Len(t, customer.RequestLimits, 1)
+	assert.Equal(t, configstoreTables.LimitScopeModel, customer.RequestLimits[0].Scope)
+	assert.ElementsMatch(t, []configstoreTables.LimitScope{configstoreTables.LimitScopeShared, configstoreTables.LimitScopeMCP},
+		[]configstoreTables.LimitScope{team.RequestLimits[0].Scope, team.RequestLimits[1].Scope}, "an omitted scope means shared")
+	global, err := first.ConfigStore.GetModelConfigByID(ctx, "mc-global")
+	require.NoError(t, err)
+	require.Len(t, global.RequestLimits, 2, "the holder-level row takes a model and an mcp request limit of the same period")
+	before := governanceRowStamps(t, first.ConfigStore.DB())
+	first.Close(ctx)
+
+	second, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer second.Close(ctx)
+	assert.Equal(t, before, governanceRowStamps(t, second.ConfigStore.DB()), "an unchanged file rewrote rows")
+
+	// A duplicate period and scope on one owner refuses the file.
+	configData.Governance.RateLimits = append(configData.Governance.RateLimits, configstoreTables.TableRateLimit{
+		ID: "team-shared-2", RequestMaxLimit: limit(200), RequestResetDuration: bifrost.Ptr("1h"), TeamID: bifrost.Ptr("team-1"),
+	})
+	createConfigFile(t, dir, configData)
+	_, err = LoadConfig(ctx, dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate request_reset_duration 1h for scope shared")
+
+	// The file is refused before any store is opened: an empty directory gets no config database.
+	emptyDir := t.TempDir()
+	refused := makeConfigDataWithProvidersAndDir(nil, emptyDir)
+	refused.Governance = configData.Governance
+	createConfigFile(t, emptyDir, refused)
+	_, err = LoadConfig(ctx, emptyDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate request_reset_duration 1h for scope shared")
+	assert.NoFileExists(t, filepath.Join(emptyDir, "config.db"), "the invalid file opened the config store")
+}
+
+// TestSQLite_SourceOfTruthPrunesAnOmittedRequestLimitOfAKeptTier: under source_of_truth config.json a
+// request limit the file declared on a key's tier goes once the file omits it, though the tier stays;
+// a request limit the API put on that tier is not the file's and stays.
+func TestSQLite_SourceOfTruthPrunesAnOmittedRequestLimitOfAKeptTier(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	dir := createTempDir(t)
+	limit := func(n int64) *int64 { return &n }
+	declare := func(withRule bool) *ConfigData {
+		cd := makeConfigDataWithProvidersAndDir(nil, dir)
+		cd.SourceOfTruth = SourceOfTruthConfigJSON
+		cd.Governance = &configstore.GovernanceConfig{
+			Budgets: []configstoreTables.TableBudget{{ID: "vk1-budget", MaxLimit: 100, ResetDuration: "1M", VirtualKeyID: bifrost.Ptr("vk-1")}},
+			ModelConfigs: []configstoreTables.TableModelConfig{{
+				ID: "vk1-tier", Scope: configstoreTables.ModelConfigScopeVirtualKey, ScopeID: bifrost.Ptr("vk-1"), ModelName: configstoreTables.ModelConfigAllModels,
+			}},
+			RateLimits: []configstoreTables.TableRateLimit{},
+			VirtualKeys: []configstoreTables.TableVirtualKey{{
+				ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true),
+			}},
+		}
+		if withRule {
+			cd.Governance.RateLimits = []configstoreTables.TableRateLimit{{
+				ID: "tier-rule", ModelConfigID: bifrost.Ptr("vk1-tier"), RequestMaxLimit: limit(5), RequestResetDuration: bifrost.Ptr("1h"), Scope: configstoreTables.LimitScopeShared,
+			}}
+		}
+		return cd
+	}
+
+	createConfigFile(t, dir, declare(true))
+	first, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	_, err = first.ConfigStore.GetRateLimit(ctx, "tier-rule")
+	require.NoError(t, err, "first boot: the file's request limit is on the tier")
+	apiRule := configstoreTables.TableRateLimit{ID: "api-rule", ModelConfigID: bifrost.Ptr("vk1-tier"), RequestMaxLimit: limit(3), RequestResetDuration: bifrost.Ptr("1h"), Scope: configstoreTables.LimitScopeMCP}
+	require.NoError(t, first.ConfigStore.CreateRateLimit(ctx, &apiRule))
+	first.Close(ctx)
+
+	createConfigFile(t, dir, declare(false))
+	second, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer second.Close(ctx)
+	_, err = second.ConfigStore.GetModelConfigByID(ctx, "vk1-tier")
+	require.NoError(t, err, "the tier the file still declares was pruned")
+	_, err = second.ConfigStore.GetRateLimit(ctx, "tier-rule")
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "the request limit the file no longer declares survived the prune")
+	_, err = second.ConfigStore.GetRateLimit(ctx, "api-rule")
+	assert.NoError(t, err, "the prune removed the API's request limit")
+}
+
+// governanceRowStamps reads every rate limit, team, customer and model config row, keyed by kind and id,
+// as "<config hash>@<updated at>": a sync that rewrites a row changes its stamp.
+func governanceRowStamps(t *testing.T, db *gorm.DB) map[string]string {
+	t.Helper()
+	stamps := map[string]string{}
+	var rateLimits []configstoreTables.TableRateLimit
+	require.NoError(t, db.Find(&rateLimits).Error)
+	for _, rl := range rateLimits {
+		stamps["rate_limit "+rl.ID] = rl.ConfigHash + "@" + rl.UpdatedAt.String()
+	}
+	var teams []configstoreTables.TableTeam
+	require.NoError(t, db.Find(&teams).Error)
+	for _, team := range teams {
+		stamps["team "+team.ID] = team.ConfigHash + "@" + team.UpdatedAt.String()
+	}
+	var customers []configstoreTables.TableCustomer
+	require.NoError(t, db.Find(&customers).Error)
+	for _, customer := range customers {
+		stamps["customer "+customer.ID] = customer.ConfigHash + "@" + customer.UpdatedAt.String()
+	}
+	var modelConfigs []configstoreTables.TableModelConfig
+	require.NoError(t, db.Find(&modelConfigs).Error)
+	for _, mc := range modelConfigs {
+		stamps["model_config "+mc.ID] = mc.ConfigHash + "@" + mc.UpdatedAt.String()
+	}
+	return stamps
+}
+
+// TestSQLite_LegacyCombinedRateLimitsFromConfigStayCombined pins that a config.json written before
+// request limits had owners loads as it is declared: a team's rate limit holding token and request
+// limits, and a key's rate limit holding only a request limit, are stored as those rows on their
+// holders, no request limit is derived from them, and an unchanged file writes nothing on the next load.
+func TestSQLite_LegacyCombinedRateLimitsFromConfigStayCombined(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	dir := createTempDir(t)
+	limit := func(n int64) *int64 { return &n }
+	configData := makeConfigDataWithProvidersAndDir(nil, dir)
+	configData.Governance = &configstore.GovernanceConfig{
+		RateLimits: []configstoreTables.TableRateLimit{
+			{ID: "team-rl", TokenMaxLimit: limit(1000), TokenResetDuration: bifrost.Ptr("1d"), RequestMaxLimit: limit(10), RequestResetDuration: bifrost.Ptr("1h")},
+			{ID: "key-rl", RequestMaxLimit: limit(5), RequestResetDuration: bifrost.Ptr("1m")},
+		},
+		Teams: []configstoreTables.TableTeam{{ID: "team-1", Name: "team-1", RateLimitID: bifrost.Ptr("team-rl")}},
+		VirtualKeys: []configstoreTables.TableVirtualKey{{
+			ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true), RateLimitID: bifrost.Ptr("key-rl"),
+		}},
+	}
+	createConfigFile(t, dir, configData)
+
+	first, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	team, err := first.ConfigStore.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.RateLimitID)
+	assert.Equal(t, "team-rl", *team.RateLimitID)
+	assert.Empty(t, team.RequestLimits, "a request limit was derived from the team's rate limit")
+	teamRL, err := first.ConfigStore.GetRateLimit(ctx, "team-rl")
+	require.NoError(t, err)
+	require.NotNil(t, teamRL.RequestMaxLimit, "the team's rate limit lost its request limit")
+	assert.Equal(t, int64(10), *teamRL.RequestMaxLimit)
+	require.NotNil(t, teamRL.TokenMaxLimit)
+	assert.Equal(t, int64(1000), *teamRL.TokenMaxLimit)
+
+	tier, err := first.ConfigStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeVirtualKey, bifrost.Ptr("vk-1"), configstoreTables.ModelConfigAllModels, nil)
+	require.NoError(t, err)
+	require.NotNil(t, tier.RateLimitID, "the key's tier does not hold its rate limit")
+	assert.Equal(t, "key-rl", *tier.RateLimitID)
+	assert.Empty(t, tier.RequestLimits, "a request limit was derived from the key's rate limit")
+	for _, id := range []string{"team-rl", "key-rl"} {
+		_, err := first.ConfigStore.GetRateLimit(ctx, configstoreTables.LegacyRequestLimitID(id))
+		assert.ErrorIs(t, err, configstore.ErrNotFound, "a request limit was derived from %s", id)
+	}
+	before := governanceRowStamps(t, first.ConfigStore.DB())
+	first.Close(ctx)
+
+	second, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer second.Close(ctx)
+	assert.Equal(t, before, governanceRowStamps(t, second.ConfigStore.DB()), "an unchanged file rewrote rows")
 }

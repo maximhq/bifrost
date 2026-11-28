@@ -325,6 +325,8 @@ type Limit struct {
 	// recorded on a log row or named in a refusal can say what it was scoped to.
 	Provider string
 	Model    string
+
+	RequestsOnly bool // a combined rate limit on traffic Max Tokens does not count (not model traffic): only its request limit is checked
 }
 
 // Credential is what the request presented to say who it is. Kind names what it was, in the

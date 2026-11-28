@@ -352840,6 +352840,80 @@
           ]
         }
       ]
+    },
+    {
+      "name": "393. Scoped request limits declared in config.json are enforced on model requests (request limit scopes)",
+      "description": "The harness profile declares vk-harness-cfgreqlimits in config.json with its tier (governance.model_configs harness-cfgreqlimits-tier) and three request limits on it: shared 1000 per 1d, model 2 per 1d and mcp 1 per 1d. Model requests count against the shared and model limits and never the mcp one, so the third model request in a day is refused on the model limit (2/2), and the mcp limit never shows in the refusal. Were model requests counted on the mcp limit, the second would already be refused there (1/1). The prerequest sends two model requests first so the assertion holds on any later run the same day, when both are refused too. Spends up to three gpt-4o-mini calls of 3 tokens. Run with FEATURE=cfg-vk-request-limits.",
+      "item": [
+        {
+          "name": "[EXPECT-429] openai/gpt-4o-mini a config.json model request limit refuses the third model request and the mcp limit counts none - cfg-vk-request-limits",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Two model requests first, so the third is refused whatever this day's earlier runs spent.",
+                  "var BASE = pm.variables.get(\"baseUrl\");",
+                  "function prime(left) {",
+                  "  if (left === 0) { return; }",
+                  "  pm.sendRequest({",
+                  "    url: BASE + \"/v1/chat/completions\",",
+                  "    method: \"POST\",",
+                  "    header: { \"Content-Type\": \"application/json\", \"x-bf-vk\": \"sk-bf-harness-cfgreqlimits\" },",
+                  "    body: { mode: \"raw\", raw: JSON.stringify({ model: \"openai/gpt-4o-mini\", messages: [{ role: \"user\", content: \"Reply with the single word: ok\" }], max_tokens: 3 }) }",
+                  "  }, function () { prime(left - 1); });",
+                  "}",
+                  "prime(2);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the model request limit refuses the third model request\", function () {",
+                  "  pm.expect(pm.response.code, \"expected 429, got: \" + pm.response.text()).to.eql(429);",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include(\"request limit exceeded (2/2, resets every 1d)\");",
+                  "});",
+                  "pm.test(\"the mcp request limit counted no model request\", function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.not.include(\"(1/1, resets every 1d)\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-harness-cfgreqlimits"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Reply with the single word: ok\" }],\n  \"max_tokens\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

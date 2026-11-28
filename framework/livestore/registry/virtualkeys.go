@@ -256,6 +256,17 @@ func (r KeyReads) read(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *g
 // in the order the budgets were created. The IDs bind as one argument, so a read of any number of
 // owners stays within the statement parameter limit.
 func budgetIDsBy(ctx context.Context, db *gorm.DB, column string, ids []string) (map[string][]string, error) {
+	return limitIDsBy(ctx, db, "governance_budgets", column, ids)
+}
+
+// requestLimitIDsBy is budgetIDsBy for the request limits a holder owns: the rate limits whose owner
+// column (team_id, customer_id or model_config_id) names it.
+func requestLimitIDsBy(ctx context.Context, db *gorm.DB, column string, ids []string) (map[string][]string, error) {
+	return limitIDsBy(ctx, db, "governance_rate_limits", column, ids)
+}
+
+// limitIDsBy lists, per holder ID, the IDs of the rows of table whose column names it, in creation order.
+func limitIDsBy(ctx context.Context, db *gorm.DB, table, column string, ids []string) (map[string][]string, error) {
 	out := make(map[string][]string)
 	if len(ids) == 0 {
 		return out, nil
@@ -264,7 +275,7 @@ func budgetIDsBy(ctx context.Context, db *gorm.DB, column string, ids []string) 
 		ID    string
 		Owner string
 	}
-	if err := db.WithContext(ctx).Table("governance_budgets").Select("id, " + column + " AS owner").
+	if err := db.WithContext(ctx).Table(table).Select("id, " + column + " AS owner").
 		Where(queryscope.InStrings(db, column, ids)).Order("created_at, id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}

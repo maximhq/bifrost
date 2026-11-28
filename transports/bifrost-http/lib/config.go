@@ -1201,6 +1201,94 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 	return nil
 }
 
+// validateGovernanceRequestLimits applies the API's request limit rules to the request limits
+// config.json declares: governance.rate_limits[] items naming an owner through model_config_id,
+// team_id or customer_id. Each names exactly one owner the file declares, carries a request limit and
+// no token limit, takes a scope its owner can be charged for (the same classes as budgets: any scope
+// on a team, a customer or a holder-level model config for all models and no provider, "shared" or
+// "model" on a narrower model config), and no owner declares two with the same reset duration and scope.
+func validateGovernanceRequestLimits(configData *ConfigData) error {
+	if configData == nil || configData.Governance == nil {
+		return nil
+	}
+	gov := configData.Governance
+	modelConfigs := make(map[string]*configstoreTables.TableModelConfig, len(gov.ModelConfigs))
+	for i := range gov.ModelConfigs {
+		modelConfigs[gov.ModelConfigs[i].ID] = &gov.ModelConfigs[i]
+	}
+	teams := make(map[string]bool, len(gov.Teams))
+	for _, team := range gov.Teams {
+		teams[team.ID] = true
+	}
+	customers := make(map[string]bool, len(gov.Customers))
+	for _, customer := range gov.Customers {
+		customers[customer.ID] = true
+	}
+	seen := make(map[string]string)
+	for i := range gov.RateLimits {
+		rl := &gov.RateLimits[i]
+		if !rl.IsRequestLimit() {
+			if rl.Scope.Normalize() != configstoreTables.LimitScopeShared {
+				return fmt.Errorf("governance rate limit %s: scope %s is only valid on a request limit owned through model_config_id, team_id or customer_id", rl.ID, rl.Scope)
+			}
+			continue
+		}
+		owners := 0
+		var owner string
+		holderLevel := true // see LimitScope.NeedsAllModelsOwner
+		if rl.ModelConfigID != nil {
+			owners++
+			owner = "model_config " + *rl.ModelConfigID
+			mc := modelConfigs[*rl.ModelConfigID]
+			if mc == nil {
+				return fmt.Errorf("governance rate limit %s: model config %s is not declared in governance.model_configs", rl.ID, *rl.ModelConfigID)
+			}
+			holderLevel = mc.IsHolderLevel()
+		}
+		if rl.TeamID != nil {
+			owners++
+			owner = "team " + *rl.TeamID
+			if !teams[*rl.TeamID] {
+				return fmt.Errorf("governance rate limit %s: team %s is not declared in governance.teams", rl.ID, *rl.TeamID)
+			}
+		}
+		if rl.CustomerID != nil {
+			owners++
+			owner = "customer " + *rl.CustomerID
+			if !customers[*rl.CustomerID] {
+				return fmt.Errorf("governance rate limit %s: customer %s is not declared in governance.customers", rl.ID, *rl.CustomerID)
+			}
+		}
+		if owners > 1 {
+			return fmt.Errorf("governance rate limit %s: a request limit belongs to exactly one of model_config_id, team_id and customer_id", rl.ID)
+		}
+		if rl.TokenMaxLimit != nil || rl.TokenResetDuration != nil {
+			return fmt.Errorf("governance rate limit %s on %s: a request limit cannot carry a token limit; declare the token limit as the owner's rate_limit_id", rl.ID, owner)
+		}
+		if rl.RequestMaxLimit == nil || rl.RequestResetDuration == nil {
+			return fmt.Errorf("governance rate limit %s on %s: a request limit requires request_max_limit and request_reset_duration", rl.ID, owner)
+		}
+		if *rl.RequestMaxLimit <= 0 {
+			return fmt.Errorf("governance rate limit %s on %s: request_max_limit must be greater than zero", rl.ID, owner)
+		}
+		if d, err := configstoreTables.ParseDuration(*rl.RequestResetDuration); err != nil || d <= 0 {
+			return fmt.Errorf("governance rate limit %s on %s: invalid request_reset_duration %q (must be a positive duration)", rl.ID, owner, *rl.RequestResetDuration)
+		}
+		if !rl.Scope.IsValid() {
+			return fmt.Errorf("governance rate limit %s on %s: invalid scope %q (must be one of shared, model, mcp)", rl.ID, owner, rl.Scope)
+		}
+		if !holderLevel && rl.Scope.NeedsAllModelsOwner() {
+			return fmt.Errorf("governance rate limit %s on %s: scope %s is only supported on request limits that apply to all models and providers", rl.ID, owner, rl.Scope)
+		}
+		key := owner + "\x00" + configstoreTables.LimitPeriodKey(*rl.RequestResetDuration, rl.Scope)
+		if other, dup := seen[key]; dup {
+			return fmt.Errorf("governance rate limits %s and %s on %s: duplicate request_reset_duration %s for scope %s", other, rl.ID, owner, *rl.RequestResetDuration, rl.Scope.Normalize())
+		}
+		seen[key] = rl.ID
+	}
+	return nil
+}
+
 // promoteDeprecatedCalendarAligned lifts the legacy per-budget / per-rate-limit
 // calendar_aligned input to the owning VK or Team. Owner wins if already true;
 // otherwise OR across descendants (own budgets/rate-limit + every provider
@@ -1462,6 +1550,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		promoteDeprecatedCalendarAligned(&configData)
 		ignoreBudgetBusinessUnitIDs(&configData, logger.Warn)
 		if err := validateGovernanceBudgetScopes(&configData, logger.Warn); err != nil {
+			return nil, err
+		}
+		if err := validateGovernanceRequestLimits(&configData); err != nil {
 			return nil, err
 		}
 		// If version is 1, apply v1.4.x compatibility: empty allow-list arrays mean "allow all"
@@ -5089,6 +5180,8 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				// The declared id is never written, so anything the file pointed at it must follow.
 				remapModelConfigBudgetRefs(newModelConfig.ID, governanceConfig.ModelConfigs[j].ID,
 					configData.Governance.Budgets, budgetsToAdd, budgetsToUpdate)
+				remapModelConfigRequestLimitRefs(newModelConfig.ID, governanceConfig.ModelConfigs[j].ID,
+					configData.Governance.RateLimits, rateLimitsToAdd, rateLimitsToUpdate)
 				adoptedHash := governanceConfig.ModelConfigs[j].ConfigHash
 				configData.Governance.ModelConfigs[i].ID = governanceConfig.ModelConfigs[j].ID
 				// The id never matches, so without the hash check every boot would rewrite the row
@@ -5408,6 +5501,20 @@ func remapModelConfigBudgetRefs(declaredID, adoptedID string, sets ...[]configst
 	}
 }
 
+// remapModelConfigRequestLimitRefs is remapModelConfigBudgetRefs for request limits.
+func remapModelConfigRequestLimitRefs(declaredID, adoptedID string, sets ...[]configstoreTables.TableRateLimit) {
+	if declaredID == adoptedID {
+		return
+	}
+	for _, set := range sets {
+		for i := range set {
+			if set[i].ModelConfigID != nil && *set[i].ModelConfigID == declaredID {
+				set[i].ModelConfigID = &adoptedID
+			}
+		}
+	}
+}
+
 // fileGovernanceDeclarations are the rows config.json declares. Read from the file, not from the
 // change sets: a row whose hash matches is in neither, and is still declared.
 type fileGovernanceDeclarations struct {
@@ -5582,7 +5689,14 @@ func virtualKeyLimitModelConfigs(existing *configstore.GovernanceConfig, configD
 func governanceLimitsToKeep(ctx context.Context, store configstore.ConfigStore, existing *configstore.GovernanceConfig, configData *ConfigData, protected map[string]bool, tierOfProviderConfig map[uint]string, tiersKnown bool) (budgets, rateLimits map[string]bool) {
 	budgets, rateLimits = map[string]bool{}, map[string]bool{}
 	ownedByKeptModelConfig := virtualKeyLimitModelConfigs(existing, configData, protected, tierOfProviderConfig, tiersKnown)
+	// Kept model configs whose request limits are not the file's to prune: a scope the file does not
+	// manage, and a key's tier a guard protects.
+	requestLimitsKept := map[string]bool{}
 	for _, mc := range existing.ModelConfigs {
+		if !fileManagedModelConfigScope(mc.Scope) ||
+			(mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ScopeID != nil && protected[*mc.ScopeID]) {
+			requestLimitsKept[mc.ID] = true
+		}
 		if fileManagedModelConfigScope(mc.Scope) && !ownedByKeptModelConfig[mc.ID] {
 			continue
 		}
@@ -5617,6 +5731,13 @@ func governanceLimitsToKeep(ctx context.Context, store configstore.ConfigStore, 
 			declared[rateLimit.ID] = true
 		}
 		for _, rateLimit := range existing.RateLimits {
+			// A request limit on a model config the prune keeps stays when the API created it (it has no
+			// config_hash) or the model config's request limits are not the file's; one config.json wrote
+			// and no longer declares goes.
+			if owner := rateLimit.ModelConfigID; owner != nil && ownedByKeptModelConfig[*owner] &&
+				(rateLimit.ConfigHash == "" || requestLimitsKept[*owner]) {
+				rateLimits[rateLimit.ID] = true
+			}
 			if rateLimit.ID != "" && !declared[rateLimit.ID] && !rateLimits[rateLimit.ID] {
 				rateLimitCandidates = append(rateLimitCandidates, rateLimit.ID)
 			}
@@ -6289,9 +6410,17 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
+		// Request limits name their owner, so they are written once every owner the file declares exists.
+		pendingRequestLimitsToAdd := make([]configstoreTables.TableRateLimit, 0)
+		pendingRequestLimitsToUpdate := make([]configstoreTables.TableRateLimit, 0)
+
 		// Create rate limits
 		for _, rateLimit := range rateLimitsToAdd {
 			if governed.rateLimits[rateLimit.ID] {
+				continue
+			}
+			if rateLimit.IsRequestLimit() {
+				pendingRequestLimitsToAdd = append(pendingRequestLimitsToAdd, rateLimit)
 				continue
 			}
 			if err := config.ConfigStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
@@ -6305,6 +6434,10 @@ func updateGovernanceConfigInStore(
 			// below, and writing the file's numbers onto it would apply the limits that preservation
 			// exists to keep out.
 			if governed.rateLimits[rateLimit.ID] {
+				continue
+			}
+			if rateLimit.IsRequestLimit() {
+				pendingRequestLimitsToUpdate = append(pendingRequestLimitsToUpdate, rateLimit)
 				continue
 			}
 			if err := config.ConfigStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
@@ -6761,6 +6894,42 @@ func updateGovernanceConfigInStore(
 				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
 					return err
 				}
+			}
+		}
+
+		// A governed owner keeps the limits it has, as its own budgets and rate limit do.
+		fileModelConfigs := make(map[string]*configstoreTables.TableModelConfig)
+		if governanceInConfigJSON != nil {
+			for i := range governanceInConfigJSON.ModelConfigs {
+				fileModelConfigs[governanceInConfigJSON.ModelConfigs[i].ID] = &governanceInConfigJSON.ModelConfigs[i]
+			}
+		}
+		skipRequestLimit := func(rl configstoreTables.TableRateLimit) bool {
+			switch {
+			case rl.TeamID != nil:
+				return governed.teams[*rl.TeamID]
+			case rl.CustomerID != nil:
+				return governed.customers[*rl.CustomerID]
+			case rl.ModelConfigID != nil:
+				mc := fileModelConfigs[*rl.ModelConfigID]
+				return mc != nil && governed.skipModelConfig(mc)
+			}
+			return false
+		}
+		for _, rateLimit := range pendingRequestLimitsToAdd {
+			if skipRequestLimit(rateLimit) {
+				continue
+			}
+			if err := config.ConfigStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+				return fmt.Errorf("failed to create request limit %s: %w", rateLimit.ID, err)
+			}
+		}
+		for _, rateLimit := range pendingRequestLimitsToUpdate {
+			if skipRequestLimit(rateLimit) {
+				continue
+			}
+			if err := config.ConfigStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
+				return fmt.Errorf("failed to update request limit %s: %w", rateLimit.ID, err)
 			}
 		}
 
@@ -11038,6 +11207,17 @@ func governedEntitiesInConfig(
 			teamCandidates[teams[i].ID] = len(teams[i].Budgets) > 0 || teams[i].RateLimit != nil
 		}
 	}
+	// A request limit the file writes for a team or customer is a limit of its own too.
+	for _, rateLimits := range [][]configstoreTables.TableRateLimit{rateLimitsToAdd, rateLimitsToUpdate} {
+		for i := range rateLimits {
+			if rateLimits[i].TeamID != nil {
+				teamCandidates[*rateLimits[i].TeamID] = true
+			}
+			if rateLimits[i].CustomerID != nil {
+				customerCandidates[*rateLimits[i].CustomerID] = true
+			}
+		}
+	}
 	if config.GovernanceConfig != nil {
 		for i := range config.GovernanceConfig.Customers {
 			customer := &config.GovernanceConfig.Customers[i]
@@ -11154,12 +11334,19 @@ func governedEntitiesInConfig(
 	for _, modelConfig := range slices.Concat(modelConfigsToAdd, modelConfigsToUpdate) {
 		writingModelConfig[modelConfig.ID] = true
 	}
+	// A request limit written for a model config is a limit of its own, even when the model config is kept.
+	writingModelConfigRequestLimit := map[string]bool{}
+	for _, rateLimit := range slices.Concat(rateLimitsToAdd, rateLimitsToUpdate) {
+		if rateLimit.ModelConfigID != nil {
+			writingModelConfigRequestLimit[*rateLimit.ModelConfigID] = true
+		}
+	}
 	for i := range modelConfigsInConfigJSON {
 		modelConfig := &modelConfigsInConfigJSON[i]
 		if modelConfig.Scope != configstoreTables.ModelConfigScopeVirtualKey || modelConfig.ScopeID == nil {
 			continue
 		}
-		linked := writingModelConfig[modelConfig.ID] || writingModelConfigBudget[modelConfig.ID] ||
+		linked := writingModelConfig[modelConfig.ID] || writingModelConfigBudget[modelConfig.ID] || writingModelConfigRequestLimit[modelConfig.ID] ||
 			(modelConfig.RateLimitID != nil && writing[*modelConfig.RateLimitID])
 		for _, id := range modelConfig.BudgetIDs {
 			linked = linked || writingBudget[id]

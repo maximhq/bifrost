@@ -54,7 +54,7 @@ type ModelConfigsQueryParams struct {
 	Scopes      []string
 	ScopeID     string            // optional; filters to an exact scope target (e.g. a virtual key or user ID)
 	Provider    string            // optional; filters to an exact provider value (e.g. "openai")
-	AppliesTo   tables.LimitScope // optional; rows a budget charges traffic of this scope on
+	AppliesTo   tables.LimitScope // optional; rows a budget or request limit charges traffic of this scope on
 	HolderLevel bool              // optional; holder-level rows only (model "*", no provider)
 }
 

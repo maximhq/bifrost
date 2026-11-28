@@ -37,6 +37,7 @@ func TestOwnerReloadAdoptsCalendarBeforeItsLimitsArrive(t *testing.T) {
 		create func(ctx context.Context, store configstore.ConfigStore, id string, rateLimitID *string) error
 		reload func(ctx context.Context, server *BifrostHTTPServer, id string) error
 		holds  func(budget *configstoreTables.TableBudget, id string)
+		owns   func(rule *configstoreTables.TableRateLimit, id string) // nil where request limits sit on another row
 	}
 	owners := map[string]owner{
 		"team": {
@@ -49,6 +50,7 @@ func TestOwnerReloadAdoptsCalendarBeforeItsLimitsArrive(t *testing.T) {
 				return err
 			},
 			holds: func(budget *configstoreTables.TableBudget, id string) { budget.TeamID = &id },
+			owns:  func(rule *configstoreTables.TableRateLimit, id string) { rule.TeamID = &id },
 		},
 		"customer": {
 			table: &configstoreTables.TableCustomer{},
@@ -60,6 +62,7 @@ func TestOwnerReloadAdoptsCalendarBeforeItsLimitsArrive(t *testing.T) {
 				return err
 			},
 			holds: func(budget *configstoreTables.TableBudget, id string) { budget.CustomerID = &id },
+			owns:  func(rule *configstoreTables.TableRateLimit, id string) { rule.CustomerID = &id },
 		},
 		"virtual key": {
 			table: &configstoreTables.TableVirtualKey{},
@@ -82,6 +85,7 @@ func TestOwnerReloadAdoptsCalendarBeforeItsLimitsArrive(t *testing.T) {
 				return err
 			},
 			holds: func(budget *configstoreTables.TableBudget, id string) { budget.ModelConfigID = &id },
+			owns:  func(rule *configstoreTables.TableRateLimit, id string) { rule.ModelConfigID = &id },
 		},
 	}
 	for name, o := range owners {
@@ -92,7 +96,7 @@ func TestOwnerReloadAdoptsCalendarBeforeItsLimitsArrive(t *testing.T) {
 			// Registered before governance, so these run ahead of its own subscribers: what they
 			// read is what a sweep or charge racing the refresh would read.
 			var gs *governance.LocalGovernanceStore
-			var budgetSeen, rateLimitSeen atomic.Pointer[time.Time]
+			var budgetSeen, rateLimitSeen, requestLimitSeen atomic.Pointer[time.Time]
 			t.Cleanup(config.LiveStore.Collections.Budgets.Subscribe(func(ctx context.Context, changes []livestore.Change[registry.Budget]) {
 				for _, c := range changes {
 					if c.New != nil && c.New.IsCalendarAligned {
@@ -106,7 +110,12 @@ func TestOwnerReloadAdoptsCalendarBeforeItsLimitsArrive(t *testing.T) {
 				for _, c := range changes {
 					if c.New != nil && c.New.IsCalendarAligned {
 						if live := gs.LoadRateLimit(ctx, c.ID); live != nil {
-							rateLimitSeen.Store(&live.TokenLastReset)
+							switch c.ID {
+							case "rate":
+								rateLimitSeen.Store(&live.TokenLastReset)
+							case "owned-rule":
+								requestLimitSeen.Store(&live.RequestLastReset)
+							}
 						}
 					}
 				}
@@ -126,6 +135,15 @@ func TestOwnerReloadAdoptsCalendarBeforeItsLimitsArrive(t *testing.T) {
 				RequestMaxLimit: &limit, RequestResetDuration: &month, RequestCurrentUsage: 19, RequestLastReset: opened, CreatedAt: opened,
 			}))
 			require.NoError(t, o.create(ctx, store, "owner", &rateLimitID))
+			if o.owns != nil {
+				// A request limit the owner holds on its own row takes the owner's flag too.
+				rule := &configstoreTables.TableRateLimit{
+					ID: "owned-rule", RequestMaxLimit: &limit, RequestResetDuration: &month, RequestCurrentUsage: 23, RequestLastReset: opened,
+					Scope: configstoreTables.LimitScopeShared, CreatedAt: opened,
+				}
+				o.owns(rule, "owner")
+				require.NoError(t, store.CreateRateLimit(ctx, rule))
+			}
 			budget := &configstoreTables.TableBudget{ID: "budget", MaxLimit: 100, CurrentUsage: 7, ResetDuration: month, CreatedAt: opened, LastReset: opened}
 			o.holds(budget, "owner")
 			require.NoError(t, store.CreateBudget(ctx, budget))
@@ -142,6 +160,11 @@ func TestOwnerReloadAdoptsCalendarBeforeItsLimitsArrive(t *testing.T) {
 			require.Empty(t, gs.ResetExpiredBudgetsInMemory(ctx, "budget"))
 			require.Equal(t, 7.0, gs.LoadBudget(ctx, "budget").CurrentUsage)
 			require.Equal(t, int64(17), gs.LoadRateLimit(ctx, rateLimitID).TokenCurrentUsage)
+			if o.owns != nil {
+				require.NotNil(t, requestLimitSeen.Load(), "the reload brought the owned request limit in aligned")
+				require.True(t, requestLimitSeen.Load().Equal(monthStart), "the request limit's window was moved before it arrived aligned, not %s", requestLimitSeen.Load())
+				require.Equal(t, int64(23), gs.LoadRateLimit(ctx, "owned-rule").RequestCurrentUsage)
+			}
 		})
 	}
 }
