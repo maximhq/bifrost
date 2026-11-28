@@ -83,6 +83,28 @@ func TestToGeminiBatchGenerateContentRequest(t *testing.T) {
 		assert.Nil(t, req.SystemInstruction)
 	})
 
+	t.Run("PropagatesAudioURLResolutionErrors", func(t *testing.T) {
+		body := map[string]interface{}{
+			"messages": []interface{}{
+				map[string]interface{}{
+					"role": "user",
+					"content": []interface{}{
+						map[string]interface{}{
+							"type": "input_audio",
+							"input_audio": map[string]interface{}{
+								"url":    "http://example.com/audio.wav",
+								"format": "wav",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		_, err := gemini.ToGeminiBatchGenerateContentRequest(body)
+		require.ErrorContains(t, err, "failed to resolve audio URLs")
+	})
+
 	t.Run("PreservesToolsToolConfigCachedContentAndLabels", func(t *testing.T) {
 		body := map[string]interface{}{
 			"contents": []interface{}{

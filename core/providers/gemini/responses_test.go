@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -2390,6 +2392,180 @@ func TestAnthropicThinkingBudgetReachesGemini4AsLevel(t *testing.T) {
 	assert.Equal(t, "medium", *got.ThinkingLevel)
 }
 
+// stubAudioFetch replaces the audio fetcher for one test. FetchAndEncodeURL refuses the
+// loopback addresses httptest listens on by design, so tests stand in for the network here.
+// Not safe for t.Parallel.
+func stubAudioFetch(t *testing.T, fetch func(ctx context.Context, url string) (string, string, error)) {
+	t.Helper()
+	previous := fetchAudioURL
+	fetchAudioURL = fetch
+	t.Cleanup(func() { fetchAudioURL = previous })
+}
+
+// stubAudioFetchBytes serves payload for every URL and counts the fetches.
+func stubAudioFetchBytes(t *testing.T, payload []byte) *atomic.Int32 {
+	t.Helper()
+	var fetches atomic.Int32
+	stubAudioFetch(t, func(context.Context, string) (string, string, error) {
+		fetches.Add(1)
+		return "audio/wav", base64.StdEncoding.EncodeToString(payload), nil
+	})
+	return &fetches
+}
+
+func responsesAudioBlock(url string) schemas.ResponsesMessageContentBlock {
+	return schemas.ResponsesMessageContentBlock{
+		Type:  schemas.ResponsesInputMessageContentBlockTypeAudio,
+		Audio: &schemas.ResponsesInputMessageContentBlockAudio{URL: url, Format: "wav"},
+	}
+}
+
+func responsesAudioURLRequest(url string) *schemas.BifrostResponsesRequest {
+	role := schemas.ResponsesInputMessageRoleUser
+	return &schemas.BifrostResponsesRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    &role,
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{responsesAudioBlock(url)}},
+			},
+		},
+	}
+}
+
+func TestResolveResponsesAudioURLsDownloadsAudioForConverter(t *testing.T) {
+	fetches := stubAudioFetchBytes(t, []byte("audio-bytes"))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := responsesAudioURLRequest("https://audio.example/sample.wav")
+	resolved, err := ResolveResponsesAudioURLs(ctx, request)
+	require.NoError(t, err)
+	require.Empty(t, request.Input[0].Content.ContentBlocks[0].Audio.Data, "the original request must survive for a retry")
+
+	result, err := ToGeminiResponsesRequest(ctx, resolved)
+	require.NoError(t, err)
+	require.Len(t, result.Contents, 1)
+	require.Len(t, result.Contents[0].Parts, 1)
+	require.NotNil(t, result.Contents[0].Parts[0].InlineData)
+	require.Equal(t, "audio/wav", result.Contents[0].Parts[0].InlineData.MIMEType)
+	require.NotEmpty(t, result.Contents[0].Parts[0].InlineData.Data)
+	require.Equal(t, int32(1), fetches.Load())
+}
+
+func TestResolveResponsesAudioURLsTakesFormatFromContentType(t *testing.T) {
+	cases := []struct {
+		name        string
+		format      string
+		contentType string
+		wantMIME    string
+	}{
+		{name: "no format, audio content type", contentType: "audio/ogg", wantMIME: "audio/ogg"},
+		{name: "no format, non-audio content type", contentType: "application/octet-stream", wantMIME: "audio/mpeg"},
+		{name: "explicit format wins", format: "mp3", contentType: "audio/ogg", wantMIME: "audio/mp3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubAudioFetch(t, func(context.Context, string) (string, string, error) {
+				return tc.contentType, base64.StdEncoding.EncodeToString([]byte("audio-bytes")), nil
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			request := responsesAudioURLRequest("https://audio.example/clip")
+			request.Input[0].Content.ContentBlocks[0].Audio.Format = tc.format
+
+			resolved, err := ResolveResponsesAudioURLs(ctx, request)
+			require.NoError(t, err)
+			require.Equal(t, tc.format, request.Input[0].Content.ContentBlocks[0].Audio.Format, "the caller's block must not change")
+			result, err := ToGeminiResponsesRequest(ctx, resolved)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantMIME, result.Contents[0].Parts[0].InlineData.MIMEType)
+		})
+	}
+}
+
+// TestAudioURLRequestsNormalizeUpstreamModel drives each provider route with a
+// google/ model name and URL-only audio. The audio resolvers return a copy, so the
+// converter's model normalization must still reach the request the URL is built from.
+func TestAudioURLRequestsNormalizeUpstreamModel(t *testing.T) {
+	stubAudioFetchBytes(t, []byte("audio-bytes"))
+
+	var upstreamPath atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath.Store(r.URL.Path)
+		body := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"modelVersion":"gemini-2.5-flash"}`
+		if strings.Contains(r.URL.Path, ":streamGenerateContent") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: " + body + "\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+	}, testNoopLogger{})
+	key := schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}
+	audioURL := "https://audio.example/sample.wav"
+	noopPostHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	finalizer := func(context.Context) {}
+	drain := func(t *testing.T, stream chan *schemas.BifrostStreamChunk, bErr *schemas.BifrostError) {
+		t.Helper()
+		require.Nil(t, bErr)
+		for chunk := range stream {
+			require.Nil(t, chunk.BifrostError)
+		}
+	}
+	chatRequest := func() *schemas.BifrostChatRequest {
+		format := "wav"
+		return &schemas.BifrostChatRequest{
+			Model: "google/gemini-2.5-flash",
+			Input: []schemas.ChatMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+					Type:       schemas.ChatContentBlockTypeInputAudio,
+					InputAudio: &schemas.ChatInputAudio{URL: audioURL, Format: &format},
+				}}},
+			}},
+		}
+	}
+	responsesRequest := func() *schemas.BifrostResponsesRequest {
+		request := responsesAudioURLRequest(audioURL)
+		request.Model = "google/gemini-2.5-flash"
+		return request
+	}
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		call   func(t *testing.T, ctx *schemas.BifrostContext)
+	}{
+		{"chat", ":generateContent", func(t *testing.T, ctx *schemas.BifrostContext) {
+			_, bErr := provider.ChatCompletion(ctx, key, chatRequest())
+			require.Nil(t, bErr)
+		}},
+		{"chat stream", ":streamGenerateContent", func(t *testing.T, ctx *schemas.BifrostContext) {
+			stream, bErr := provider.ChatCompletionStream(ctx, noopPostHook, finalizer, key, chatRequest())
+			drain(t, stream, bErr)
+		}},
+		{"responses", ":generateContent", func(t *testing.T, ctx *schemas.BifrostContext) {
+			_, bErr := provider.Responses(ctx, key, responsesRequest())
+			require.Nil(t, bErr)
+		}},
+		{"responses stream", ":streamGenerateContent", func(t *testing.T, ctx *schemas.BifrostContext) {
+			stream, bErr := provider.ResponsesStream(ctx, noopPostHook, finalizer, key, responsesRequest())
+			drain(t, stream, bErr)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.call(t, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+			require.Equal(t, "/models/gemini-2.5-flash"+tc.method, upstreamPath.Load())
+		})
+	}
+}
+
 // TestExtractFunctionResponseOutput_KeepsSiblingFields pins which functionResponse.response
 // shapes are unwrapped. Only the documented {"output": X} envelope is unwrapped; any sibling
 // field (stderr, ok, budget, error, ...) means the whole object is the tool result, so it must
@@ -2440,6 +2616,123 @@ func TestExtractFunctionResponseOutput_KeepsSiblingFields(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestToGeminiResponsesRequestRejectsUnresolvedAudioURL(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := ToGeminiResponsesRequest(ctx, responsesAudioURLRequest("http://127.0.0.1:1/audio.wav"))
+	require.ErrorIs(t, err, errUnresolvedAudioURL)
+}
+
+// Gemini takes only images, PDF and plain text in functionResponse.parts, so audio a
+// tool returns is never fetched or sent, on any model: it becomes a text placeholder.
+func TestResponsesToolOutputAudioBecomesPlaceholder(t *testing.T) {
+	var downloads atomic.Int32
+	stubAudioFetch(t, func(context.Context, string) (string, string, error) {
+		downloads.Add(1)
+		return "", "", errors.New("gone")
+	})
+	const deadURL = "https://audio.example/gone.wav"
+	inline := schemas.ResponsesMessageContentBlock{
+		Type:  schemas.ResponsesInputMessageContentBlockTypeAudio,
+		Audio: &schemas.ResponsesInputMessageContentBlockAudio{Data: base64.StdEncoding.EncodeToString([]byte("audio-bytes")), Format: "wav"},
+	}
+
+	for _, tc := range []struct {
+		name  string
+		model string
+		block schemas.ResponsesMessageContentBlock
+	}{
+		{"url without tool media", "gemini-2.5-flash", responsesAudioBlock(deadURL)},
+		{"url with tool media", "gemini-3-pro-preview", responsesAudioBlock(deadURL)},
+		{"inline with tool media", "gemini-3-pro-preview", inline},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			downloads.Store(0)
+			callID := "call_1"
+			functionName := "fetch_audio"
+			callType := schemas.ResponsesMessageTypeFunctionCall
+			outputType := schemas.ResponsesMessageTypeFunctionCallOutput
+			role := schemas.ResponsesInputMessageRoleUser
+			prompt := "transcribe it"
+			request := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{
+					{
+						Role:    &role,
+						Content: &schemas.ResponsesMessageContent{ContentStr: &prompt},
+					},
+					{
+						Type: &callType,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: &callID,
+							Name:   &functionName,
+						},
+					},
+					{
+						Type: &outputType,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: &callID,
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{tc.block},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resolved, err := ResolveResponsesAudioURLs(ctx, request)
+			require.NoError(t, err, "an unreachable tool output URL must not fail the request")
+			require.Zero(t, downloads.Load())
+
+			result, err := ToGeminiResponsesRequest(ctx, resolved)
+			require.NoError(t, err)
+			payload, err := sonic.Marshal(result)
+			require.NoError(t, err)
+			require.Contains(t, string(payload), "[audio/wav")
+			require.Contains(t, string(payload), "returned by the tool, not shown]")
+			require.NotContains(t, string(payload), deadURL)
+			require.NotContains(t, string(payload), `"inlineData"`)
+			require.NotContains(t, string(payload), `"inline_data"`)
+			require.NotContains(t, string(payload), `"fileData"`)
+		})
+	}
+}
+
+func TestResolveResponsesAudioURLsStillFailsOnMessageAudioWithoutToolMedia(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := responsesAudioURLRequest("http://169.254.169.254/audio.mp3")
+	request.Provider = schemas.Gemini
+	request.Model = "gemini-2.5-flash"
+	_, err := ResolveResponsesAudioURLs(ctx, request)
+	require.Error(t, err)
+	require.True(t, providerUtils.IsInvalidRequestError(err), "a refused audio URL is the caller's input and must map to a 400: %v", err)
+	require.Contains(t, err.Error(), "input[0].content[0]")
+}
+
+func TestResolveResponsesAudioURLsLeavesTextRequestUntouched(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	text := "hello"
+	role := schemas.ResponsesInputMessageRoleUser
+	request := &schemas.BifrostResponsesRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &text},
+				}},
+			},
+		},
+	}
+	var resolved *schemas.BifrostResponsesRequest
+	allocs := testing.AllocsPerRun(100, func() {
+		resolved, _ = ResolveResponsesAudioURLs(ctx, request)
+	})
+	require.Same(t, request, resolved)
+	require.Zero(t, allocs)
 }
 
 // TestGenAIFunctionResponseSiblingFieldsSurviveRoundTrip drives the /genai converting route
@@ -2829,4 +3122,16 @@ func TestMalformedOutputFailsResponsesStream(t *testing.T) {
 		assert.Nil(t, err, "text already reached the client, so the stream must close rather than fail")
 		assert.NotEmpty(t, events)
 	})
+}
+
+func TestResolveResponsesAudioURLsEmptyDownloadIsBadRequest(t *testing.T) {
+	fetches := stubAudioFetchBytes(t, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := ResolveResponsesAudioURLs(ctx, responsesAudioURLRequest("https://audio.example/empty.wav"))
+	require.Error(t, err)
+	require.True(t, providerUtils.IsInvalidRequestError(err), "want a 400-class error, got %v", err)
+	require.Contains(t, err.Error(), "input[0].content[0]")
+	require.NotErrorIs(t, err, errUnresolvedAudioURL)
+	require.Equal(t, int32(1), fetches.Load())
 }

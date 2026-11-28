@@ -3629,3 +3629,52 @@ func assertFunctionCallOutputFileIsDataURL(t *testing.T, pdf string, fileType *s
 		t.Fatalf("file_type must not reach OpenAI; raw=%s", raw)
 	}
 }
+
+// input_audio.url is a Bifrost extension. OpenAI's Responses input_audio takes only data and
+// format, so a url beside data is dropped from the wire, as on the chat path. URL-only audio is
+// forwarded as is so the upstream refuses it by name.
+func TestOpenAIResponsesRequest_MarshalJSON_InputAudioURLOnTheWire(t *testing.T) {
+	audioInput := func(audio *schemas.ResponsesInputMessageContentBlockAudio) OpenAIResponsesRequestInput {
+		return OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type:  schemas.ResponsesInputMessageContentBlockTypeAudio,
+						Audio: audio,
+					}},
+				},
+			}},
+		}
+	}
+
+	t.Run("url beside data is dropped", func(t *testing.T) {
+		input := audioInput(&schemas.ResponsesInputMessageContentBlockAudio{Data: "UklGRg==", Format: "wav", URL: "https://audio.example/a.wav"})
+		data, err := input.MarshalJSON()
+		if err != nil {
+			t.Fatalf("MarshalJSON returned error: %v", err)
+		}
+		audio := gjson.GetBytes(data, "0.content.0.input_audio")
+		if audio.Get("data").String() != "UklGRg==" || audio.Get("format").String() != "wav" {
+			t.Fatalf("data and format must be kept: %s", data)
+		}
+		if audio.Get("url").Exists() {
+			t.Fatalf("url must not reach the OpenAI wire beside data: %s", data)
+		}
+		if input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks[0].Audio.URL != "https://audio.example/a.wav" {
+			t.Fatal("the caller's request must not be mutated")
+		}
+	})
+
+	t.Run("url-only audio is forwarded", func(t *testing.T) {
+		input := audioInput(&schemas.ResponsesInputMessageContentBlockAudio{URL: "https://audio.example/a.wav"})
+		data, err := input.MarshalJSON()
+		if err != nil {
+			t.Fatalf("MarshalJSON returned error: %v", err)
+		}
+		if got := gjson.GetBytes(data, "0.content.0.input_audio.url").String(); got != "https://audio.example/a.wav" {
+			t.Fatalf("url-only audio must be forwarded, got %q in %s", got, data)
+		}
+	})
+}

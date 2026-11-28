@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -4983,6 +4984,84 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 	return config
 }
 
+// ResolveResponsesAudioURLs returns request with URL-only audio in message content
+// replaced by inline data. It does network I/O, so provider methods call it before
+// ToGeminiResponsesRequest and the converter stays pure. A request with no URL-only
+// audio comes back unchanged, with no allocation. Function tool output audio is left
+// alone: Gemini does not take audio in functionResponse.parts, so the converter sends
+// a text placeholder and a dead URL must not fail the request.
+func ResolveResponsesAudioURLs(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, error) {
+	if request == nil || !slices.ContainsFunc(request.Input, responsesMessageHasAudioURL) {
+		return request, nil
+	}
+	// The converter normalizes Model in place and callers read it back for the
+	// upstream URL, so it has to change on their request and not only on the copy.
+	request.Model = NormalizeModelName(request.Model)
+	input, err := resolveResponsesAudioURLs(ctx, request.Input, NewAudioURLBudget())
+	if err != nil {
+		return nil, err
+	}
+	resolved := *request
+	resolved.Input = input
+	return &resolved, nil
+}
+
+func responsesBlocksHaveAudioURL(blocks []schemas.ResponsesMessageContentBlock) bool {
+	for i := range blocks {
+		if audio := blocks[i].Audio; audio != nil && audio.Data == "" && audio.URL != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func responsesMessageHasAudioURL(msg schemas.ResponsesMessage) bool {
+	return msg.Content != nil && responsesBlocksHaveAudioURL(msg.Content.ContentBlocks)
+}
+
+// resolveResponsesAudioURLs returns a copy of messages with URL-only audio
+// downloaded into Data, charging every download to budget. Only the messages that
+// change are copied, and nested content is copied before it changes, so a retry
+// still sees the original request. Function tool output blocks are never resolved.
+func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.ResponsesMessage, budget *AudioURLBudget) ([]schemas.ResponsesMessage, error) {
+	resolved := slices.Clone(messages)
+	for msgIndex := range resolved {
+		msg := &resolved[msgIndex]
+		if msg.Content != nil && responsesBlocksHaveAudioURL(msg.Content.ContentBlocks) {
+			blocks, err := resolveResponsesAudioBlocks(ctx, msg.Content.ContentBlocks, budget, fmt.Sprintf("input[%d].content", msgIndex))
+			if err != nil {
+				return nil, err
+			}
+			content := *msg.Content
+			content.ContentBlocks = blocks
+			msg.Content = &content
+		}
+	}
+	return resolved, nil
+}
+
+func resolveResponsesAudioBlocks(ctx context.Context, blocks []schemas.ResponsesMessageContentBlock, budget *AudioURLBudget, location string) ([]schemas.ResponsesMessageContentBlock, error) {
+	resolved := slices.Clone(blocks)
+	for blockIndex := range resolved {
+		block := &resolved[blockIndex]
+		if block.Audio == nil || block.Audio.Data != "" || block.Audio.URL == "" {
+			continue
+		}
+		audio := *block.Audio
+		audioData, audioType, err := budget.fetch(ctx, audio.URL, fmt.Sprintf("%s[%d]", location, blockIndex))
+		if err != nil {
+			return nil, err
+		}
+		audio.Data = audioData
+		// Without a format the converter labels the audio audio/mpeg; the download knows better.
+		if strings.TrimSpace(audio.Format) == "" && audioType != "" {
+			audio.Format = audioType
+		}
+		block.Audio = &audio
+	}
+	return resolved, nil
+}
+
 // convertResponsesMessagesToGeminiContents converts Responses messages to Gemini contents.
 // model is used to gate features that are only valid on Gemini 3+ (e.g. multimodal function
 // responses, where a tool returns images/files nested in functionResponse.parts). provider
@@ -5434,8 +5513,9 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 								textParts = append(textParts, *block.Text)
 								continue
 							}
-							if !supportsMultimodalToolOutput {
-								// Older models reject media here; name it instead.
+							// Older models reject media here, and no model takes audio in
+							// functionResponse.parts (images, PDF and plain text only); name it instead.
+							if !supportsMultimodalToolOutput || block.Audio != nil {
 								if placeholder, isMedia := schemas.ResponsesToolResultMediaPlaceholder(block); isMedia {
 									textParts = append(textParts, placeholder)
 								}
@@ -5692,6 +5772,9 @@ func buildGeminiPartFromContentBlock(block schemas.ResponsesMessageContentBlock,
 
 	case schemas.ResponsesInputMessageContentBlockTypeAudio:
 		if block.Audio != nil {
+			if block.Audio.Data == "" && block.Audio.URL != "" {
+				return nil, errUnresolvedAudioURL
+			}
 			// Decode base64 audio data (handles both standard and URL-safe base64)
 			decodedData, err := decodeBase64StringToBytes(block.Audio.Data)
 			if err != nil {
