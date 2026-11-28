@@ -92,6 +92,22 @@ func (rl *TableRateLimit) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
+// NextResets returns when the token and request counters next reset, nil for a
+// counter without a reset duration. Both counters anchor on CreatedAt, as in the
+// rate-limit reset path, and rate limits have no quarter definition.
+func (rl *TableRateLimit) NextResets(now time.Time) (token, request *time.Time) {
+	if rl == nil {
+		return nil, nil
+	}
+	if rl.TokenResetDuration != nil {
+		token = NextResetAt(*rl.TokenResetDuration, rl.IsCalendarAligned, rl.CreatedAt, rl.TokenLastReset, now, QuarterStartNotApplicable)
+	}
+	if rl.RequestResetDuration != nil {
+		request = NextResetAt(*rl.RequestResetDuration, rl.IsCalendarAligned, rl.CreatedAt, rl.RequestLastReset, now, QuarterStartNotApplicable)
+	}
+	return token, request
+}
+
 // AdoptCalendarAlignment re-anchors this rate limit's open counters onto the
 // calendar grid they have just been told to follow, and reports whether either
 // moved. Counterpart to TableBudget.AdoptCalendarAlignment; the reasoning for

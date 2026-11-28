@@ -3272,6 +3272,68 @@ func TestGetVirtualKeyQuota_WindowClampedToBudgetCreation(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeyQuota_ReportsNextResets verifies the quota response carries the
+// key's calendar_aligned flag and the next reset of each budget and rate-limit counter
+// that has a reset duration. The mock store runs no GORM hooks, so the fixture sets
+// IsCalendarAligned itself, as TableModelConfig.AfterFind does on a real read.
+func TestGetVirtualKeyQuota_ReportsNextResets(t *testing.T) {
+	SetLogger(&mockLogger{})
+	active, tokenMax, requestMax, day, week := true, int64(1000), int64(50), "1d", "1w"
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{ID: "vk-1", Name: "Aligned", IsActive: &active, CalendarAligned: true},
+		modelConfigs: []configstoreTables.TableModelConfig{{
+			ID: "mc-vk", Scope: configstoreTables.ModelConfigScopeVirtualKey, ScopeID: schemas.Ptr("vk-1"),
+			ModelName: configstoreTables.ModelConfigAllModels, CalendarAligned: true,
+			// IsCalendarAligned is what the model config's AfterFind stamps onto its budgets and rate limit.
+			Budgets: []configstoreTables.TableBudget{
+				{ID: "b-month", MaxLimit: 100, ResetDuration: "1M", IsCalendarAligned: true, LastReset: time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)},
+			},
+			RateLimit: &configstoreTables.TableRateLimit{
+				ID: "rl-vk", TokenMaxLimit: &tokenMax, TokenResetDuration: &day,
+				RequestMaxLimit: &requestMax, RequestResetDuration: &week, IsCalendarAligned: true,
+			},
+		}},
+	}
+	h := &GovernanceHandler{configStore: store}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+	before := time.Now().UTC()
+	h.getVirtualKeyQuota(ctx)
+	after := time.Now().UTC()
+	require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var resp struct {
+		CalendarAligned bool             `json:"calendar_aligned"`
+		Budgets         []quotaBudget    `json:"budgets"`
+		RateLimit       *quotaRateLimit  `json:"rate_limit"`
+		RateLimits      []quotaRateLimit `json:"rate_limits"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	assert.True(t, resp.CalendarAligned)
+	require.Len(t, resp.Budgets, 1)
+	require.NotNil(t, resp.RateLimit)
+	require.Len(t, resp.RateLimits, 1)
+
+	// The handler reads the clock itself, so accept the boundary seen from either side of the call.
+	nextMonth := func(x time.Time) time.Time { return time.Date(x.Year(), x.Month()+1, 1, 0, 0, 0, 0, time.UTC) }
+	nextDay := func(x time.Time) time.Time { return time.Date(x.Year(), x.Month(), x.Day()+1, 0, 0, 0, 0, time.UTC) }
+	nextMonday := func(x time.Time) time.Time {
+		days := (8 - int(x.Weekday())) % 7
+		if days == 0 {
+			days = 7
+		}
+		return time.Date(x.Year(), x.Month(), x.Day()+days, 0, 0, 0, 0, time.UTC)
+	}
+	isNext := func(got *time.Time, next func(time.Time) time.Time) bool {
+		return got != nil && (got.Equal(next(before)) || got.Equal(next(after)))
+	}
+	assert.True(t, isNext(resp.Budgets[0].NextReset, nextMonth), "budget next_reset: %v", resp.Budgets[0].NextReset)
+	assert.True(t, isNext(resp.RateLimit.TokenNextReset, nextDay), "token_next_reset: %v", resp.RateLimit.TokenNextReset)
+	assert.True(t, isNext(resp.RateLimits[0].TokenNextReset, nextDay), "rate_limits token_next_reset: %v", resp.RateLimits[0].TokenNextReset)
+	assert.True(t, isNext(resp.RateLimit.RequestNextReset, nextMonday), "request_next_reset: %v", resp.RateLimit.RequestNextReset)
+	assert.True(t, isNext(resp.RateLimits[0].RequestNextReset, nextMonday), "rate_limits request_next_reset: %v", resp.RateLimits[0].RequestNextReset)
+}
+
 // TestGetVirtualKeys_PaginatedEndpoint_ResponseShape verifies the JSON response
 // from the paginated virtual keys endpoint contains all expected fields.
 func TestGetVirtualKeys_PaginatedEndpoint_ResponseShape(t *testing.T) {
