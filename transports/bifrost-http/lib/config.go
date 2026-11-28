@@ -7775,10 +7775,11 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	if config.MCPHeadersProvider, err = mcp_headers.NewProvider(config.ConfigStore, config.LiveStore, logger); err != nil {
 		return fmt.Errorf("failed to create MCP headers provider: %w", err)
 	}
-	// Discovery store for per_user_discovery clients' tools, one set per caller
-	// read through a cache in the live store. The shared clients' store keeps
-	// its tools in the live store too, filled from the rows, so it is built
-	// once that has loaded (see LoadConfig).
+	// Discovery store for per_user_discovery clients' tools, one per caller,
+	// held in the live store's per-user discovery collection, which loads with
+	// the rest of the store. The shared clients' store keeps its tools in the
+	// live store too, filled from the rows, so it is built once that has
+	// loaded (see LoadConfig).
 	if config.MCPPerUserDiscoveryStore, err = mcpdiscovery.NewPerUserStore(config.ConfigStore, config.LiveStore, logger); err != nil {
 		return fmt.Errorf("failed to create per-user discovery store: %w", err)
 	}

@@ -3,6 +3,8 @@ package livestore
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"slices"
 	"strings"
 
@@ -23,6 +25,13 @@ const providerKeyListsTable = internalPrefix + "provider_key_lists"
 
 // KindMCPClient names the MCP client collection.
 const KindMCPClient Kind = "mcp_client"
+
+// KindMCPUserDiscovery names the collection of per-user MCP discoveries, and
+// KindMCPUserDiscoveryContent the interned discoveries they hold.
+const (
+	KindMCPUserDiscovery        Kind = "mcp_user_discovery"
+	KindMCPUserDiscoveryContent Kind = "mcp_user_discovery_content"
+)
 
 // Governance kinds: virtual keys, the teams and customers they sit under, the budgets and rate
 // limits those hold, model configs, and virtual MCPs.
@@ -65,20 +74,21 @@ const KindGrantSet Kind = "grant_set"
 // registers every one of them, so a reader takes them from Store.Collections. The record types and
 // the reads that load them are in the registry package.
 type Collections struct {
-	Providers    *Collection[registry.Provider]    // provider settings; their keys are ProviderKeys
-	ProviderKeys *Collection[registry.ProviderKey] // one record per key, children of Providers
-	MCPClients   *Collection[registry.MCPClient]
-	VirtualKeys  *Collection[registry.VirtualKey]
-	Teams        *Collection[registry.Team]
-	Customers    *Collection[registry.Customer]
-	Budgets      *Collection[registry.Budget]
-	RateLimits   *Collection[registry.RateLimit]
-	ModelConfigs *Collection[registry.ModelConfig]
-	VirtualMCPs  *Collection[registry.VirtualMCP]
-	Agents       *Collection[registry.Agent]
-	RoutingRules *Collection[registry.RoutingRule]
-	ModelRouters *Collection[registry.ModelRouter]
-	Prompts      *Collection[registry.Prompt]
+	Providers          *Collection[registry.Provider]    // provider settings; their keys are ProviderKeys
+	ProviderKeys       *Collection[registry.ProviderKey] // one record per key, children of Providers
+	MCPClients         *Collection[registry.MCPClient]
+	MCPUserDiscoveries *Collection[registry.MCPUserDiscovery]
+	VirtualKeys        *Collection[registry.VirtualKey]
+	Teams              *Collection[registry.Team]
+	Customers          *Collection[registry.Customer]
+	Budgets            *Collection[registry.Budget]
+	RateLimits         *Collection[registry.RateLimit]
+	ModelConfigs       *Collection[registry.ModelConfig]
+	VirtualMCPs        *Collection[registry.VirtualMCP]
+	Agents             *Collection[registry.Agent]
+	RoutingRules       *Collection[registry.RoutingRule]
+	ModelRouters       *Collection[registry.ModelRouter]
+	Prompts            *Collection[registry.Prompt]
 	// PricingOverrides holds every pricing override; the model catalog prices requests with them.
 	PricingOverrides *Collection[registry.PricingOverride]
 	// WebhookEndpoints holds every webhook endpoint, by ID and by name, for async job submissions
@@ -90,6 +100,9 @@ type Collections struct {
 	// grantSets holds the grant set of every key, once per content; VirtualKey.Grants holds the
 	// key's shared copy.
 	grantSets *Interned[registry.GrantSet]
+	// mcpDiscoveries holds every per-user MCP discovery once per content; a binding's Discovery
+	// holds its shared copy.
+	mcpDiscoveries *Interned[registry.MCPUserDiscoveryContent]
 }
 
 // FileRecords returns every record in fc, for LoadRecords: what a gateway without a config store
@@ -220,6 +233,9 @@ func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 		UniqueIndex(registry.MCPClientByName, registry.MCPClientName),
 		UniqueIndex(registry.MCPClientBySlug, registry.MCPClientSlug),
 	); err != nil {
+		return nil, err
+	}
+	if err := registerMCPUserDiscoveries(s, c); err != nil {
 		return nil, err
 	}
 	if err := registerGovernance(s, c, o); err != nil {
@@ -422,4 +438,40 @@ func buildLimitLinks[T any](links []registry.LimitLink[T]) []Option[T] {
 		opts = append(opts, ChildIDsOf(Kind(l.Parent), l.ParentID, l.ChildIDs, Cascade))
 	}
 	return opts
+}
+
+// registerMCPUserDiscoveries registers the per-user MCP discoveries: bindings keyed by caller and
+// client, read in batches, removed with their client and re-read when it is refreshed, listed by
+// caller, and holding their discovery's shared copy.
+func registerMCPUserDiscoveries(s *Store, c *Collections) error {
+	var err error
+	if c.mcpDiscoveries, err = s.RegisterInterned[registry.MCPUserDiscoveryContent](KindMCPUserDiscoveryContent, mcpDiscoveryHash); err != nil {
+		return err
+	}
+	c.MCPUserDiscoveries, err = s.Register(KindMCPUserDiscovery, []Kind{KindMCPClient}, Loader[registry.MCPUserDiscovery]{
+		ID:   registry.MCPUserDiscoveryID,
+		Page: registry.MCPUserDiscoveriesPage,
+		ByID: registry.MCPUserDiscoveriesByID,
+	},
+		ReadInBatches[registry.MCPUserDiscovery](DefaultReadBatch),
+		ChildIDsOf(KindMCPClient, registry.MCPUserDiscoveryClientID, registry.MCPUserDiscoveryIDsByClients, Cascade),
+		MultiIndex(registry.MCPUserDiscoveryByCaller, registry.MCPUserDiscoveryCallers),
+		Interns(c.mcpDiscoveries, func(d *registry.MCPUserDiscovery) **registry.MCPUserDiscoveryContent { return &d.Discovery }),
+	)
+	return err
+}
+
+// mcpDiscoveryHash is a discovery's key in its pool: the SHA-256 content hash its rows carry, read
+// as the first sixteen bytes of the hex digest, or the first sixteen bytes of the string's own
+// SHA-256 when it is not hex. Equal keys share one copy, so the key must be collision resistant.
+func mcpDiscoveryHash(d *registry.MCPUserDiscoveryContent) Hash {
+	var h Hash
+	if len(d.Hash) >= 2*len(h) {
+		if _, err := hex.Decode(h[:], []byte(d.Hash[:2*len(h)])); err == nil {
+			return h
+		}
+	}
+	sum := sha256.Sum256([]byte(d.Hash))
+	copy(h[:], sum[:])
+	return h
 }

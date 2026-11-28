@@ -9,236 +9,90 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
-// fakeConfigStore keeps per-user discovery rows in memory and counts reads,
-// so tests can tell a cache hit from a database read. Two Stores over one
-// fakeConfigStore are two processes over one database.
-type fakeConfigStore struct {
-	configstore.ConfigStore
-	mu            sync.Mutex
-	rows          map[string]tables.TableMCPPerUserDiscovery
-	reads         int
-	readErr       error
-	readHold      *hold
-	bindingReads  int
-	bindingsErr   error
-	bindingsHold  *hold
-	bindingsPanic bool // the next bindings query panics
-	toolWrites    []toolWrite
-	toolsErr      error
-	toolsFails    int // the next this many discovery writes fail, as toolsErr does
-	toolsHold     *hold
-	toolsPanic    bool // the next tools write panics
-	lastWritten   *schemas.MCPDiscovery
+// testDB is one config database that several stores share, as several processes do. It counts
+// the reads of the per-user discovery table and can fail them.
+type testDB struct {
+	store configstore.ConfigStore
+	reads atomic.Int64
+	fail  atomic.Bool
+	// failAfterWrite turns fail on as the next write of the table lands, so the reads after a
+	// committed write fail while the write itself succeeds.
+	failAfterWrite atomic.Bool
 }
 
-// toolWrite is one UpdateMCPClientDiscovery call that succeeded.
-type toolWrite struct {
-	clientID     string
-	tools        []string // sorted
-	instructions string
-}
-
-// hold pauses the next fake read after it has taken its result, so a test can
-// land a write between the read and its use.
-type hold struct {
-	reached chan struct{}
-	release chan struct{}
-}
-
-func newHold() *hold {
-	return &hold{reached: make(chan struct{}), release: make(chan struct{})}
-}
-
-func (h *hold) wait() {
-	if h == nil {
-		return
-	}
-	close(h.reached)
-	<-h.release
-}
-
-// waitSignal closes waited the first time a read selects on its Done. On a
-// client whose set is loaded, that is the read joining a fill another caller
-// leads.
-type waitSignal struct {
-	context.Context
-	once   sync.Once
-	waited chan struct{}
-}
-
-func newWaitSignal(ctx context.Context) *waitSignal {
-	return &waitSignal{Context: ctx, waited: make(chan struct{})}
-}
-
-func (c *waitSignal) Done() <-chan struct{} {
-	c.once.Do(func() { close(c.waited) })
-	return c.Context.Done()
-}
-
-func newFakeConfigStore() *fakeConfigStore {
-	return &fakeConfigStore{rows: map[string]tables.TableMCPPerUserDiscovery{}}
-}
-
-// rowKey keys the fake's rows by their (mode, identity, client) binding.
-func rowKey(mode schemas.MCPAuthMode, identity, mcpClientID string) string {
-	return livestore.EncodeKey(string(mode), identity, mcpClientID)
-}
-
-func (f *fakeConfigStore) GetMCPPerUserDiscoveryByMode(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {
-	f.mu.Lock()
-	f.reads++
-	err := f.readErr
-	row, ok := f.rows[rowKey(mode, identity, mcpClientID)]
-	h := f.readHold
-	f.readHold = nil
-	f.mu.Unlock()
-	h.wait()
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, nil
-	}
-	return &row, nil
-}
-
-func (f *fakeConfigStore) GetMCPPerUserDiscoveryBindings(_ context.Context, mcpClientID string) ([]tables.TableMCPPerUserDiscovery, error) {
-	f.mu.Lock()
-	f.bindingReads++
-	err := f.bindingsErr
-	var rows []tables.TableMCPPerUserDiscovery
-	for _, row := range f.rows {
-		if row.MCPClientID == mcpClientID {
-			rows = append(rows, tables.TableMCPPerUserDiscovery{AuthMode: row.AuthMode, UserID: row.UserID, VirtualKeyID: row.VirtualKeyID, MCPClientID: row.MCPClientID, DiscoveryHash: row.DiscoveryHash})
+// newTestDB returns a SQLite config database holding the notes and docs MCP clients.
+func newTestDB(t testing.TB) *testDB {
+	t.Helper()
+	ctx := context.Background()
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/config.db"},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+	db := &testDB{store: store}
+	require.NoError(t, store.DB().Callback().Query().Before("gorm:query").Register("test:per_user_discovery_reads", func(tx *gorm.DB) {
+		if tx.Statement.Table != (tables.TableMCPPerUserDiscovery{}).TableName() {
+			return
+		}
+		db.reads.Add(1)
+		if db.fail.Load() {
+			_ = tx.AddError(errors.New("database unreachable"))
+		}
+	}))
+	afterWrite := func(tx *gorm.DB) {
+		if tx.Statement.Table == (tables.TableMCPPerUserDiscovery{}).TableName() && db.failAfterWrite.Swap(false) {
+			db.fail.Store(true)
 		}
 	}
-	h := f.bindingsHold
-	f.bindingsHold = nil
-	panics := f.bindingsPanic
-	f.bindingsPanic = false
-	f.mu.Unlock()
-	h.wait()
-	if panics {
-		panic("bindings query panicked")
+	require.NoError(t, store.DB().Callback().Create().After("gorm:create").Register("test:fail_after_create", afterWrite))
+	require.NoError(t, store.DB().Callback().Update().After("gorm:update").Register("test:fail_after_update", afterWrite))
+	for _, c := range []*schemas.MCPClientConfig{notesClient(), docsClient()} {
+		c.ConnectionType = schemas.MCPConnectionTypeHTTP
+		c.ConnectionString = schemas.NewSecretVar("http://upstream.invalid/mcp")
+		require.NoError(t, store.CreateMCPClientConfig(ctx, c))
 	}
-	if err != nil {
-		return nil, err
-	}
-	return rows, nil
+	return db
 }
 
-func (f *fakeConfigStore) UpsertMCPPerUserDiscovery(_ context.Context, discovery *tables.TableMCPPerUserDiscovery) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.rows[rowKey(schemas.MCPAuthMode(discovery.AuthMode), discovery.Identity(), discovery.MCPClientID)] = *discovery
-	return nil
-}
-
-func (f *fakeConfigStore) DeleteMCPPerUserDiscovery(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.rows, rowKey(mode, identity, mcpClientID))
-	return nil
-}
-
-func (f *fakeConfigStore) readCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.reads
-}
-
-func (f *fakeConfigStore) bindingReadCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.bindingReads
-}
-
-func (f *fakeConfigStore) UpdateMCPClientDiscovery(_ context.Context, clientID string, discovery *schemas.MCPDiscovery) error {
-	f.mu.Lock()
-	err := f.toolsErr
-	if f.toolsFails > 0 {
-		f.toolsFails--
-		err = errors.New("database unavailable")
-	}
-	h := f.toolsHold
-	f.toolsHold = nil
-	panics := f.toolsPanic
-	f.toolsPanic = false
-	f.mu.Unlock()
-	h.wait()
-	if panics {
-		panic("tools write panicked")
-	}
-	if err != nil {
-		return err
-	}
-	names := make([]string, 0, len(discovery.Tools))
-	for name := range discovery.Tools {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.toolWrites = append(f.toolWrites, toolWrite{clientID: clientID, tools: names, instructions: discovery.Instructions})
-	f.lastWritten = discovery
-	return nil
-}
-
-func (f *fakeConfigStore) writtenTools() []toolWrite {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]toolWrite(nil), f.toolWrites...)
-}
-
-func (f *fakeConfigStore) set(apply func(f *fakeConfigStore)) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	apply(f)
-}
-
-// dueForReload makes clientID's set due for a reload on its next read, as if
-// membershipRefreshInterval had passed.
-func dueForReload(t *testing.T, s *PerUserStore, clientID string) {
+// process starts a process over db: a live store of its own, loaded from the database as a
+// process loads it at boot, and its per-user store.
+func (db *testDB) process(t testing.TB) *PerUserStore {
 	t.Helper()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cm := s.clients[clientID]
-	require.NotNil(t, cm, "client %s has no set", clientID)
-	cm.due.Store(true)
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	s, err := NewPerUserStore(db.store, live, nil)
+	require.NoError(t, err)
+	require.NoError(t, live.LoadAll(context.Background(), db.store.DB()))
+	return s
 }
 
-// runningLoad returns the load of clientID's set that is running, nil if none.
-func runningLoad(s *PerUserStore, clientID string) chan struct{} {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if cm := s.clients[clientID]; cm != nil {
-		return cm.loading
-	}
-	return nil
+// row reads a caller's stored row, or nil when there is none.
+func (db *testDB) row(t testing.TB, mode schemas.MCPAuthMode, identity, mcpClientID string) *tables.TableMCPPerUserDiscovery {
+	t.Helper()
+	row, err := db.store.GetMCPPerUserDiscoveryByMode(context.Background(), mode, identity, mcpClientID)
+	require.NoError(t, err)
+	return row
 }
 
-// waitForLoad waits for a running load of clientID's set, if any, to install
-// its result.
-func waitForLoad(s *PerUserStore, clientID string) {
-	if loading := runningLoad(s, clientID); loading != nil {
-		<-loading
-	}
-}
-
-// callerContext returns a request context carrying one identity value, the
-// way the HTTP layer and governance stamp it.
 func callerContext(key schemas.BifrostContextKey, value string) *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(key, value)
@@ -265,34 +119,59 @@ func notesClient() *schemas.MCPClientConfig {
 	return &schemas.MCPClientConfig{ID: "client-notes", Name: "notes", PerUserDiscovery: schemas.Ptr(true)}
 }
 
-// notesDiscovery is shaped the way core produces one: tools keyed and named
-// with the client prefix.
+func docsClient() *schemas.MCPClientConfig {
+	return &schemas.MCPClientConfig{ID: "client-docs", Name: "docs", PerUserDiscovery: schemas.Ptr(true)}
+}
+
+// notesDiscovery is a discovery of the notes client, shaped the way core
+// produces one: tools keyed and named with the client prefix.
 func notesDiscovery(tools ...string) *schemas.MCPDiscovery {
+	return discoveryFor(notesClient(), tools...)
+}
+
+// discoveryFor is a discovery of client, its tools keyed and named with the
+// client's prefix.
+func discoveryFor(client *schemas.MCPClientConfig, tools ...string) *schemas.MCPDiscovery {
 	discovery := &schemas.MCPDiscovery{
 		Tools:        map[string]schemas.ChatTool{},
 		Instructions: "Search before you write.",
 		DiscoveredAt: time.Now().UTC(),
 	}
 	for _, tool := range tools {
-		prefixed := "notes-" + tool
+		prefixed := client.Name + "-" + tool
 		discovery.Tools[prefixed] = schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: prefixed}}
 	}
 	return discovery
 }
 
+// sortedToolNames lists a discovery's tool names in order.
+func sortedToolNames(d *schemas.MCPDiscovery) []string {
+	names := make([]string, 0, len(d.Tools))
+	for name := range d.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// held returns the binding a store holds for a caller on a client.
+func held(s *PerUserStore, mode schemas.MCPAuthMode, identity, mcpClientID string) (*registry.MCPUserDiscovery, bool) {
+	return s.live.Collections.MCPUserDiscoveries.Get(registry.MCPUserDiscoveryKey(string(mode), identity, mcpClientID))
+}
+
 func TestSetDiscovery_StoresBareNamesAndServesThemPrefixed(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
+	db := newTestDB(t)
+	store := db.process(t)
 
-	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search", "create_page")))
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")))
 
-	row := db.rows[rowKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
+	row := db.row(t, schemas.MCPAuthModeUser, "alice", "client-notes")
+	require.NotNil(t, row)
 	require.Contains(t, row.Tools, "search", "rows keep the upstream name without the client prefix")
 	assert.Equal(t, "search", row.Tools["search"].Function.Name)
-	assert.Equal(t, "alice", *row.UserID)
 	assert.NotEmpty(t, row.DiscoveryHash)
 
-	got := store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient())
+	got := store.GetDiscovery(userContext("alice"), notesClient())
 	require.NotNil(t, got)
 	require.Contains(t, got.Tools, "notes-search")
 	assert.Equal(t, "notes-search", got.Tools["notes-search"].Function.Name)
@@ -303,33 +182,38 @@ func TestSetDiscovery_StoresBareNamesAndServesThemPrefixed(t *testing.T) {
 // stored bare and served under the client's current name, like tool names, and the lists are part
 // of the discovery's hash.
 func TestSetDiscovery_KeepsResourcesAndPromptsWithTheTools(t *testing.T) {
-	db := newFakeConfigStore()
+	db := newTestDB(t)
+	store := db.process(t)
 	discovery := notesDiscovery("search")
 	discovery.Resources = []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")}
 	discovery.ResourceTemplates = []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("notes://{id}", "note")}
 	discovery.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("notes-review")}
-	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), discovery))
-	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(modeContext(schemas.MCPAuthModeUser, "bob"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), discovery))
+	require.NoError(t, store.SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
 
-	row := db.rows[rowKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
+	row := db.row(t, schemas.MCPAuthModeUser, "alice", "client-notes")
 	require.Len(t, row.Prompts, 1)
 	assert.Equal(t, "review", row.Prompts[0].Name, "rows keep the upstream prompt name without the client prefix")
-	assert.NotEqual(t, db.rows[rowKey(schemas.MCPAuthModeUser, "bob", "client-notes")].DiscoveryHash, row.DiscoveryHash,
+	assert.NotEqual(t, db.row(t, schemas.MCPAuthModeUser, "bob", "client-notes").DiscoveryHash, row.DiscoveryHash,
 		"the same tools with other resources and prompts are another discovery")
 	assert.Equal(t, "notes-review", discovery.Prompts[0].Name, "stripping the prefix for storage must not rename the caller's prompts")
 
 	renamed := notesClient()
-	renamed.Name = "docs"
-	got := newTestPerUserStore(t, db).GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), renamed)
-	require.NotNil(t, got)
+	renamed.Name = "docs-renamed"
+	got := db.process(t).GetDiscovery(userContext("alice"), renamed)
+	require.NotNil(t, got, "a process booted from the database holds the discovery")
 	require.Len(t, got.Prompts, 1)
-	assert.Equal(t, "docs-review", got.Prompts[0].Name, "prompts are served under the client's current name")
+	assert.Equal(t, "docs-renamed-review", got.Prompts[0].Name, "prompts are served under the client's current name")
 	assert.Equal(t, discovery.Resources, got.Resources)
-	assert.Equal(t, discovery.ResourceTemplates, got.ResourceTemplates)
+	want, err := json.Marshal(discovery.ResourceTemplates)
+	require.NoError(t, err)
+	served, err := json.Marshal(got.ResourceTemplates)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(want), string(served), "templates compare by content: a stored one compiles its URI template again")
 }
 
 func TestSetDiscovery_LeavesTheCallersDiscoveryUntouched(t *testing.T) {
-	store := newTestPerUserStore(t, newFakeConfigStore())
+	store := newTestDB(t).process(t)
 	discovery := notesDiscovery("search")
 
 	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), discovery))
@@ -339,139 +223,345 @@ func TestSetDiscovery_LeavesTheCallersDiscoveryUntouched(t *testing.T) {
 // A discovery whose tools already carry their cached JSON is stored and hashed
 // under the bare names, the same as one whose tools were never serialized.
 func TestSetDiscovery_StoresBareNamesForPreSerializedTools(t *testing.T) {
-	db := newFakeConfigStore()
+	db := newTestDB(t)
+	store := db.process(t)
 	serialized := notesDiscovery("search")
 	tool := serialized.Tools["notes-search"]
 	require.NoError(t, tool.EnsureSerialized())
 	serialized.Tools["notes-search"] = tool
-	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("alice"), notesClient(), serialized))
-	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), serialized))
+	require.NoError(t, store.SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
 
-	row := db.rows[rowKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
+	row := db.row(t, schemas.MCPAuthModeUser, "alice", "client-notes")
 	stored, err := json.Marshal(row.Tools["search"])
 	require.NoError(t, err)
 	assert.Contains(t, string(stored), `"name":"search"`, "the stored tool must not carry the prefixed name from its cached JSON")
-	assert.Equal(t, db.rows[rowKey(schemas.MCPAuthModeUser, "bob", "client-notes")].DiscoveryHash, row.DiscoveryHash,
+	assert.Equal(t, db.row(t, schemas.MCPAuthModeUser, "bob", "client-notes").DiscoveryHash, row.DiscoveryHash,
 		"the same tools hash the same whether or not they were serialized before")
 }
 
-func TestGetDiscovery_ACallerWithoutADiscoveryCostsNoRead(t *testing.T) {
-	db := newFakeConfigStore()
-	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
-	store := newTestPerUserStore(t, db)
+// A read is answered from memory: neither a caller with a discovery nor one without reads the
+// database.
+func TestGetDiscovery_ReadsNothingFromTheDatabase(t *testing.T) {
+	db := newTestDB(t)
+	require.NoError(t, db.process(t).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	store := db.process(t)
 
-	assert.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-	assert.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-	assert.Zero(t, db.readCount(), "a caller outside the client's set is answered from memory")
-	assert.Equal(t, 1, db.bindingReadCount(), "the client's set is loaded once, on its first read")
-}
-
-func TestSetDiscovery_AddsTheCallerToALoadedClient(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-
-	require.Nil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeVK, "vk-1"), notesClient()))
-	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeVK, "vk-1"), notesClient(), notesDiscovery("search")))
-
-	got := store.GetDiscovery(modeContext(schemas.MCPAuthModeVK, "vk-1"), notesClient())
-	require.NotNil(t, got, "a write puts the caller in the set it was missing from")
-	assert.Contains(t, got.Tools, "notes-search")
-	assert.Equal(t, 1, db.bindingReadCount(), "without reloading the set")
+	before := db.reads.Load()
+	require.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()))
+	assert.Nil(t, store.GetDiscovery(userContext("bob"), notesClient()), "a caller with no binding has no discovery")
+	assert.Nil(t, store.GetDiscovery(userContext("alice"), docsClient()), "nor on a client it never discovered")
+	assert.Equal(t, before, db.reads.Load(), "reads come from memory")
 }
 
 func TestGetDiscovery_RenamedClientIsServedUnderTheNewName(t *testing.T) {
-	store := newTestPerUserStore(t, newFakeConfigStore())
-	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search")))
-	require.NotNil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient()))
+	store := newTestDB(t).process(t)
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	require.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()))
 
 	renamed := notesClient()
-	renamed.Name = "docs"
-	got := store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), renamed)
+	renamed.Name = "handbook"
+	got := store.GetDiscovery(userContext("alice"), renamed)
 	require.NotNil(t, got)
-	assert.Contains(t, got.Tools, "docs-search", "a rename rewrites no row: the prefix comes from the current name")
+	assert.Contains(t, got.Tools, "handbook-search", "a rename rewrites no row: the prefix comes from the current name")
 	assert.NotContains(t, got.Tools, "notes-search")
 }
 
 func TestGetDiscovery_CallersWithTheSameDiscoveryShareOneCopy(t *testing.T) {
-	db := newFakeConfigStore()
+	db := newTestDB(t)
 	callers := []*schemas.BifrostContext{userContext("alice"), userContext("bob"), vkContext("vk-1")}
 	for _, ctx := range callers {
-		require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(ctx, notesClient(), notesDiscovery("search")))
+		require.NoError(t, db.process(t).SetDiscovery(ctx, notesClient(), notesDiscovery("search")))
 	}
-	store := newTestPerUserStore(t, db)
+	store := db.process(t)
 
 	first := store.GetDiscovery(callers[0], notesClient())
 	require.NotNil(t, first)
 	for _, ctx := range callers[1:] {
-		assert.Same(t, first, store.GetDiscovery(ctx, notesClient()))
+		assert.Same(t, first, store.GetDiscovery(ctx, notesClient()), "callers holding one discovery are served one copy")
 	}
-	assert.Equal(t, 1, db.readCount(), "only the first caller's row is read")
-	assert.Equal(t, 1, store.cache.Len(), "the cache holds one copy per distinct discovery, not one per caller")
+	alice, _ := held(store, schemas.MCPAuthModeUser, "alice", "client-notes")
+	vk, _ := held(store, schemas.MCPAuthModeVK, "vk-1", "client-notes")
+	assert.Same(t, alice.Discovery, vk.Discovery, "their bindings hold one stored copy")
 }
 
 func TestSetDiscovery_AChangedDiscoveryLeavesTheOldOneToItsOtherHolders(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
+	store := newTestDB(t).process(t)
 	for _, caller := range []string{"alice", "bob", "carol"} {
 		require.NoError(t, store.SetDiscovery(userContext(caller), notesClient(), notesDiscovery("search")))
 	}
 	shared := store.GetDiscovery(userContext("bob"), notesClient())
 	require.NotNil(t, shared)
+	bob, _ := held(store, schemas.MCPAuthModeUser, "bob", "client-notes")
+	carol, _ := held(store, schemas.MCPAuthModeUser, "carol", "client-notes")
+	require.Same(t, bob.Discovery, carol.Discovery, "bindings written apart, each re-read on its own, hold one stored copy")
 
 	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")))
 
-	before := db.readCount()
 	assert.Same(t, shared, store.GetDiscovery(userContext("bob"), notesClient()))
-	assert.Same(t, shared, store.GetDiscovery(userContext("carol"), notesClient()), "carol is served the copy bob's read made")
-	assert.Equal(t, before, db.readCount(), "callers still holding the old discovery are answered from memory")
+	assert.Same(t, shared, store.GetDiscovery(userContext("carol"), notesClient()))
 	assert.Contains(t, store.GetDiscovery(userContext("alice"), notesClient()).Tools, "notes-create_page")
+	alice, _ := held(store, schemas.MCPAuthModeUser, "alice", "client-notes")
+	assert.NotSame(t, bob.Discovery, alice.Discovery, "alice moved to a copy of her own")
 }
 
-func TestGetDiscovery_AReadThatEndsWhileTheCallersRowIsReadReturnsAtOnce(t *testing.T) {
-	db := newFakeConfigStore()
-	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	store := newTestPerUserStore(t, db)
-	require.Nil(t, store.GetDiscovery(userContext("bob"), notesClient()))
-	h := newHold()
-	db.set(func(f *fakeConfigStore) { f.readHold = h })
-	done := make(chan *schemas.MCPDiscovery, 1)
-	go func() { done <- store.GetDiscovery(userContext("alice"), notesClient()) }()
-	<-h.reached
+func TestPerUserDiscovery_BindingsAreIsolated(t *testing.T) {
+	store := newTestDB(t).process(t)
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, store.SetDiscovery(vkContext("alice"), notesClient(), notesDiscovery("create_page")))
+	require.NoError(t, store.SetDiscovery(userContext("alice"), docsClient(), discoveryFor(docsClient(), "export")))
 
-	ended, cancel := context.WithCancel(userContext("alice"))
-	cancel()
-	assert.Nil(t, store.GetDiscovery(ended, notesClient()))
-	assert.Equal(t, 1, db.readCount(), "a second read of the same caller waits on the first rather than reading the row again")
-
-	close(h.release)
-	assert.NotNil(t, <-done)
+	assert.Equal(t, []string{"notes-search"}, sortedToolNames(store.GetDiscovery(userContext("alice"), notesClient())))
+	assert.Equal(t, []string{"notes-create_page"}, sortedToolNames(store.GetDiscovery(vkContext("alice"), notesClient())),
+		"a user and a virtual key with one ID are two callers")
+	assert.Equal(t, []string{"docs-export"}, sortedToolNames(store.GetDiscovery(userContext("alice"), docsClient())))
 }
 
-func TestGetDiscovery_AWaiterWhoseLeadersRequestEndsReadsItsOwnRow(t *testing.T) {
-	db := newFakeConfigStore()
-	for _, caller := range []string{"alice", "bob"} {
-		require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext(caller), notesClient(), notesDiscovery("search")))
+func TestPerUserDiscovery_TwoUsersThroughOneVirtualKeyEachKeepTheirOwn(t *testing.T) {
+	store := newTestDB(t).process(t)
+	alice, bob := userContext("alice"), userContext("bob")
+	for _, ctx := range []*schemas.BifrostContext{alice, bob} {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-shared")
 	}
-	store := newTestPerUserStore(t, db)
-	require.Nil(t, store.GetDiscovery(userContext("carol"), notesClient()))
-	h := newHold()
-	db.set(func(f *fakeConfigStore) { f.readHold, f.readErr = h, context.Canceled })
-	led := make(chan *schemas.MCPDiscovery, 1)
-	go func() { led <- store.GetDiscovery(userContext("alice"), notesClient()) }()
-	<-h.reached
-	// alice's read has taken the error her ended request gets; later reads succeed.
-	db.set(func(f *fakeConfigStore) { f.readErr = nil })
+	require.NoError(t, store.SetDiscovery(alice, notesClient(), notesDiscovery("search")))
+	require.NoError(t, store.SetDiscovery(bob, notesClient(), notesDiscovery("create_page")))
 
-	bob := newWaitSignal(userContext("bob"))
-	waited := make(chan *schemas.MCPDiscovery, 1)
-	go func() { waited <- store.GetDiscovery(bob, notesClient()) }()
-	<-bob.waited
-	close(h.release)
+	assert.Equal(t, []string{"notes-search"}, sortedToolNames(store.GetDiscovery(alice, notesClient())))
+	assert.Equal(t, []string{"notes-create_page"}, sortedToolNames(store.GetDiscovery(bob, notesClient())))
+}
 
-	assert.Nil(t, <-led)
-	got := <-waited
-	require.NotNil(t, got, "a read still waiting is not failed by the request that led the fill ending")
-	assert.Contains(t, got.Tools, "notes-search")
+func TestDiscovery_OnlyUserAndVirtualKeyCallersHaveOne(t *testing.T) {
+	db := newTestDB(t)
+	store := db.process(t)
+	anonymous := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	assert.ErrorIs(t, store.SetDiscovery(anonymous, notesClient(), notesDiscovery("search")), errNoCaller)
+	assert.ErrorIs(t, store.DeleteDiscovery(anonymous, notesClient()), errNoCaller)
+	assert.Nil(t, store.GetDiscovery(anonymous, notesClient()))
+	assert.Nil(t, store.GetDiscovery(context.Background(), notesClient()), "a plain context has no caller either")
+}
+
+func TestGetDiscovery_ReadsTheCallerThroughADerivedContext(t *testing.T) {
+	store := newTestDB(t).process(t)
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	derived, cancel := context.WithCancel(userContext("alice"))
+	defer cancel()
+	assert.NotNil(t, store.GetDiscovery(derived, notesClient()))
+}
+
+func TestDeleteDiscovery_RemovesTheCallerWithoutARead(t *testing.T) {
+	db := newTestDB(t)
+	store := db.process(t)
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+
+	before := db.reads.Load()
+	require.NoError(t, store.DeleteDiscovery(userContext("alice"), notesClient()))
+	assert.Equal(t, before, db.reads.Load(), "memory drops the binding without reading the database")
+	assert.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
+	assert.Nil(t, db.row(t, schemas.MCPAuthModeUser, "alice", "client-notes"))
+}
+
+// A write whose re-read keeps failing reports that the discovery was saved but not reloaded, and
+// memory keeps what it held before.
+func TestSetDiscovery_AFailedReloadSaysSavedButNotReloaded(t *testing.T) {
+	db := newTestDB(t)
+	store := db.process(t)
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	db.failAfterWrite.Store(true)
+	ctx, cancel := context.WithTimeout(userContext("alice"), 200*time.Millisecond)
+	defer cancel()
+	err := store.SetDiscovery(schemas.NewBifrostContext(ctx, schemas.NoDeadline), notesClient(), notesDiscovery("search", "create_page"))
+	db.fail.Store(false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "saved but not reloaded")
+	assert.Equal(t, []string{"notes-search"}, sortedToolNames(store.GetDiscovery(userContext("alice"), notesClient())),
+		"memory keeps the discovery it held")
+}
+
+func TestEvictDiscovery_AppliesAnotherProcessesWriteAndDelete(t *testing.T) {
+	db := newTestDB(t)
+	local, elsewhere := db.process(t), db.process(t)
+
+	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()), "until told, this process does not know of the other's write")
+	local.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
+	require.Contains(t, local.GetDiscovery(userContext("alice"), notesClient()).Tools, "notes-search")
+
+	require.NoError(t, elsewhere.DeleteDiscovery(userContext("alice"), notesClient()))
+	local.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
+	assert.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()), "the other's delete reaches this process")
+}
+
+func TestEvictDiscovery_OutOfOrderMessagesNeverHideADiscovery(t *testing.T) {
+	db := newTestDB(t)
+	local, deleter, writer := db.process(t), db.process(t), db.process(t)
+
+	require.NoError(t, deleter.DeleteDiscovery(userContext("alice"), notesClient()))
+	require.NoError(t, writer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	// The writer's message arrives first and the deleter's last.
+	local.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
+	local.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
+
+	assert.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()), "a delete delivered after a later write does not hide the discovery")
+}
+
+func TestEvictDiscoveries_ReadOnlyTheMatchingBindingsAgain(t *testing.T) {
+	bindings := []struct {
+		mode     schemas.MCPAuthMode
+		identity string
+		client   *schemas.MCPClientConfig
+	}{
+		{schemas.MCPAuthModeUser, "alice", notesClient()},
+		{schemas.MCPAuthModeVK, "vk-1", notesClient()},
+		{schemas.MCPAuthModeUser, "alice", docsClient()},
+	}
+	// Every row is deleted on another process; an eviction re-reads only what it names, so those
+	// bindings go and the others are still served.
+	cases := []struct {
+		name  string
+		evict func(*PerUserStore)
+		gone  []bool
+	}{
+		{name: "by client", evict: func(s *PerUserStore) { s.EvictDiscoveriesByMCPClient("client-notes") }, gone: []bool{true, true, false}},
+		{name: "by virtual key", evict: func(s *PerUserStore) { s.EvictDiscoveriesByVirtualKey("vk-1") }, gone: []bool{false, true, false}},
+		{name: "by user", evict: func(s *PerUserStore) { s.EvictDiscoveriesByUser("alice") }, gone: []bool{true, false, true}},
+		{name: "one binding", evict: func(s *PerUserStore) { s.EvictDiscovery(schemas.MCPAuthModeVK, "vk-1", "client-notes") }, gone: []bool{false, true, false}},
+		{name: "flush", evict: func(s *PerUserStore) { s.FlushDiscoveryCache() }, gone: []bool{true, true, true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newTestDB(t)
+			local, elsewhere := db.process(t), db.process(t)
+			for _, b := range bindings {
+				require.NoError(t, local.SetDiscovery(modeContext(b.mode, b.identity), b.client, notesDiscovery("search")))
+				elsewhere.EvictDiscovery(b.mode, b.identity, b.client.ID)
+			}
+			for _, b := range bindings {
+				require.NoError(t, elsewhere.DeleteDiscovery(modeContext(b.mode, b.identity), b.client))
+			}
+			tc.evict(local)
+			for i, b := range bindings {
+				got := local.GetDiscovery(modeContext(b.mode, b.identity), b.client)
+				assert.Equal(t, tc.gone[i], got == nil, "binding %d (%s %s %s)", i, b.mode, b.identity, b.client.ID)
+			}
+		})
+	}
+}
+
+// A flush reads every binding again by its own key: it finds one another process wrote that this
+// process was never told of, drops one whose row is gone, and keeps the rest.
+func TestFlushDiscoveryCache_ReadsEveryBindingAgain(t *testing.T) {
+	db := newTestDB(t)
+	local, elsewhere := db.process(t), db.process(t)
+	require.NoError(t, local.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, local.SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
+	elsewhere.EvictDiscovery(schemas.MCPAuthModeUser, "bob", "client-notes")
+	require.NoError(t, elsewhere.SetDiscovery(userContext("carol"), notesClient(), notesDiscovery("create_page")))
+	require.NoError(t, elsewhere.DeleteDiscovery(userContext("bob"), notesClient()))
+	require.Nil(t, local.GetDiscovery(userContext("carol"), notesClient()), "until told, this process does not know of carol")
+
+	local.FlushDiscoveryCache()
+	assert.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()), "an unchanged binding stays")
+	assert.Nil(t, local.GetDiscovery(userContext("bob"), notesClient()), "a binding whose row is gone is dropped")
+	assert.Contains(t, local.GetDiscovery(userContext("carol"), notesClient()).Tools, "notes-create_page", "a binding written elsewhere is found")
+}
+
+// A client's removal removes its bindings with it, without reading them.
+func TestRemovingAClientRemovesItsBindings(t *testing.T) {
+	db := newTestDB(t)
+	store := db.process(t)
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, store.SetDiscovery(userContext("alice"), docsClient(), discoveryFor(docsClient(), "export")))
+
+	require.NoError(t, store.live.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindMCPClient, ID: "client-notes", Remove: true}}))
+	assert.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
+	assert.NotNil(t, store.GetDiscovery(userContext("alice"), docsClient()), "another client's bindings stay")
+}
+
+func TestSetOnDiscoveryWritten_FiresForWritesAndDeletesOnly(t *testing.T) {
+	store := newTestDB(t).process(t)
+	var mu sync.Mutex
+	var fired []string
+	store.SetOnDiscoveryWritten(func(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) {
+		mu.Lock()
+		defer mu.Unlock()
+		fired = append(fired, fmt.Sprintf("%s/%s/%s", mode, identity, mcpClientID))
+	})
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, store.DeleteDiscovery(userContext("alice"), notesClient()))
+	store.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
+	assert.Equal(t, []string{"user/alice/client-notes", "user/alice/client-notes"}, fired, "an eviction applies another process's change and announces nothing")
+}
+
+func TestStore_NilIsSafe(t *testing.T) {
+	var store *PerUserStore
+	ctx := userContext("alice")
+	assert.Nil(t, store.GetDiscovery(ctx, notesClient()))
+	assert.Error(t, store.SetDiscovery(ctx, notesClient(), notesDiscovery("search")))
+	assert.Error(t, store.DeleteDiscovery(ctx, notesClient()))
+	store.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
+	store.EvictDiscoveriesByMCPClient("client-notes")
+	store.EvictDiscoveriesByVirtualKey("vk-1")
+	store.EvictDiscoveriesByUser("alice")
+	store.FlushDiscoveryCache()
+	store.SetOnDiscoveryWritten(nil)
+}
+
+func TestPerUserStore_ManyCallersInParallelNeverReadAnothersDiscovery(t *testing.T) {
+	db := newTestDB(t)
+	store := db.process(t)
+	const callers, rounds = 12, 40
+	type caller struct {
+		mode     schemas.MCPAuthMode
+		identity string
+		tool     string
+	}
+	all := make([]caller, callers)
+	for i := range all {
+		mode := schemas.MCPAuthModeUser
+		if i%3 == 0 {
+			mode = schemas.MCPAuthModeVK
+		}
+		tool := "shared"
+		if i%2 == 1 {
+			tool = fmt.Sprintf("only_%d", i)
+		}
+		all[i] = caller{mode: mode, identity: fmt.Sprintf("caller-%d", i), tool: tool}
+	}
+	var wg sync.WaitGroup
+	var failures sync.Map
+	for _, c := range all {
+		wg.Add(1)
+		go func(c caller) {
+			defer wg.Done()
+			ctx := modeContext(c.mode, c.identity)
+			want := []string{"notes-" + c.tool}
+			for r := 0; r < rounds; r++ {
+				switch r % 5 {
+				case 0:
+					if err := store.SetDiscovery(ctx, notesClient(), notesDiscovery(c.tool)); err != nil {
+						failures.Store(c.identity+": write", err.Error())
+					}
+				case 3:
+					store.EvictDiscovery(c.mode, c.identity, "client-notes")
+				default:
+					if got := store.GetDiscovery(ctx, notesClient()); got != nil && !reflect.DeepEqual(sortedToolNames(got), want) {
+						failures.Store(fmt.Sprintf("%s: round %d", c.identity, r), sortedToolNames(got))
+					}
+				}
+			}
+		}(c)
+	}
+	wg.Wait()
+	failures.Range(func(k, v any) bool {
+		t.Errorf("%v read %v", k, v)
+		return true
+	})
+	for _, c := range all {
+		got := store.GetDiscovery(modeContext(c.mode, c.identity), notesClient())
+		require.NotNil(t, got, c.identity)
+		assert.Equal(t, []string{"notes-" + c.tool}, sortedToolNames(got), c.identity)
+	}
 }
 
 // Callers whose hashes match are served one shared copy, so the hash must cover everything a
@@ -544,625 +634,63 @@ func TestDiscoveryHash_CoversEveryFieldADiscoveryServes(t *testing.T) {
 	}
 }
 
-func TestGetDiscovery_ReadErrorFailsClosedAndIsNotCached(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search")))
-
-	db.set(func(f *fakeConfigStore) { f.readErr = errors.New("database unavailable") })
-	assert.Nil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient()), "a failed read serves no tools")
-
-	db.set(func(f *fakeConfigStore) { f.readErr = nil })
-	assert.NotNil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient()), "the failure was not remembered")
-}
-
-func TestGetDiscovery_LoadFailureFailsTheRequestAndTheNextOneTriesAgain(t *testing.T) {
-	db := newFakeConfigStore()
-	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	store := newTestPerUserStore(t, db)
-
-	db.set(func(f *fakeConfigStore) { f.bindingsErr = errors.New("database unavailable") })
-	assert.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()), "a client whose set cannot be loaded serves no tools")
-	assert.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-	assert.Equal(t, 2, db.bindingReadCount(), "each request tries the load once")
-
-	db.set(func(f *fakeConfigStore) { f.bindingsErr = nil })
-	assert.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-}
-
-func TestRefresh_FailureKeepsTheSet(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	require.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-
-	db.set(func(f *fakeConfigStore) { f.bindingsErr = errors.New("database unavailable") })
-	dueForReload(t, store, "client-notes")
-	require.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-	waitForLoad(store, "client-notes")
-
-	assert.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()), "a failed reload keeps what the set had")
-	waitForLoad(store, "client-notes")
-	assert.Equal(t, 3, db.bindingReadCount(), "and leaves it due, so the next read tries again")
-
-	db.set(func(f *fakeConfigStore) { f.bindingsErr = nil })
-	require.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-	waitForLoad(store, "client-notes")
-	require.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-	waitForLoad(store, "client-notes")
-	assert.Equal(t, 4, db.bindingReadCount(), "a reload that succeeds is not due again until the interval passes")
-}
-
-func TestLoad_AQueryThatPanicsDoesNotWedgeTheClient(t *testing.T) {
-	t.Run("first load", func(t *testing.T) {
-		db := newFakeConfigStore()
-		require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-		store := newTestPerUserStore(t, db)
-		db.set(func(f *fakeConfigStore) { f.bindingsPanic = true })
-
-		assert.Panics(t, func() { store.GetDiscovery(userContext("alice"), notesClient()) }, "the request that ran the load sees the panic")
-		ctx, cancel := context.WithTimeout(userContext("alice"), time.Second)
-		defer cancel()
-		assert.NotNil(t, store.GetDiscovery(ctx, notesClient()), "the next read loads the set rather than waiting on the panicked load")
-	})
-	t.Run("refresh", func(t *testing.T) {
-		db := newFakeConfigStore()
-		local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
-		require.NoError(t, local.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-		require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-		require.NoError(t, elsewhere.SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
-		db.set(func(f *fakeConfigStore) { f.bindingsPanic = true })
-
-		dueForReload(t, local, "client-notes")
-		require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-		waitForLoad(local, "client-notes")
-		require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()), "a reload that panicked keeps the set, and leaves it due")
-		waitForLoad(local, "client-notes")
-
-		assert.NotNil(t, local.GetDiscovery(userContext("bob"), notesClient()), "the next reload ran")
-	})
-}
-
-func TestPerUserDiscovery_BindingsAreIsolated(t *testing.T) {
-	store := newTestPerUserStore(t, newFakeConfigStore())
-	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "a"), notesClient(), notesDiscovery("search")))
-
-	assert.Nil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeVK, "a"), notesClient()), "the same identity string in another mode is another caller")
-	assert.Nil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "b"), notesClient()))
-	other := notesClient()
-	other.ID = "client-other"
-	assert.Nil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "a"), other))
-}
-
-// TestPerUserDiscovery_TwoUsersThroughOneVirtualKeyEachKeepTheirOwn: callers
-// that share a virtual key but carry their own user identity are separate
-// callers, and the key's own binding is a third one, holding nothing either
-// user stored.
-func TestPerUserDiscovery_TwoUsersThroughOneVirtualKeyEachKeepTheirOwn(t *testing.T) {
-	store := newTestPerUserStore(t, newFakeConfigStore())
-	throughKey := func(user string) *schemas.BifrostContext {
-		ctx := userContext(user)
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-shared")
-		return ctx
-	}
-	require.NoError(t, store.SetDiscovery(throughKey("alice"), notesClient(), notesDiscovery("search")))
-	require.NoError(t, store.SetDiscovery(throughKey("bob"), notesClient(), notesDiscovery("create_page")))
-
-	alice := store.GetDiscovery(throughKey("alice"), notesClient())
-	require.NotNil(t, alice)
-	assert.Equal(t, []string{"notes-search"}, sortedToolNames(alice))
-	bob := store.GetDiscovery(throughKey("bob"), notesClient())
-	require.NotNil(t, bob)
-	assert.Equal(t, []string{"notes-create_page"}, sortedToolNames(bob))
-	assert.Nil(t, store.GetDiscovery(vkContext("vk-shared"), notesClient()), "the key on its own holds neither user's discovery")
-	assert.Nil(t, store.GetDiscovery(throughKey("carol"), notesClient()), "another user through the same key holds nothing")
-}
-
-// TestPerUserStore_ManyCallersInParallelNeverReadAnothersDiscovery: callers in
-// both modes write, read, evict and reload in parallel, half of them holding
-// one shared discovery and the rest one each. Every read is nil or exactly the
-// caller's own tools, and no read changes the copy the shared callers hold.
-// Run with -race.
-func TestPerUserStore_ManyCallersInParallelNeverReadAnothersDiscovery(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-	const callers, rounds = 24, 200
-	ownTool := func(i int) string {
-		if i%2 == 0 {
-			return "shared"
-		}
-		return fmt.Sprintf("only_%d", i)
-	}
-	type caller struct {
-		mode     schemas.MCPAuthMode
-		identity string
-		tool     string
-	}
-	all := make([]caller, callers)
-	for i := range all {
-		mode := schemas.MCPAuthModeUser
-		if i%3 == 0 {
-			mode = schemas.MCPAuthModeVK
-		}
-		all[i] = caller{mode: mode, identity: fmt.Sprintf("caller-%d", i), tool: ownTool(i)}
-	}
-
-	var wg sync.WaitGroup
-	var failures sync.Map
-	for _, c := range all {
-		wg.Add(1)
-		go func(c caller) {
-			defer wg.Done()
-			ctx := modeContext(c.mode, c.identity)
-			want := []string{"notes-" + c.tool}
-			for r := 0; r < rounds; r++ {
-				switch r % 6 {
-				case 0:
-					if err := store.SetDiscovery(ctx, notesClient(), notesDiscovery(c.tool)); err != nil {
-						failures.Store(c.identity+": write", err.Error())
-					}
-				case 3:
-					store.EvictDiscovery(c.mode, c.identity, "client-notes")
-				case 5:
-					store.EvictDiscoveriesByMCPClient("client-notes")
-				default:
-					if got := store.GetDiscovery(ctx, notesClient()); got != nil && !reflect.DeepEqual(sortedToolNames(got), want) {
-						failures.Store(fmt.Sprintf("%s: round %d", c.identity, r), sortedToolNames(got))
-					}
-				}
-			}
-		}(c)
-	}
-	wg.Wait()
-	failures.Range(func(k, v any) bool {
-		t.Errorf("%v read %v", k, v)
-		return true
-	})
-
-	for _, c := range all {
-		got := store.GetDiscovery(modeContext(c.mode, c.identity), notesClient())
-		require.NotNil(t, got, c.identity)
-		assert.Equal(t, []string{"notes-" + c.tool}, sortedToolNames(got), c.identity)
-	}
-}
-
-func TestDiscovery_OnlyUserAndVirtualKeyCallersHaveOne(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-	noCaller := map[string]context.Context{
-		"session-only":   callerContext(schemas.BifrostContextKeyMCPSessionID, "sess-1"),
-		"anonymous":      context.Background(),
-		"empty identity": userContext(""),
-	}
-	for name, ctx := range noCaller {
-		assert.ErrorIs(t, store.SetDiscovery(ctx, notesClient(), notesDiscovery("search")), errNoCaller, name)
-		assert.ErrorIs(t, store.DeleteDiscovery(ctx, notesClient()), errNoCaller, name)
-		assert.Nil(t, store.GetDiscovery(ctx, notesClient()), name)
-	}
-	assert.Zero(t, db.readCount()+db.bindingReadCount(), "a context with no caller never reaches the database")
-}
-
-func TestGetDiscovery_ReadsTheCallerThroughADerivedContext(t *testing.T) {
-	store := newTestPerUserStore(t, newFakeConfigStore())
-	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-
-	type unrelated struct{}
-	derived, cancel := context.WithCancel(context.WithValue(userContext("alice"), unrelated{}, 1))
-	defer cancel()
-	got := store.GetDiscovery(derived, notesClient())
-	require.NotNil(t, got, "a context derived from the request still names its caller")
-	assert.Contains(t, got.Tools, "notes-search")
-}
-
-func TestDeleteDiscovery_TakesTheCallerOutOfTheSet(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search")))
-	require.NotNil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient()))
-
-	require.NoError(t, store.DeleteDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient()))
-	before := db.readCount()
-	assert.Nil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient()))
-	assert.Equal(t, before, db.readCount(), "a caller this process deleted is answered from memory")
-}
-
-func TestEvictDiscovery_AnotherProcessesWriteIsReadFromTheDatabase(t *testing.T) {
-	db := newFakeConfigStore()
-	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
-	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-
-	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()), "until told, this process does not know of the other's write")
-
-	local.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
-	got := local.GetDiscovery(userContext("alice"), notesClient())
-	require.NotNil(t, got)
-	assert.Contains(t, got.Tools, "notes-search")
-}
-
-func TestEvictDiscovery_AnotherProcessesDeleteIsSettledByOneRead(t *testing.T) {
-	db := newFakeConfigStore()
-	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
-	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-
-	require.NoError(t, elsewhere.DeleteDiscovery(userContext("alice"), notesClient()))
-	local.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
-
-	before := db.readCount()
-	assert.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-	assert.Equal(t, before+1, db.readCount(), "one read finds the row gone")
-	assert.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-	assert.Equal(t, before+1, db.readCount(), "and takes the caller out of the set, so later reads cost none")
-}
-
-func TestEvictDiscovery_OutOfOrderMessagesNeverHideADiscovery(t *testing.T) {
-	db := newFakeConfigStore()
-	local, deleter, writer := newTestPerUserStore(t, db), newTestPerUserStore(t, db), newTestPerUserStore(t, db)
-	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-
-	require.NoError(t, deleter.DeleteDiscovery(userContext("alice"), notesClient()))
-	require.NoError(t, writer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	// The writer's message arrives first and the deleter's last.
-	local.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
-	local.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
-
-	assert.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()), "a delete delivered after a later write does not hide the discovery")
-}
-
-func TestRefresh_PicksUpAWriteThisProcessWasNotToldOf(t *testing.T) {
-	db := newFakeConfigStore()
-	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
-	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-
-	dueForReload(t, local, "client-notes")
-	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()), "the read that finds the set due is answered from it as it stands")
-	waitForLoad(local, "client-notes")
-
-	assert.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-}
-
-func TestRefresh_DropsADeleteThisProcessWasNotToldOf(t *testing.T) {
-	db := newFakeConfigStore()
-	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
-	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-	require.NoError(t, elsewhere.DeleteDiscovery(userContext("alice"), notesClient()))
-
-	dueForReload(t, local, "client-notes")
-	require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-	waitForLoad(local, "client-notes")
-
-	before := db.readCount()
-	assert.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-	assert.Equal(t, before, db.readCount(), "the reload took the caller out of the set")
-}
-
-func TestRefresh_ReplacesADiscoveryThatChangedOnAnotherProcess(t *testing.T) {
-	db := newFakeConfigStore()
-	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
-	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")))
-
-	dueForReload(t, local, "client-notes")
-	require.NotContains(t, local.GetDiscovery(userContext("alice"), notesClient()).Tools, "notes-create_page")
-	waitForLoad(local, "client-notes")
-
-	got := local.GetDiscovery(userContext("alice"), notesClient())
-	require.NotNil(t, got)
-	assert.Contains(t, got.Tools, "notes-create_page", "a cached discovery whose row hash changed is read again")
-}
-
-func TestGetDiscovery_LearnsANewerHashThanTheSetHas(t *testing.T) {
-	db := newFakeConfigStore()
-	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
-	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	require.Nil(t, local.GetDiscovery(userContext("bob"), notesClient()), "loads the set, holding alice's first hash")
-	// alice's discovery changes on the other process, and its message never arrives.
-	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")))
-
-	before := db.readCount()
-	require.Contains(t, local.GetDiscovery(userContext("alice"), notesClient()).Tools, "notes-create_page")
-	require.Contains(t, local.GetDiscovery(userContext("alice"), notesClient()).Tools, "notes-create_page")
-	assert.Equal(t, before+1, db.readCount(), "the read that found a newer row records its hash, so the next is served from memory")
-}
-
-func TestLoad_KeepsAWriteThatLandsWhileTheQueryRuns(t *testing.T) {
-	t.Run("first load", func(t *testing.T) {
-		db := newFakeConfigStore()
-		store := newTestPerUserStore(t, db)
-		h := newHold()
-		db.set(func(f *fakeConfigStore) { f.bindingsHold = h })
-
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			store.GetDiscovery(userContext("bob"), notesClient())
-		}()
-		<-h.reached
-		require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-		close(h.release)
-		<-done
-
-		assert.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()), "the load's older result does not erase the write")
-	})
-	t.Run("refresh", func(t *testing.T) {
-		db := newFakeConfigStore()
-		store := newTestPerUserStore(t, db)
-		require.Nil(t, store.GetDiscovery(userContext("bob"), notesClient()))
-		h := newHold()
-		db.set(func(f *fakeConfigStore) { f.bindingsHold = h })
-
-		dueForReload(t, store, "client-notes")
-		store.GetDiscovery(userContext("bob"), notesClient())
-		<-h.reached
-		require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-		close(h.release)
-		waitForLoad(store, "client-notes")
-
-		assert.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()), "the reload's older result does not erase the write")
-	})
-}
-
-func TestLoad_AReadDuringTheFirstLoadWaitsForIt(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-	h := newHold()
-	db.set(func(f *fakeConfigStore) { f.bindingsHold = h })
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		store.GetDiscovery(userContext("alice"), notesClient())
-	}()
-	<-h.reached
-
-	// A read whose request ends while it waits returns at once.
-	ended, cancel := context.WithCancel(userContext("bob"))
-	cancel()
-	assert.Nil(t, store.GetDiscovery(ended, notesClient()))
-	assert.Equal(t, 1, db.bindingReadCount(), "a read during the first load waits for it rather than running its own")
-
-	close(h.release)
-	<-done
-	assert.Equal(t, 1, db.bindingReadCount())
-}
-
-func TestRefresh_ReadsDuringAReloadDoNotStartAnother(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-	require.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-	h := newHold()
-	db.set(func(f *fakeConfigStore) { f.bindingsHold = h })
-	dueForReload(t, store, "client-notes")
-	store.GetDiscovery(userContext("alice"), notesClient())
-	<-h.reached
-	running := runningLoad(store, "client-notes")
-	require.NotNil(t, running)
-
-	store.GetDiscovery(userContext("alice"), notesClient())
-	store.refresh("client-notes") // a read that saw the set due just before the reload started
-	assert.True(t, running == runningLoad(store, "client-notes"), "the reload running is still the first one")
-
-	close(h.release)
-	waitForLoad(store, "client-notes")
-	assert.Equal(t, 2, db.bindingReadCount())
-}
-
-func TestGetDiscovery_AWriteDuringAReadThatFindsNoRowKeepsTheCaller(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-	require.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-	store.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
-	h := newHold()
-	db.set(func(f *fakeConfigStore) { f.readHold = h })
-
-	done := make(chan *schemas.MCPDiscovery, 1)
-	go func() { done <- store.GetDiscovery(userContext("alice"), notesClient()) }()
-	<-h.reached
-	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	close(h.release)
-	require.Nil(t, <-done)
-
-	assert.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()), "a write landing after the read found no row keeps the caller in the set")
-}
-
-func TestEvictDiscoveriesByVirtualKey_ADeletedKeyLeavesTheSetOnItsNextRead(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-	require.NoError(t, store.SetDiscovery(vkContext("vk-1"), notesClient(), notesDiscovery("search")))
-	require.NotNil(t, store.GetDiscovery(vkContext("vk-1"), notesClient()))
-
-	// Deleting the key removes its rows without going through the store.
-	require.NoError(t, db.DeleteMCPPerUserDiscovery(context.Background(), schemas.MCPAuthModeVK, "vk-1", "client-notes"))
-	store.EvictDiscoveriesByVirtualKey("vk-1")
-
-	assert.Nil(t, store.GetDiscovery(vkContext("vk-1"), notesClient()))
-	before := db.readCount()
-	assert.Nil(t, store.GetDiscovery(vkContext("vk-1"), notesClient()))
-	assert.Equal(t, before, db.readCount(), "the read that found the row gone took the key out of the set")
-}
-
-func TestEvictDiscoveriesByMCPClient_ReloadsTheClientsSet(t *testing.T) {
-	db := newFakeConfigStore()
-	store := newTestPerUserStore(t, db)
-	require.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-
-	store.EvictDiscoveriesByMCPClient("client-notes")
-	require.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
-	assert.Equal(t, 2, db.bindingReadCount())
-}
-
-func TestEvictDiscoveries_DropOnlyTheMatchingBindings(t *testing.T) {
-	other := notesClient()
-	other.ID = "client-other"
-	bindings := []struct {
-		mode     schemas.MCPAuthMode
-		identity string
-		client   *schemas.MCPClientConfig
-	}{
-		{schemas.MCPAuthModeUser, "alice", notesClient()},
-		{schemas.MCPAuthModeVK, "vk-1", notesClient()},
-		{schemas.MCPAuthModeUser, "alice", other},
-	}
-	// Bindings 0 and 1 hold the same discovery on one client, so after an eviction that drops their
-	// copy, the first of them to read it again makes the copy the second is served.
-	cases := []struct {
-		name  string
-		evict func(*PerUserStore)
-		reads []bool // per binding, in order: read its row again after the eviction
-	}{
-		{name: "by client", evict: func(s *PerUserStore) { s.EvictDiscoveriesByMCPClient("client-notes") }, reads: []bool{true, false, false}},
-		{name: "by virtual key", evict: func(s *PerUserStore) { s.EvictDiscoveriesByVirtualKey("vk-1") }, reads: []bool{false, true, false}},
-		{name: "by user", evict: func(s *PerUserStore) { s.EvictDiscoveriesByUser("alice") }, reads: []bool{true, false, true}},
-		{name: "one binding", evict: func(s *PerUserStore) { s.EvictDiscovery(schemas.MCPAuthModeVK, "vk-1", "client-notes") }, reads: []bool{false, true, false}},
-		{name: "flush", evict: func(s *PerUserStore) { s.FlushDiscoveryCache() }, reads: []bool{true, false, true}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			db := newFakeConfigStore()
-			store := newTestPerUserStore(t, db)
-			for _, b := range bindings {
-				require.NoError(t, store.SetDiscovery(modeContext(b.mode, b.identity), b.client, notesDiscovery("search")))
-				require.NotNil(t, store.GetDiscovery(modeContext(b.mode, b.identity), b.client))
-			}
-			tc.evict(store)
-			for i, b := range bindings {
-				before := db.readCount()
-				require.NotNil(t, store.GetDiscovery(modeContext(b.mode, b.identity), b.client))
-				assert.Equal(t, tc.reads[i], db.readCount() > before, "binding %d (%s %s %s)", i, b.mode, b.identity, b.client.ID)
-			}
-		})
-	}
-}
-
-func TestSetOnDiscoveryWritten_FiresForWritesAndDeletesOnly(t *testing.T) {
-	store := newTestPerUserStore(t, newFakeConfigStore())
-	var written []string
-	store.SetOnDiscoveryWritten(func(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) {
-		written = append(written, string(mode)+"/"+identity+"/"+mcpClientID)
-	})
-
-	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search")))
-	require.NoError(t, store.DeleteDiscovery(modeContext(schemas.MCPAuthModeVK, "vk-1"), notesClient()))
-	store.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
-
-	assert.Equal(t, []string{"user/alice/client-notes", "vk/vk-1/client-notes"}, written, "applying an eviction must not announce it again")
-}
-
-func TestStore_NilIsSafe(t *testing.T) {
-	var store *PerUserStore
-	assert.Nil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient()))
-	assert.Error(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search")))
-	assert.Error(t, store.DeleteDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient()))
-	store.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
-	store.EvictDiscoveriesByMCPClient("client-notes")
-	store.EvictDiscoveriesByVirtualKey("vk-1")
-	store.EvictDiscoveriesByUser("alice")
-	store.FlushDiscoveryCache()
-}
-
-// A request's read of one per-user client when the caller's discovery is cached.
-func BenchmarkGetDiscovery_CacheHit(b *testing.B) {
-	store := newTestPerUserStore(b, newFakeConfigStore())
-	ctx := userContext("alice")
-	if err := store.SetDiscovery(ctx, notesClient(), notesDiscovery("search", "create_page")); err != nil {
+// BenchmarkGetDiscovery_Hit measures a caller's read of its discovery, served from memory.
+func BenchmarkGetDiscovery_Hit(b *testing.B) {
+	db := newTestDB(b)
+	store := db.process(b)
+	if err := store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")); err != nil {
 		b.Fatal(err)
 	}
-	client := notesClient()
-	store.GetDiscovery(ctx, client)
+	ctx, client := userContext("alice"), notesClient()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = store.GetDiscovery(ctx, client)
+	for b.Loop() {
+		if store.GetDiscovery(ctx, client) == nil {
+			b.Fatal("no discovery")
+		}
 	}
 }
 
-// A fresh process reading 1,000 callers who hold one 20-tool discovery: the rows each pass reads
-// and the decoded copies its cache keeps.
-func BenchmarkGetDiscovery_ThousandCallersOneDiscovery(b *testing.B) {
-	db := newFakeConfigStore()
-	tools := make([]string, 20)
-	for i := range tools {
-		tools[i] = fmt.Sprintf("tool_%d", i)
+// BenchmarkGetDiscovery_NotAMember measures the read of a caller with no binding.
+func BenchmarkGetDiscovery_NotAMember(b *testing.B) {
+	store := newTestDB(b).process(b)
+	ctx, client := userContext("nobody"), notesClient()
+	b.ReportAllocs()
+	for b.Loop() {
+		if store.GetDiscovery(ctx, client) != nil {
+			b.Fatal("a discovery for no binding")
+		}
 	}
-	seed := newTestPerUserStore(b, db)
-	callers := make([]*schemas.BifrostContext, 1000)
-	for i := range callers {
-		callers[i] = userContext(fmt.Sprintf("user-%d", i))
-		if err := seed.SetDiscovery(callers[i], notesClient(), notesDiscovery(tools...)); err != nil {
+}
+
+// BenchmarkBoot_ThousandCallersOneDiscovery measures a process loading a thousand callers who hold
+// one discovery, and reports how many distinct copies it keeps.
+func BenchmarkBoot_ThousandCallersOneDiscovery(b *testing.B) {
+	db := newTestDB(b)
+	writer := db.process(b)
+	for i := range 1000 {
+		if err := writer.SetDiscovery(userContext(fmt.Sprint("user-", i)), notesClient(), notesDiscovery("search")); err != nil {
 			b.Fatal(err)
 		}
 	}
-	client := notesClient()
-	// pass reads every caller through a store built as a fresh process builds it and returns the
-	// number of copies its cache keeps. It closes its live store before returning, so passes do not
-	// pile up stores and their cached copies until the benchmark ends.
-	pass := func() int {
+	b.ReportAllocs()
+	var copies int
+	for b.Loop() {
+		// Each pass boots a store of its own and closes it before the next, so passes do not
+		// pile up stores until the benchmark ends.
 		live, err := livestore.New()
 		if err != nil {
 			b.Fatal(err)
 		}
-		defer live.Close()
-		store, err := NewPerUserStore(db, live, nil)
-		if err != nil {
+		if err := live.LoadAll(context.Background(), db.store.DB()); err != nil {
 			b.Fatal(err)
 		}
-		for _, ctx := range callers {
-			if store.GetDiscovery(ctx, client) == nil {
-				b.Fatal("a caller was served no discovery")
-			}
-		}
-		return store.cache.Len()
+		seen := map[*registry.MCPUserDiscoveryContent]struct{}{}
+		live.Collections.MCPUserDiscoveries.Range(func(d *registry.MCPUserDiscovery) bool {
+			seen[d.Discovery] = struct{}{}
+			return true
+		})
+		copies = len(seen)
+		live.Close()
 	}
-
-	readsBefore := db.readCount()
-	var entries int
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		entries = pass()
-	}
-	b.StopTimer()
-	b.ReportMetric(float64(db.readCount()-readsBefore)/float64(b.N), "rows/op")
-	b.ReportMetric(float64(entries), "entries")
-}
-
-// A request's read of one per-user client by a caller with no discovery on it.
-func BenchmarkGetDiscovery_NotAMember(b *testing.B) {
-	store := newTestPerUserStore(b, newFakeConfigStore())
-	if err := store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")); err != nil {
-		b.Fatal(err)
-	}
-	ctx := userContext("bob")
-	client := notesClient()
-	store.GetDiscovery(ctx, client)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = store.GetDiscovery(ctx, client)
-	}
-}
-
-// sortedToolNames lists a discovery's tool names in order.
-func sortedToolNames(d *schemas.MCPDiscovery) []string {
-	names := make([]string, 0, len(d.Tools))
-	for name := range d.Tools {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// newTestPerUserStore returns a store over configStore with its cache in a live store of its own, as
-// one process builds it.
-func newTestPerUserStore(t testing.TB, configStore configstore.ConfigStore) *PerUserStore {
-	t.Helper()
-	live, err := livestore.New()
-	require.NoError(t, err)
-	t.Cleanup(live.Close)
-	store, err := NewPerUserStore(configStore, live, nil)
-	require.NoError(t, err)
-	return store
+	b.ReportMetric(float64(copies), "copies")
 }

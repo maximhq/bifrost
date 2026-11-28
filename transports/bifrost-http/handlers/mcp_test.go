@@ -76,13 +76,19 @@ func newTestHeadersProvider(t testing.TB, store configstore.ConfigStore, logger 
 	return p
 }
 
-// newTestPerUserDiscovery returns a per-user discovery store over store with its cache in a live
-// store of its own.
+// newTestPerUserDiscovery returns a per-user discovery store over store, with a live store of its
+// own loaded from store's database, as a process loads it at boot.
 func newTestPerUserDiscovery(t testing.TB, store configstore.ConfigStore, logger schemas.Logger) *mcpdiscovery.PerUserStore {
 	t.Helper()
-	s, err := mcpdiscovery.NewPerUserStore(store, newTestProviderLiveStore(t), logger)
+	live := newTestProviderLiveStore(t)
+	s, err := mcpdiscovery.NewPerUserStore(store, live, logger)
 	if err != nil {
 		t.Fatalf("per-user discovery store: %v", err)
+	}
+	if store != nil {
+		if err := live.LoadAll(context.Background(), store.DB()); err != nil {
+			t.Fatalf("load the live store: %v", err)
+		}
 	}
 	return s
 }
