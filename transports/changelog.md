@@ -104,6 +104,7 @@
   The allowlist is empty by default, so no plugin URL is fetched until its host is listed. Set `BIFROST_PLUGIN_URL_ALLOWLIST` (comma-separated hosts, `*.example.com` or `*`) before upgrading if you load plugins from a URL.
   </Warning>
 - **Dashboard** - Log headers and the date picker fit on mobile, the upgrading screen appears only when the server confirms a chunk is gone, and the datasheet editor hides entries without a provider
+- **Chat Completions** - Parsed native and OpenAI-compatible chat requests now return HTTP 400 `invalid_request_error` for a missing, null or empty message `role`. Clients that previously received 200 from a permissive backend such as Ollama must supply a role for every message
 
 ## 🔧 Maintenance
 
