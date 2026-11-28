@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -1010,6 +1011,50 @@ func upstreamContext(ctx context.Context, conn *client.Client, relayed mcp.Clien
 		return ctx, answerable, hasCaller
 	}
 	return client.WithRequestClientCapabilities(ctx, answerable), answerable, hasCaller
+}
+
+// ApplyParamHeaders attaches SEP-2243 Mcp-Param-* headers derived from tool's
+// x-mcp-header input schema annotations when conn speaks a modern protocol
+// revision (2026-07-28+). mcp-go's Client only mirrors those headers when the
+// same Client instance ran tools/list; per-call ephemeral connections, reconnects,
+// and discovery-cached tools skip tools/list on the executing Client.
+//
+// Request.Method is cleared when outbound headers are attached because mcp-go's
+// outboundHeader drops Request.Header whenever Request.Method is non-empty
+// (callToolOnce passes MethodToolsCall directly).
+func ApplyParamHeaders(conn *client.Client, req *mcp.CallToolRequest, tool *schemas.ChatTool) {
+	if conn == nil || req == nil || tool == nil || tool.Function == nil || tool.Function.Parameters == nil {
+		return
+	}
+	if !mcp.IsModernProtocol(conn.ProtocolVersion()) {
+		return
+	}
+	props := tool.Function.Parameters.Properties.ToMap()
+	if len(props) == 0 {
+		return
+	}
+	encoded, err := json.Marshal(req.Params)
+	if err != nil {
+		return
+	}
+	mcpTool := &mcp.Tool{
+		Name: req.Params.Name,
+		InputSchema: mcp.ToolInputSchema{
+			Type:       tool.Function.Parameters.Type,
+			Properties: props,
+		},
+	}
+	paramHeaders := mcp.GenerateParamHeaders(mcpTool, encoded)
+	if len(paramHeaders) == 0 {
+		return
+	}
+	req.Request.Method = ""
+	if req.Header == nil {
+		req.Header = make(http.Header, len(paramHeaders))
+	}
+	for name, value := range paramHeaders {
+		req.Header.Set(name, value)
+	}
 }
 
 // CallUpstreamTool sends call on conn. With relay, a gateway caller gets an upstream's input_required

@@ -1416,3 +1416,137 @@ func TestAcquireClientConn_RejectedPerCallConnectionRefreshesAndRedials(t *testi
 		}
 	})
 }
+
+func TestExecuteTool_AuthFailureRetry_PerUser_PreservesParamHeaders(t *testing.T) {
+	upstream := server.NewMCPServer("param-retry", "1.0.0", server.WithToolCapabilities(true))
+	tool := mcp.NewTool("execute_action")
+	tool.Annotations = mcp.ToolAnnotation{ReadOnlyHint: boolPtr(true)}
+	tool.InputSchema = mcp.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"action": map[string]any{
+				"type":         "string",
+				"x-mcp-header": "Action",
+			},
+		},
+		Required: []string{"action"},
+	}
+	upstream.AddTool(tool, func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		action, _ := req.GetArguments()["action"].(string)
+		return mcp.NewToolResultText(action), nil
+	})
+
+	var mu sync.Mutex
+	var seenHeaders []string
+	var callCount atomic.Int32
+	httpHandler := server.NewStreamableHTTPServer(upstream)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body [4096]byte
+		n, _ := r.Body.Read(body[:])
+		payload := string(body[:n])
+		r.Body = http.NoBody
+		if n > 0 {
+			r.Body = newReadCloser(payload)
+		}
+		if strings.Contains(payload, `"tools/call"`) {
+			mu.Lock()
+			seenHeaders = append(seenHeaders, r.Header.Get("Mcp-Param-Action"))
+			mu.Unlock()
+			if callCount.Add(1) == 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		httpHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	dialModernNoList := func() *client.Client {
+		t.Helper()
+		tr, err := transport.NewStreamableHTTP(ts.URL)
+		if err != nil {
+			t.Fatalf("NewStreamableHTTP: %v", err)
+		}
+		c := client.NewClient(tr)
+		if err := c.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, err := c.Initialize(context.Background(), mcp.InitializeRequest{
+			Params: mcp.InitializeParams{
+				ProtocolVersion: mcp.ProtocolVersion20260728,
+				ClientInfo:      mcp.Implementation{Name: "test", Version: "1.0.0"},
+			},
+		}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+
+	props := schemas.OrderedMapFromMap(map[string]any{
+		"action": map[string]any{
+			"type":         "string",
+			"x-mcp-header": "Action",
+		},
+	})
+	prefixedName := "gitlab-execute_action"
+	chatTool := schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: prefixedName,
+			Parameters: &schemas.ToolFunctionParameters{
+				Type:       "object",
+				Properties: props,
+				Required:   []string{"action"},
+			},
+		},
+		Annotations: &schemas.MCPToolAnnotations{ReadOnlyHint: boolPtr(true)},
+	}
+	cfg := &schemas.MCPClientConfig{
+		ID:             "gitlab-id",
+		Name:           "gitlab",
+		AuthType:       schemas.MCPAuthTypePerUserHeaders,
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}
+	state := &schemas.MCPClientState{Name: "gitlab", ExecutionConfig: cfg}
+	discovery := &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{prefixedName: chatTool}}
+
+	retryConn := dialModernNoList()
+	cm := &authRetryClientManager{state: state, stateDiscovery: discovery, acquireConn: retryConn}
+	cs := &authRetryCredStore{requiresPerCall: true}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      &prefixedName,
+				Arguments: `{"action":"project.list"}`,
+			},
+		},
+	}
+
+	resp, err := tm.ExecuteTool(ctx, req, dialModernNoList(), cfg)
+	if err != nil {
+		t.Fatalf("expected recovery retry to succeed, got: %v", err)
+	}
+	if resp == nil || resp.ChatMessage == nil || resp.ChatMessage.Content == nil || resp.ChatMessage.Content.ContentStr == nil || *resp.ChatMessage.Content.ContentStr != "project.list" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seenHeaders) != 2 || seenHeaders[0] != "project.list" || seenHeaders[1] != "project.list" {
+		t.Fatalf("expected Mcp-Param-Action=project.list on initial call and recovery retry, got %v", seenHeaders)
+	}
+}
+
+type readCloserString struct {
+	*strings.Reader
+}
+
+func newReadCloser(s string) *readCloserString {
+	return &readCloserString{Reader: strings.NewReader(s)}
+}
+
+func (readCloserString) Close() error { return nil }

@@ -6,9 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -17,7 +21,9 @@ import (
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/syntax"
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -28,6 +34,7 @@ type testClientManager struct {
 	tools              map[string][]schemas.ChatTool
 	instructions       map[string]string            // client ID -> instructions every caller sees
 	callerInstructions map[string]map[string]string // caller -> client ID -> that caller's own instructions
+	acquireConn        func(*schemas.BifrostContext, *schemas.MCPClientState) (*client.Client, func(), error)
 }
 
 // testCallerKey names the caller on a test context for testClientManager.
@@ -49,6 +56,17 @@ func (m *testClientManager) GetClientByName(clientName string) *schemas.MCPClien
 }
 
 func (m *testClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
+	for clientName, state := range m.clients {
+		if state != nil && state.ExecutionConfig != nil && state.ExecutionConfig.ID == clientID {
+			out := make(map[string]schemas.ChatTool, len(m.tools[clientName]))
+			for _, tool := range m.tools[clientName] {
+				if tool.Function != nil {
+					out[tool.Function.Name] = tool
+				}
+			}
+			return out
+		}
+	}
 	return nil
 }
 
@@ -84,6 +102,9 @@ func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
 
 func (m *testClientManager) ReleasePluginPipeline(pipeline codemcp.PluginPipeline) {}
 func (m *testClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
+	if m.acquireConn != nil {
+		return m.acquireConn(ctx, state)
+	}
 	return nil, func() {}, nil
 }
 func (m *testClientManager) ReconnectClient(id string) error { return nil }
@@ -2706,4 +2727,116 @@ func TestCodeModeRuntimeErrorsNameTheFailingLine(t *testing.T) {
 			t.Fatalf("syntax error message:\n%s", got.Message)
 		}
 	})
+}
+
+func TestCodeMode_SendsParamHeadersAtModernProtocol(t *testing.T) {
+	upstream := server.NewMCPServer("codemode-param", "1.0.0", server.WithToolCapabilities(true))
+	tool := mcp.NewTool("execute_action")
+	tool.InputSchema = mcp.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"action": map[string]any{
+				"type":         "string",
+				"x-mcp-header": "Action",
+			},
+		},
+		Required: []string{"action"},
+	}
+	upstream.AddTool(tool, func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		action, _ := req.GetArguments()["action"].(string)
+		return mcp.NewToolResultText(action), nil
+	})
+
+	var mu sync.Mutex
+	var seenHeaders []string
+	httpHandler := server.NewStreamableHTTPServer(upstream)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		if strings.Contains(string(body), `"tools/call"`) {
+			mu.Lock()
+			seenHeaders = append(seenHeaders, r.Header.Get("Mcp-Param-Action"))
+			mu.Unlock()
+		}
+		httpHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	props := schemas.OrderedMapFromMap(map[string]any{
+		"action": map[string]any{
+			"type":         "string",
+			"x-mcp-header": "Action",
+		},
+	})
+	cfg := &schemas.MCPClientConfig{
+		ID:               "gitlab-id",
+		Name:             "gitlab",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		IsCodeModeClient: true,
+		ToolsToExecute:   []string{"*"},
+	}
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{ToolExecutionTimeout: 5 * time.Second}, nil)
+	mode.clientManager = &testClientManager{
+		clients: map[string]*schemas.MCPClientState{
+			"gitlab": {Name: "gitlab", ExecutionConfig: cfg},
+		},
+		tools: map[string][]schemas.ChatTool{
+			"gitlab": {{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name: "gitlab-execute_action",
+					Parameters: &schemas.ToolFunctionParameters{
+						Type:       "object",
+						Properties: props,
+						Required:   []string{"action"},
+					},
+				},
+			}},
+		},
+		acquireConn: func(_ *schemas.BifrostContext, _ *schemas.MCPClientState) (*client.Client, func(), error) {
+			tr, err := transport.NewStreamableHTTP(ts.URL)
+			if err != nil {
+				return nil, nil, err
+			}
+			c := client.NewClient(tr)
+			if err := c.Start(context.Background()); err != nil {
+				return nil, nil, err
+			}
+			if _, err := c.Initialize(context.Background(), mcp.InitializeRequest{
+				Params: mcp.InitializeParams{
+					ProtocolVersion: mcp.ProtocolVersion20260728,
+					ClientInfo:      mcp.Implementation{Name: "codemode-test", Version: "1.0.0"},
+				},
+			}); err != nil {
+				_ = c.Close()
+				return nil, nil, err
+			}
+			return c, func() { _ = c.Close() }, nil
+		},
+	}
+
+	argsJSON, err := json.Marshal(map[string]any{"code": `result = gitlab.execute_action(action="project.list")`})
+	if err != nil {
+		t.Fatalf("marshal code args: %v", err)
+	}
+	msg, err := mode.ExecuteTool(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      schemas.Ptr(codemcp.ToolTypeExecuteToolCode),
+				Arguments: string(argsJSON),
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("ExecuteTool failed: %v", err)
+	}
+	if msg == nil || msg.Content == nil || msg.Content.ContentStr == nil || !strings.Contains(*msg.Content.ContentStr, "project.list") {
+		t.Fatalf("unexpected ExecuteTool result: %+v", msg)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seenHeaders) != 1 || seenHeaders[0] != "project.list" {
+		t.Fatalf("expected Mcp-Param-Action=project.list on upstream request, got %v", seenHeaders)
+	}
 }
