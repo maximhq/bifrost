@@ -1,6 +1,7 @@
 package oauth2
 
 import (
+	"container/list"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -94,6 +96,19 @@ func SetPrivateTargetAllowlist(allow *network.Allowlist) {
 	if old := oauthAllowlistedDiscoveryTransport.Swap(newAllowlistedTransport()); old != nil {
 		old.CloseIdleConnections()
 	}
+	oauthTLSCache.Lock()
+	var toClose []*http.Transport
+	for _, entry := range oauthTLSCache.entries {
+		if entry.transport != nil {
+			toClose = append(toClose, entry.transport)
+		}
+	}
+	oauthTLSCache.entries = nil
+	oauthTLSCache.lru.Init()
+	oauthTLSCache.Unlock()
+	for _, tr := range toClose {
+		tr.CloseIdleConnections()
+	}
 }
 
 // requirePublicTargetKey carries an OAuth request's destination policy on its
@@ -118,6 +133,204 @@ func requirePublicTargetFrom(ctx context.Context) bool {
 	requirePublic, ok := ctx.Value(requirePublicTargetKey{}).(bool)
 	return !ok || requirePublic
 }
+
+// The context carries a small config handle and the MCP server host, never certificate pools or connections.
+type oauthTLSConfigKey struct{}
+
+type oauthTLSContext struct {
+	config   *schemas.MCPTLSConfig
+	mcpHost  string
+	warnOnce *sync.Once
+}
+
+func normalizeOAuthHost(host string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+}
+
+func mcpHostFromURL(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u == nil {
+		return ""
+	}
+	return normalizeOAuthHost(u.Hostname())
+}
+
+func withMCPClient(ctx context.Context, client *schemas.MCPClientConfig) context.Context {
+	var tlsConfig *schemas.MCPTLSConfig
+	var mcpHost string
+	if client != nil {
+		tlsConfig = client.TLSConfig
+		if client.ConnectionString != nil {
+			mcpHost = mcpHostFromURL(client.ConnectionString.GetValue())
+		}
+	}
+	ctx = withRequirePublicTarget(ctx, client == nil || client.RequirePublicTarget)
+	if tlsConfig == nil {
+		if ctx.Value(oauthTLSConfigKey{}) == nil {
+			return ctx
+		}
+		return context.WithValue(ctx, oauthTLSConfigKey{}, (*oauthTLSContext)(nil))
+	}
+	return context.WithValue(ctx, oauthTLSConfigKey{}, &oauthTLSContext{
+		config:   tlsConfig,
+		mcpHost:  mcpHost,
+		warnOnce: &sync.Once{},
+	})
+}
+
+func withoutOAuthTLS(ctx context.Context) context.Context {
+	if ctx == nil || ctx.Value(oauthTLSConfigKey{}) == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, oauthTLSConfigKey{}, (*oauthTLSContext)(nil))
+}
+
+// Keep at most 64 custom TLS policies in an LRU cache. Each transport inherits
+// the shared 32-idle-connection limit and 90-second idle timeout. System pool
+// copies and PEM parses happen outside the lock, and parse errors are cached too
+// so an invalid env.* CA never re-parses on every request.
+const maxOAuthTLSTransports = 64
+
+type oauthTLSCacheKey struct {
+	base     *http.Transport
+	ca       string
+	insecure bool
+}
+
+type oauthTLSCacheEntry struct {
+	key       oauthTLSCacheKey
+	rt        http.RoundTripper
+	transport *http.Transport
+	elem      *list.Element
+}
+
+var oauthTLSCache struct {
+	sync.Mutex
+	entries map[oauthTLSCacheKey]*oauthTLSCacheEntry
+	lru     list.List
+}
+
+func oauthCachedTransport(base *http.Transport, ca string, insecure bool) http.RoundTripper {
+	if !insecure && ca == "" {
+		return base
+	}
+	key := oauthTLSCacheKey{base: base, ca: ca, insecure: insecure}
+	oauthTLSCache.Lock()
+	if entry := oauthTLSCache.entries[key]; entry != nil {
+		oauthTLSCache.lru.MoveToFront(entry.elem)
+		oauthTLSCache.Unlock()
+		return entry.rt
+	}
+	oauthTLSCache.Unlock()
+
+	tlsInput := &schemas.MCPTLSConfig{InsecureSkipVerify: insecure}
+	if !insecure && ca != "" {
+		tlsInput.CACertPEM = schemas.NewSecretVar(ca)
+	}
+	tlsCfg, err := network.BuildMCPTLSConfig(tlsInput)
+	var builtRT http.RoundTripper
+	var builtTransport *http.Transport
+	if err != nil {
+		builtRT = oauthTransportError{err}
+	} else {
+		builtTransport = base.Clone()
+		builtTransport.TLSClientConfig = tlsCfg
+		builtRT = builtTransport
+	}
+
+	var evictedTransport *http.Transport
+	oauthTLSCache.Lock()
+	if existing := oauthTLSCache.entries[key]; existing != nil {
+		oauthTLSCache.lru.MoveToFront(existing.elem)
+		oauthTLSCache.Unlock()
+		return existing.rt
+	}
+	if oauthTLSCache.entries == nil {
+		oauthTLSCache.entries = make(map[oauthTLSCacheKey]*oauthTLSCacheEntry)
+	}
+	if oauthTLSCache.lru.Len() >= maxOAuthTLSTransports {
+		if oldestElem := oauthTLSCache.lru.Back(); oldestElem != nil {
+			oldest := oldestElem.Value.(*oauthTLSCacheEntry)
+			oauthTLSCache.lru.Remove(oldestElem)
+			delete(oauthTLSCache.entries, oldest.key)
+			evictedTransport = oldest.transport
+		}
+	}
+	entry := &oauthTLSCacheEntry{key: key, rt: builtRT, transport: builtTransport}
+	entry.elem = oauthTLSCache.lru.PushFront(entry)
+	oauthTLSCache.entries[key] = entry
+	oauthTLSCache.Unlock()
+	if evictedTransport != nil {
+		evictedTransport.CloseIdleConnections()
+	}
+	return builtRT
+}
+
+func oauthTransportWithTLS(base *http.Transport, config *schemas.MCPTLSConfig) http.RoundTripper {
+	if config == nil {
+		return base
+	}
+	ca := ""
+	if !config.InsecureSkipVerify && config.CACertPEM != nil {
+		ca = config.CACertPEM.GetValue()
+	}
+	return oauthCachedTransport(base, ca, config.InsecureSkipVerify)
+}
+
+func oauthTransportForContext(base *http.Transport, tlsCtx *oauthTLSContext) http.RoundTripper {
+	if tlsCtx == nil || tlsCtx.config == nil {
+		return base
+	}
+	ca := ""
+	if tlsCtx.config.CACertPEM != nil {
+		ca = tlsCtx.config.CACertPEM.GetValue()
+	}
+	if !tlsCtx.config.InsecureSkipVerify {
+		return oauthCachedTransport(base, ca, false)
+	}
+	verified := oauthCachedTransport(base, ca, false)
+	if tlsCtx.mcpHost == "" {
+		return verified
+	}
+	return &oauthHostScopedTLS{
+		mcpHost:  tlsCtx.mcpHost,
+		insecure: oauthCachedTransport(base, "", true),
+		verified: verified,
+		warnOnce: tlsCtx.warnOnce,
+	}
+}
+
+// oauthHostScopedTLS applies InsecureSkipVerify only to requests whose host
+// matches the MCP client's connection_string host, keeping full certificate
+// verification on external authorization servers (such as Okta or Entra).
+type oauthHostScopedTLS struct {
+	mcpHost  string
+	insecure http.RoundTripper
+	verified http.RoundTripper
+	warnOnce *sync.Once
+}
+
+func (r *oauthHostScopedTLS) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req != nil && req.URL != nil && normalizeOAuthHost(req.URL.Hostname()) == r.mcpHost {
+		warn := func() {
+			if logger != nil {
+				logger.Warn(fmt.Sprintf("MCP OAuth: skipping TLS verification for %s — do not use in production", r.mcpHost))
+			}
+		}
+		if r.warnOnce != nil {
+			r.warnOnce.Do(warn)
+		} else {
+			warn()
+		}
+		return r.insecure.RoundTrip(req)
+	}
+	return r.verified.RoundTrip(req)
+}
+
+// An invalid CA must fail the request, never fall back to unconfigured TLS.
+type oauthTransportError struct{ err error }
+
+func (t oauthTransportError) RoundTrip(*http.Request) (*http.Response, error) { return nil, t.err }
 
 // oauthDialContext returns guarded with one distinction: a dial addressed to
 // an operator-configured proxy (exact host:port, as http.Transport dials it)
@@ -286,9 +499,13 @@ func newOAuthDiscoveryHTTPClient(ctx context.Context, timeout time.Duration) *ht
 	if testDialContextOverride != nil {
 		transport = newOAuthDiscoveryTransport(testDialContextOverride)
 	}
+	var tlsCtx *oauthTLSContext
+	if ctx != nil {
+		tlsCtx, _ = ctx.Value(oauthTLSConfigKey{}).(*oauthTLSContext)
+	}
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: transport,
+		Transport: oauthTransportForContext(transport, tlsCtx),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			// A 307/308 on the token or registration POST would make Go replay
 			// the credential-bearing body at the new location; only discovery

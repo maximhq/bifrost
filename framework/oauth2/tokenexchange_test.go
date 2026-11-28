@@ -2466,3 +2466,117 @@ func TestResourceEndpointGoesWithItsMCPClient(t *testing.T) {
 		t.Fatal("removing the MCP client must drop its cached endpoint")
 	}
 }
+
+// TestGetExchangedAccessToken_DoesNotApplyMCPTLSToIdP pins leg 1 (rawExchange ->
+// idp.TokenEndpoint) to standard trust: an MCP client's custom CA or
+// insecure_skip_verify must never weaken verification on the SSO identity provider
+// that receives the user's subject token and the SSO app's credentials.
+func TestGetExchangedAccessToken_DoesNotApplyMCPTLSToIdP(t *testing.T) {
+	var idpHits atomic.Int32
+	idp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		idpHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"tls-exchange-test","token_type":"Bearer","expires_in":3600}`))
+	}))
+	defer idp.Close()
+	ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: idp.Certificate().Raw}))
+	provider := newExchangeProvider(t, idp.URL, schemas.TokenExchangeGrantRFC8693)
+
+	for name, tlsCfg := range map[string]*schemas.MCPTLSConfig{
+		"custom CA":            {CACertPEM: schemas.NewSecretVar(ca)},
+		"insecure_skip_verify": {InsecureSkipVerify: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := exchangeTestClientConfig()
+			config.ConnectionString = schemas.NewSecretVar(idp.URL + "/mcp")
+			config.TLSConfig = tlsCfg
+			_, err := provider.GetExchangedAccessToken(schemas.NewBifrostContext(withMCPClient(userExchangeContext("test-subject"), config), schemas.NoDeadline), config)
+			if err == nil || !strings.Contains(err.Error(), "certificate signed by unknown authority") {
+				t.Fatalf("GetExchangedAccessToken err = %v, want unknown authority", err)
+			}
+			if idpHits.Load() != 0 {
+				t.Fatalf("self-signed IdP received %d requests; subject token must never be sent", idpHits.Load())
+			}
+		})
+	}
+}
+
+// TestIDJAGExchange_AppliesMCPTLSOnlyToUpstreamLeg verifies that MCP TLS settings
+// apply to leg 2 (upstream resource/AS discovery and ID-JAG redemption) while
+// leg 1 (the SSO identity provider) keeps normal TLS verification.
+func TestIDJAGExchange_AppliesMCPTLSOnlyToUpstreamLeg(t *testing.T) {
+	var idpHits, asHits atomic.Int32
+	idpHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		idpHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"id-jag-jwt","issued_token_type":"urn:ietf:params:oauth:token-type:id-jag","token_type":"N_A","expires_in":300}`))
+	}))
+	defer idpHTTP.Close()
+
+	var asTLS *httptest.Server
+	asMux := http.NewServeMux()
+	asMux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 asTLS.URL,
+			"authorization_endpoint": asTLS.URL + "/authorize",
+			"token_endpoint":         asTLS.URL + "/token",
+			"grant_types_supported":  []string{"urn:ietf:params:oauth:grant-type:jwt-bearer"},
+		})
+	})
+	asMux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		asHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"saas-tls-token","token_type":"Bearer","expires_in":3600}`))
+	})
+	asTLS = httptest.NewTLSServer(asMux)
+	defer asTLS.Close()
+
+	asCA := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: asTLS.Certificate().Raw}))
+	resolver := subjectResolver("okta-refresh", schemas.TokenTypeRefreshToken)
+	resolver.available = true
+	resolver.idp = &schemas.TokenExchangeIdP{TokenEndpoint: idpHTTP.URL, GrantShape: schemas.TokenExchangeGrantRFC8693, IdPClientID: "sso-app", IdPClientSecret: "sso-secret"}
+	p := newCachingProvider(t, nil, nil)
+	p.retryBaseDelay = time.Millisecond
+	p.SetTokenExchangeIdPResolver(resolver)
+
+	cfg := &schemas.MCPClientConfig{
+		ID:               "idjag-tls-client",
+		Name:             "idjag_tls",
+		AuthType:         schemas.MCPAuthTypeTokenExchange,
+		ConnectionString: schemas.NewSecretVar(asTLS.URL + "/mcp"),
+		TLSConfig:        &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar(asCA)},
+		TokenExchange: &schemas.MCPTokenExchangeConfig{
+			Profile:              schemas.TokenExchangeProfileIDJAG,
+			Audience:             asTLS.URL,
+			ResourceClientID:     schemas.NewSecretVar("bifrost-at-saas"),
+			ResourceClientSecret: schemas.NewSecretVar("saas-secret"),
+		},
+	}
+	token, err := p.GetExchangedAccessToken(idjagUserContext(), cfg)
+	if err != nil || token != "saas-tls-token" {
+		t.Fatalf("token=%q err=%v, want saas-tls-token", token, err)
+	}
+	if idpHits.Load() != 1 || asHits.Load() != 1 {
+		t.Fatalf("hits idp=%d as=%d, want 1 each", idpHits.Load(), asHits.Load())
+	}
+
+	// Now point leg 1 at a self-signed TLS IdP and verify leg 1 still refuses it even if
+	// the MCP client trusts the IdP's cert or enables insecure_skip_verify.
+	var selfSignedIdPHits atomic.Int32
+	idpTLS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		selfSignedIdPHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer idpTLS.Close()
+	idpCA := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: idpTLS.Certificate().Raw}))
+	resolver.idp.TokenEndpoint = idpTLS.URL
+	p.EvictExchangedToken(schemas.MCPAuthModeUser, "user-1", cfg.ID)
+	cfg.TLSConfig = &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar(asCA + "\n" + idpCA)}
+	if _, err := p.GetExchangedAccessToken(idjagUserContext(), cfg); err == nil || !strings.Contains(err.Error(), "certificate signed by unknown authority") {
+		t.Fatalf("self-signed IdP leg 1 err = %v, want unknown authority", err)
+	}
+	if selfSignedIdPHits.Load() != 0 {
+		t.Fatalf("self-signed IdP received %d leg-1 requests", selfSignedIdPHits.Load())
+	}
+}

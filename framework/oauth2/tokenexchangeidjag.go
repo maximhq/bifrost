@@ -243,10 +243,11 @@ func (p *OAuth2Provider) idjagSubject(ctx context.Context, userID string) (*sche
 // SSO subject and both legs run. The subject used is returned, nil when the
 // grant was reused, so the admin path can retain its refresh token.
 func (p *OAuth2Provider) exchangeIDJAG(ctx context.Context, config *schemas.MCPClientConfig, key idjagGrantKey, subjectFn func() (*schemas.IDJAGSubjectToken, error)) (*schemas.OAuth2TokenExchangeResponse, *schemas.IDJAGSubjectToken, error) {
-	ctx = withRequirePublicTarget(ctx, config.RequirePublicTarget)
+	leg1Ctx := withoutOAuthTLS(withRequirePublicTarget(ctx, config.RequirePublicTarget))
+	leg2Ctx := withMCPClient(ctx, config)
 	// Resolved before any grant is requested, so an unusable upstream does not
 	// spend one of the identity provider's limited ID-JAGs. Cached per client.
-	if _, err := p.resourceTokenEndpoint(ctx, config); err != nil {
+	if _, err := p.resourceTokenEndpoint(leg2Ctx, config); err != nil {
 		return nil, nil, err
 	}
 	// Likewise a key that cannot sign: leg 2 would fail after the ID-JAG was spent.
@@ -256,7 +257,7 @@ func (p *OAuth2Provider) exchangeIDJAG(ctx context.Context, config *schemas.MCPC
 		}
 	}
 	if grant := p.cachedIDJAG(key); grant != nil {
-		response, err := p.redeemIDJAG(ctx, config, grant.assertion)
+		response, err := p.redeemIDJAG(leg2Ctx, config, grant.assertion)
 		var rejected *schemas.TokenExchangeRejectedError
 		// Only a refused grant is worth replacing: when the upstream refuses
 		// Bifrost's client credentials, a new ID-JAG would only spend quota.
@@ -270,11 +271,11 @@ func (p *OAuth2Provider) exchangeIDJAG(ctx context.Context, config *schemas.MCPC
 	if err != nil {
 		return nil, nil, err
 	}
-	grant, err := p.idjagGrants.issue(ctx, key, func() (*idjagGrant, error) { return p.issueIDJAG(ctx, config, subject) })
+	grant, err := p.idjagGrants.issue(leg1Ctx, key, func() (*idjagGrant, error) { return p.issueIDJAG(leg1Ctx, config, subject) })
 	if err != nil {
 		return nil, nil, err
 	}
-	response, err := p.redeemIDJAG(ctx, config, grant.assertion)
+	response, err := p.redeemIDJAG(leg2Ctx, config, grant.assertion)
 	if err != nil {
 		var rejected *schemas.TokenExchangeRejectedError
 		if errors.As(err, &rejected) && rejected.SubjectRejected {

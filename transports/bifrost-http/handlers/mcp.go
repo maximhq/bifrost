@@ -184,7 +184,7 @@ func (h *MCPHandler) refuseTakenMCPClientNameOrSlug(ctx *fasthttp.RequestCtx, na
 // This helper does NOT touch config_mcp_clients or
 // oauth_configs.mcp_client_config_json — row-lifecycle management is the
 // caller's concern.
-func (h *MCPHandler) runOAuthBootstrap(ctx *fasthttp.RequestCtx, oauthCfg *OAuthConfigRequest, serverURL string, requirePublicTarget bool) (*schemas.OAuth2FlowInitiation, error) {
+func (h *MCPHandler) runOAuthBootstrap(ctx *fasthttp.RequestCtx, oauthCfg *OAuthConfigRequest, serverURL string, requirePublicTarget bool, tlsConfig *schemas.MCPTLSConfig) (*schemas.OAuth2FlowInitiation, error) {
 	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
 	redirectURI := base + oauthCallbackPath
 	return h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
@@ -198,6 +198,7 @@ func (h *MCPHandler) runOAuthBootstrap(ctx *fasthttp.RequestCtx, oauthCfg *OAuth
 		ServerURL:       serverURL,
 		Resource:        oauthCfg.Resource,
 
+		TLSConfig:                 tlsConfig,
 		RequirePublicTarget:       requirePublicTarget,
 		ClientMetadataURL:         h.oauthHandler.oauthProvider.ClientMetadataDocumentURL(redirectURI),
 		UseClientMetadataDocument: oauthCfg.UseClientMetadataDocument,
@@ -494,7 +495,7 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 	}
 
 	oauthCfg := pendingOAuthConfigToRequest(clientConfig.PendingOAuthConfig)
-	flowInitiation, err := h.runOAuthBootstrap(ctx, oauthCfg, clientConfig.ConnectionString.GetValue(), clientConfig.RequirePublicTarget)
+	flowInitiation, err := h.runOAuthBootstrap(ctx, oauthCfg, clientConfig.ConnectionString.GetValue(), clientConfig.RequirePublicTarget, clientConfig.TLSConfig)
 	if err != nil {
 		SendError(ctx, oauthBootstrapErrorStatus(err), fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
 		return
@@ -3078,7 +3079,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		flowInitiation, err := h.runOAuthBootstrap(ctx, req.OauthConfig, req.ConnectionString.GetValue(), req.RequirePublicTarget)
+		flowInitiation, err := h.runOAuthBootstrap(ctx, req.OauthConfig, req.ConnectionString.GetValue(), req.RequirePublicTarget, req.TLSConfig)
 		if err != nil {
 			SendError(ctx, oauthBootstrapErrorStatus(err), fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
 			return
@@ -3172,7 +3173,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// rationale on the helper split. ServerURL is the MCP server URL
 		// used for RFC 8414 discovery; ClientID is optional and will be
 		// obtained via RFC 7591 dynamic registration when absent.
-		flowInitiation, err := h.runOAuthBootstrap(ctx, req.OauthConfig, req.ConnectionString.GetValue(), req.RequirePublicTarget)
+		flowInitiation, err := h.runOAuthBootstrap(ctx, req.OauthConfig, req.ConnectionString.GetValue(), req.RequirePublicTarget, req.TLSConfig)
 		if err != nil {
 			SendError(ctx, oauthBootstrapErrorStatus(err), fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
 			return

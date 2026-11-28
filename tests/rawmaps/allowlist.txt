@@ -75,6 +75,7 @@ pkgsyncmap	framework/logstore	pgTextFieldCache	handle: text columns of GORM sche
 lockedmap	framework/mcpdiscovery	SharedStore.writes	inflight: shared discovery writes in flight, by client
 pkgsyncmap	framework/modelcatalog	aliasNameIndexes	decided: kept as a map; one alias-name set per provider, rebuilt when the provider's keys slice changes; MayBeKeyAlias is a package function its callers reach with an optional catalog, so no live store is in reach
 pkgsyncmap	framework/modelcatalog/datasheet	peakHoursLocations	handle: parsed time zones
+lockedmap	framework/oauth2	oauthTLSCache.entries	handle: size-capped LRU pool of cloned *http.Transport handles (livestore.Cache has no size cap or CloseIdleConnections eviction hook, and package OAuth helpers have no live store)
 lockedmap	framework/objectstore	InMemoryObjectStore.createdAt	backend: in-memory object store backend (a test fake)
 lockedmap	framework/objectstore	InMemoryObjectStore.objects	backend: in-memory object store backend (a test fake)
 lockedmap	framework/objectstore	InMemoryObjectStore.tags	backend: in-memory object store backend (a test fake)

@@ -3,6 +3,8 @@ package oauth2
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -744,4 +747,129 @@ func TestOAuthRequestsNeverReadCallerValuesWhileDialing(t *testing.T) {
 	_, err := DiscoverOAuthMetadata(cancelled, server.URL)
 	require.Error(t, err, "a cancelled caller must still stop the request")
 	assert.Equal(t, before, dialed.Load(), "a cancelled request must not dial")
+}
+
+type warningCaptureLogger struct {
+	schemas.Logger
+	warnings []string
+}
+
+func (l *warningCaptureLogger) Warn(msg string, args ...any) {
+	l.warnings = append(l.warnings, fmt.Sprintf(msg, args...))
+}
+
+func TestOAuthTLS_ReuseIsolationAndDestinationPolicy(t *testing.T) {
+	var connections atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.StartTLS()
+	defer server.Close()
+	useProductionOAuthDialer(t, "127.0.0.1", "localhost")
+	ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
+	config := &schemas.MCPClientConfig{TLSConfig: &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar(ca)}}
+	ctx := withMCPClient(context.Background(), config)
+	for range 3 {
+		resp, err := newOAuthDiscoveryHTTPClient(ctx, time.Second).Get(server.URL)
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	assert.Equal(t, int32(1), connections.Load(), "OAuth calls with the same trust policy reuse a connection")
+	_, err := newOAuthDiscoveryHTTPClient(withMCPClient(context.Background(), &schemas.MCPClientConfig{}), time.Second).Get(server.URL)
+	require.ErrorContains(t, err, "certificate signed by unknown authority", "another client does not inherit this CA")
+
+	strict := *config
+	strict.RequirePublicTarget = true
+	_, err = newOAuthDiscoveryHTTPClient(withMCPClient(context.Background(), &strict), time.Second).Get(server.URL)
+	require.ErrorContains(t, err, "blocked connection to non-public address")
+	_, err = newOAuthDiscoveryHTTPClient(ctx, time.Second).Get("https://169.254.169.254/")
+	require.ErrorContains(t, err, "blocked connection to link-local address")
+
+	invalid := &schemas.MCPClientConfig{TLSConfig: &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar("invalid")}}
+	_, err = newOAuthDiscoveryHTTPClient(withMCPClient(context.Background(), invalid), time.Second).Get(server.URL)
+	require.ErrorContains(t, err, "failed to parse MCP CA certificate PEM")
+
+	// InsecureSkipVerify applies only to the MCP connection_string host (here 127.0.0.1),
+	// logs a warning, and keeps full certificate verification for any other host (such as localhost / external IdP).
+	prevLogger := logger
+	capture := &warningCaptureLogger{Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
+	SetLogger(capture)
+	t.Cleanup(func() { SetLogger(prevLogger) })
+
+	insecureNoHost := &schemas.MCPClientConfig{TLSConfig: &schemas.MCPTLSConfig{InsecureSkipVerify: true}}
+	_, err = newOAuthDiscoveryHTTPClient(withMCPClient(context.Background(), insecureNoHost), time.Second).Get(server.URL)
+	require.ErrorContains(t, err, "certificate signed by unknown authority", "without a connection_string host, insecure_skip_verify must not disable verification")
+
+	insecure := &schemas.MCPClientConfig{
+		ConnectionString: schemas.NewSecretVar(server.URL + "/mcp"),
+		TLSConfig:        &schemas.MCPTLSConfig{InsecureSkipVerify: true},
+	}
+	insecureCtx := withMCPClient(context.Background(), insecure)
+	resp, err := newOAuthDiscoveryHTTPClient(insecureCtx, time.Second).Get(server.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Len(t, capture.warnings, 1, "skipping TLS verification logs once per OAuth context")
+	assert.Contains(t, capture.warnings[0], "skipping TLS verification for 127.0.0.1")
+
+	externalIdPURL := strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
+	_, err = newOAuthDiscoveryHTTPClient(insecureCtx, time.Second).Get(externalIdPURL)
+	require.ErrorContains(t, err, "tls: failed to verify certificate", "a different host must still have its certificate verified")
+
+	mismatchedHost := &schemas.MCPClientConfig{
+		ConnectionString: schemas.NewSecretVar("https://mcp.internal.example/mcp"),
+		TLSConfig:        &schemas.MCPTLSConfig{InsecureSkipVerify: true},
+	}
+	_, err = newOAuthDiscoveryHTTPClient(withMCPClient(context.Background(), mismatchedHost), time.Second).Get(server.URL)
+	require.ErrorContains(t, err, "certificate signed by unknown authority", "an external OAuth token host must not inherit insecure_skip_verify")
+
+	SetPrivateTargetAllowlist(nil)
+	_, err = newOAuthDiscoveryHTTPClient(ctx, time.Second).Get(server.URL)
+	require.ErrorContains(t, err, "blocked connection to non-public address", "removal invalidates custom-CA keep-alive connections too")
+}
+
+func TestOAuthTLSTransports_BoundedAndReusePolicy(t *testing.T) {
+	useProductionOAuthDialer(t)
+	config := &schemas.MCPTLSConfig{InsecureSkipVerify: true}
+	firstBase := newOAuthDiscoveryTransport((&net.Dialer{}).DialContext)
+	secondBase := newOAuthDiscoveryTransport((&net.Dialer{}).DialContext)
+	first := oauthTransportWithTLS(firstBase, config)
+	second := oauthTransportWithTLS(secondBase, config)
+	require.Same(t, first, oauthTransportWithTLS(firstBase, config), "touching first moves it ahead of second in the LRU")
+
+	for range maxOAuthTLSTransports - 1 {
+		oauthTransportWithTLS(newOAuthDiscoveryTransport((&net.Dialer{}).DialContext), config)
+	}
+	oauthTLSCache.Lock()
+	count := len(oauthTLSCache.entries)
+	oauthTLSCache.Unlock()
+	assert.Equal(t, maxOAuthTLSTransports, count)
+	assert.Same(t, first, oauthTransportWithTLS(firstBase, config), "recently used entry survives eviction")
+	assert.NotSame(t, second, oauthTransportWithTLS(secondBase, config), "least-recently-used entry was evicted")
+
+	// Invalid PEM parse errors are cached too so bad env.* CAs do not re-parse under lock on every call.
+	badCfg := &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar("not-a-valid-pem")}
+	badRT := oauthTransportWithTLS(firstBase, badCfg)
+	_, isErrRT := badRT.(oauthTransportError)
+	require.True(t, isErrRT)
+	oauthTLSCache.Lock()
+	_, cachedBad := oauthTLSCache.entries[oauthTLSCacheKey{base: firstBase, ca: "not-a-valid-pem"}]
+	oauthTLSCache.Unlock()
+	assert.True(t, cachedBad, "invalid PEM result must be cached")
+
+	assert.Same(t, firstBase, oauthTransportWithTLS(firstBase, nil), "the common path needs no custom pool")
+}
+
+func BenchmarkOAuthDiscoveryHTTPClient(b *testing.B) {
+	old := testDialContextOverride
+	testDialContextOverride = nil
+	b.Cleanup(func() { testDialContextOverride = old })
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = newOAuthDiscoveryHTTPClient(ctx, time.Second)
+	}
 }
