@@ -4596,6 +4596,7 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 	// Simulate an undelivered stream handoff sitting in the channel.
 	streamCh := msg.ResponseStream
 	streamCh <- make(chan *schemas.BifrostStreamChunk)
+	msg.streamDone = make(chan struct{})
 
 	b.releaseChannelMessage(msg)
 
@@ -4608,10 +4609,228 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 	if msg.ResponseStream != nil {
 		t.Error("releaseChannelMessage should clear the ResponseStream reference")
 	}
+	if msg.streamDone != nil {
+		t.Error("releaseChannelMessage should clear the stream completion signal")
+	}
 	select {
 	case <-streamCh:
 		t.Error("pooled response stream channel should be drained before Put")
 	default:
+	}
+}
+
+type sdkStreamProbe struct {
+	cacheHitPlugin
+	ctx    *schemas.BifrostContext
+	source chan *schemas.BifrostStreamChunk
+}
+
+func TestSDKResponsesStreamWithoutInput(t *testing.T) {
+	client := newStreamTestClient(t, NewMockAccount())
+	stream, err := client.ResponsesStreamRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: testChatModel,
+	})
+	require.Nil(t, stream)
+	require.NotNil(t, err)
+	assert.Equal(t, "responses not provided for responses stream request", err.GetErrorString())
+}
+
+func (p *sdkStreamProbe) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.ctx = ctx.Root()
+	if p.source != nil {
+		return req, &schemas.LLMPluginShortCircuit{Stream: p.source}, nil
+	}
+	return req, nil, nil
+}
+
+func TestSDKLiveContentContextLifetime(t *testing.T) {
+	const prefix, suffix = "RIFF", "WAVE data"
+	for _, end := range []string{"eof", "close", "shutdown", "explicit"} {
+		t.Run(end, func(t *testing.T) {
+			release := make(chan struct{})
+			finish := sync.OnceFunc(func() { close(release) })
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "audio/wav")
+				w.Header().Set("Content-Length", fmt.Sprint(len(prefix)+len(suffix)))
+				_, _ = io.WriteString(w, prefix)
+				w.(http.Flusher).Flush()
+				select {
+				case <-release:
+					_, _ = io.WriteString(w, suffix)
+				case <-r.Context().Done():
+				}
+			}))
+			t.Cleanup(server.Close)
+			t.Cleanup(finish)
+			probe := &sdkStreamProbe{}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account: mockAccountFor(server.URL), Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{probe},
+			})
+			require.NoError(t, err)
+			shutdown := sync.OnceFunc(client.Shutdown)
+			t.Cleanup(shutdown)
+			var caller *schemas.BifrostContext
+			if end == "explicit" {
+				caller = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				t.Cleanup(caller.Cancel)
+			}
+
+			content, bfErr := client.LiveSessionContentRequest(caller, &schemas.BifrostLiveContentRequest{
+				Provider: schemas.OpenAI, SessionID: "live_test",
+			})
+			require.Nil(t, bfErr)
+			require.NotNil(t, content)
+			require.NotNil(t, content.Body)
+			t.Cleanup(func() {
+				finish()
+				_ = content.Body.Close()
+			})
+			require.NotNil(t, probe.ctx)
+			assert.NoError(t, probe.ctx.Err(), "the recording is still being downloaded")
+			first := make([]byte, len(prefix))
+			_, err = io.ReadFull(content.Body, first)
+			require.NoError(t, err)
+			require.Equal(t, prefix, string(first))
+
+			switch end {
+			case "eof", "explicit":
+				finish()
+				remainder, readErr := io.ReadAll(content.Body)
+				require.NoError(t, readErr)
+				require.Equal(t, suffix, string(remainder))
+				if end == "explicit" {
+					require.NoError(t, content.Body.Close())
+					require.NoError(t, caller.Err())
+					return
+				}
+			case "close":
+				closed := make(chan error, 1)
+				go func() { closed <- content.Body.Close() }()
+				select {
+				case closeErr := <-closed:
+					require.NoError(t, closeErr)
+				case <-time.After(3 * time.Second):
+					finish()
+					<-closed
+					t.Fatal("closing the download waited for the upstream body")
+				}
+			case "shutdown":
+				shutdown()
+				_, readErr := io.ReadAll(content.Body)
+				require.Error(t, readErr)
+			}
+
+			select {
+			case <-probe.ctx.Done():
+				require.ErrorIs(t, probe.ctx.Err(), context.Canceled)
+			case <-time.After(3 * time.Second):
+				t.Fatal("the request context outlived the recording or client")
+			}
+		})
+	}
+}
+
+const sdkRecordingFixture = "RIFF WAVE data"
+
+type sdkCachedRecordingPlugin struct{ cacheHitPlugin }
+
+func (*sdkCachedRecordingPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, &schemas.LLMPluginShortCircuit{Response: &schemas.BifrostResponse{
+		LiveContentResponse: &schemas.LiveContentResponse{Body: io.NopCloser(strings.NewReader(sdkRecordingFixture))},
+	}}, nil
+}
+
+func BenchmarkSDKLiveContent(b *testing.B) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(), Tracer: &countingTracer{}, LLMPlugins: []schemas.LLMPlugin{&sdkCachedRecordingPlugin{}},
+	})
+	require.NoError(b, err)
+	b.Cleanup(client.Shutdown)
+	req := &schemas.BifrostLiveContentRequest{Provider: schemas.OpenAI, SessionID: "live_test"}
+	for _, name := range []string{"nil", "explicit"} {
+		b.Run(name, func(b *testing.B) {
+			var ctx *schemas.BifrostContext
+			if name == "explicit" {
+				ctx = callerIdentityContext()
+				b.Cleanup(ctx.Cancel)
+			}
+			for b.Loop() {
+				content, bfErr := client.LiveSessionContentRequest(ctx, req)
+				if bfErr != nil {
+					b.Fatal(bfErr)
+				}
+				n, err := io.Copy(io.Discard, content.Body)
+				closeErr := content.Body.Close()
+				if n != int64(len(sdkRecordingFixture)) || err != nil || closeErr != nil {
+					b.Fatalf("read %d bytes, read error %v, close error %v", n, err, closeErr)
+				}
+			}
+		})
+	}
+}
+
+func TestSDKStreamContextLifetime(t *testing.T) {
+	for _, source := range []string{"provider", "plugin"} {
+		for _, end := range []string{"eof", "shutdown"} {
+			t.Run(source+"/"+end, func(t *testing.T) {
+				plugin := &sdkStreamProbe{}
+				var finish func()
+				account := NewMockAccount()
+				if source == "provider" {
+					release := make(chan struct{})
+					finish = sync.OnceFunc(func() { close(release) })
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						w.Header().Set("Content-Type", "text/event-stream")
+						fmt.Fprint(w, "data: {\"id\":\"first\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n")
+						w.(http.Flusher).Flush()
+						select {
+						case <-release:
+							fmt.Fprint(w, "data: [DONE]\n\n")
+						case <-r.Context().Done():
+						}
+					}))
+					t.Cleanup(server.Close)
+					account = mockAccountFor(server.URL)
+				} else {
+					account.AddProvider(schemas.OpenAI, 1, 1)
+					plugin.source = make(chan *schemas.BifrostStreamChunk, 1)
+					plugin.source <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{Model: testChatModel}}
+					finish = sync.OnceFunc(func() { close(plugin.source) })
+				}
+				client, err := Init(context.Background(), schemas.BifrostConfig{
+					Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{plugin},
+				})
+				require.NoError(t, err)
+				shutdown := sync.OnceFunc(client.Shutdown)
+				t.Cleanup(shutdown)
+				t.Cleanup(finish)
+
+				stream, streamErr := client.ChatCompletionStreamRequest(nil, chatRequest())
+				require.Nil(t, streamErr)
+				require.NoError(t, plugin.ctx.Err(), "the stream is still open after dispatch")
+				require.NotNil(t, <-stream)
+				if end == "shutdown" {
+					shutdown()
+				} else {
+					finish()
+					drainStream(stream)
+				}
+				select {
+				case <-plugin.ctx.Done():
+					require.ErrorIs(t, plugin.ctx.Err(), context.Canceled)
+				case <-time.After(3 * time.Second):
+					t.Fatal("the SDK request context outlived the stream or instance")
+				}
+				if end == "shutdown" {
+					finish()
+					drainStream(stream)
+				} else {
+					require.NoError(t, client.ctx.Err())
+				}
+			})
+		}
 	}
 }
 

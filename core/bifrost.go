@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"runtime/debug"
 	"slices"
 	"sort"
@@ -84,7 +85,8 @@ type ChannelMessage struct {
 	// handleStreamRequest decides it per attempt (never on the last one), so it
 	// travels on the message rather than on the context the attempts share.
 	firstTokenTimeout  time.Duration
-	streamPostHooksRan bool // the worker already ran this stream's error post-hooks
+	streamDone         <-chan struct{} // closes when the successful stream finishes forwarding
+	streamPostHooksRan bool            // the worker already ran this stream's error post-hooks
 	// handoff arbitrates who owns the terminal value (result, error or stream).
 	// Response/Err/ResponseStream are cap-1 channels drained on acquire, so the worker's send is
 	// always ready; once the caller's context ends, ctx.Done() is ready too and a
@@ -116,12 +118,18 @@ func (m *ChannelMessage) claimDelivery() bool {
 // abandon needs is read before the swap.
 func (m *ChannelMessage) abandonDelivery() bool {
 	ctx := m.Context
+	sdkTrace := sdkUnaryTraceFrom(ctx)
+	if sdkTrace != nil {
+		// The worker can finish as soon as the CAS succeeds.
+		sdkTrace.writers.Add(1)
+	}
 	if !m.handoff.CompareAndSwap(handoffOpen, handoffAbandoned) {
+		sdkTrace.release()
 		return false
 	}
 	// The worker still writes response attributes and plugin logs, so the transport
 	// must not flush the trace yet. Set on the CAS so every abandonment marks it.
-	if ctx != nil {
+	if ctx != nil && sdkTrace == nil {
 		if tracer, traceID, err := GetTracerFromContext(ctx); err == nil {
 			tracer.DeferTraceCompletion(traceID)
 		}
@@ -133,6 +141,7 @@ func (m *ChannelMessage) abandonDelivery() bool {
 // It handles request routing, provider management, and response processing.
 type Bifrost struct {
 	ctx                        *schemas.BifrostContext
+	requestParent              *schemas.BifrostContext // private lifetime and defaults for implicit SDK requests
 	cancel                     context.CancelFunc
 	account                    schemas.Account                       // account interface
 	llmPlugins                 atomic.Pointer[[]schemas.LLMPlugin]   // list of llm plugins
@@ -307,9 +316,25 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		tracer = schemas.DefaultTracer()
 	}
 
-	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
+	// Instance services and SDK requests are siblings. A value written by an
+	// instance service cannot become a default for a later request.
+	requestParent, cancel := schemas.NewBifrostContextWithCancel(ctx)
+	// Init may itself run inside a traced operation. Its other defaults still
+	// apply, but each implicit request starts with its own identity.
+	for _, key := range [...]any{
+		schemas.BifrostContextKeyRequestID,
+		schemas.BifrostContextKeyFallbackRequestID,
+		schemas.BifrostContextKeyTraceID,
+		schemas.BifrostContextKeyExportTraceID,
+		schemas.BifrostContextKeySpanID,
+		schemas.BifrostContextKeyParentSpanID,
+	} {
+		requestParent.SetValue(key, nil)
+	}
+	bifrostCtx := schemas.NewBifrostContext(requestParent, schemas.NoDeadline)
 	bifrost := &Bifrost{
 		ctx:           bifrostCtx,
+		requestParent: requestParent,
 		cancel:        cancel,
 		account:       config.Account,
 		llmPlugins:    atomic.Pointer[[]schemas.LLMPlugin]{},
@@ -411,6 +436,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 	providerKeys, err := bifrost.account.GetConfiguredProviders()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
@@ -529,6 +555,77 @@ func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	return nil
 }
 
+// newRequestContext derives a mutable context from the caller or the instance.
+// Its owner cancels it after the request, including asynchronous stream delivery.
+func (bifrost *Bifrost) newRequestContext(parent *schemas.BifrostContext) *schemas.BifrostContext {
+	if parent == nil {
+		parent = bifrost.requestParent
+	}
+	return schemas.NewBifrostContext(parent, schemas.NoDeadline)
+}
+
+type sdkUnaryTraceKey struct{}
+
+// sdkUnaryTrace belongs to one implicit SDK call, including its fallbacks and
+// MCP continuations. A worker may still write spans after the caller returns.
+type sdkUnaryTrace struct {
+	tracer   schemas.Tracer
+	id       string
+	writers  atomic.Int32
+	listRoot *sdkModelListSpan
+}
+
+// The model list owns the root. Its provider polls inherit it and may finish
+// writing after the aggregate has returned to its caller.
+type sdkModelListSpan struct {
+	handle  schemas.SpanHandle
+	status  schemas.SpanStatus
+	message string
+}
+
+func sdkUnaryTraceFrom(ctx *schemas.BifrostContext) *sdkUnaryTrace {
+	if ctx == nil {
+		return nil
+	}
+	trace, _ := ctx.TrustedValue(sdkUnaryTraceKey{}).(*sdkUnaryTrace)
+	// A child context can start a different trace of its own.
+	if trace != nil && ctx.Value(schemas.BifrostContextKeyTraceID) != trace.id {
+		return nil
+	}
+	return trace
+}
+
+// startSDKUnaryTrace runs at the owner of an implicit request, before routing
+// and plugin hooks. Its trace carries the same request ID the hooks will see.
+func (bifrost *Bifrost) startSDKUnaryTrace(ctx *schemas.BifrostContext) *sdkUnaryTrace {
+	tracer := bifrost.getTracer()
+	if _, disabled := tracer.(*schemas.NoOpTracer); disabled {
+		return nil
+	}
+	requestID := uuid.NewString()
+	id := tracer.CreateTrace("", requestID)
+	if id == "" {
+		return nil
+	}
+	trace := &sdkUnaryTrace{tracer: tracer, id: id}
+	trace.writers.Store(1)
+	ctx.SetTrustedValue(sdkUnaryTraceKey{}, trace)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, id)
+	ctx.SetValue(schemas.BifrostContextKeyExportTraceID, id)
+	return trace
+}
+
+func (trace *sdkUnaryTrace) release() {
+	if trace != nil && trace.writers.Add(-1) == 0 {
+		if root := trace.listRoot; root != nil {
+			trace.tracer.EndSpan(root.handle, root.status, root.message)
+		}
+		trace.tracer.CompleteAndFlushTrace(trace.id)
+	}
+}
+
 // PUBLIC API METHODS
 
 // ListModelsRequest sends a list models request to the specified provider.
@@ -555,11 +652,11 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 			},
 		}
 	}
+	reqCtx := bifrost.newRequestContext(ctx)
+	defer reqCtx.Cancel()
 	if ctx == nil {
-		ctx = bifrost.ctx
+		defer bifrost.startSDKUnaryTrace(reqCtx).release()
 	}
-
-	reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	reqCtx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -672,12 +769,29 @@ func (bifrost *Bifrost) lastKnownListModelsResponse(ctx *schemas.BifrostContext,
 // A provider whose poll fails contributes its last-known models from the model catalog (when one with per-provider listings is configured) instead; that
 // list is substituted in the worker, so the plugin post-hooks filter it like a live listing.
 // A poll still running at the deadline contributes nothing, since no post-hook has seen it.
-func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (_ *schemas.BifrostListModelsResponse, listErr *schemas.BifrostError) {
 	if req == nil {
 		req = &schemas.BifrostListModelsRequest{}
 	}
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.newRequestContext(nil)
+		defer ctx.Cancel()
+		trace := bifrost.startSDKUnaryTrace(ctx)
+		defer trace.release()
+		if trace != nil {
+			id, handle := trace.tracer.StartSpanID(ctx, "list-all-models", schemas.SpanKindInternal)
+			if handle != nil {
+				ctx.SetValue(schemas.BifrostContextKeySpanID, id)
+				root := &sdkModelListSpan{handle: handle, status: schemas.SpanStatusOk}
+				trace.listRoot = root
+				defer func() {
+					if listErr != nil {
+						root.status = schemas.SpanStatusError
+						root.message = listErr.GetErrorString()
+					}
+				}()
+			}
+		}
 	}
 
 	// A direct key is the caller's own credential for one provider. Every provider's poll below
@@ -908,11 +1022,11 @@ func (bifrost *Bifrost) ModelRetrieveRequest(ctx *schemas.BifrostContext, req *s
 			},
 		}
 	}
+	reqCtx := bifrost.newRequestContext(ctx)
+	defer reqCtx.Cancel()
 	if ctx == nil {
-		ctx = bifrost.ctx
+		defer bifrost.startSDKUnaryTrace(reqCtx).release()
 	}
-
-	reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	// Metadata lookup, no tokens spent.
 	reqCtx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
 
@@ -1071,9 +1185,11 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 
 // ChatCompletionRequest sends a chat completion request to the specified provider.
 func (bifrost *Bifrost) ChatCompletionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	// If ctx is nil, use the bifrost context (defensive check for mcp agent mode)
+	// The initial request and its MCP continuations share one request context.
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.newRequestContext(nil)
+		defer ctx.Cancel()
+		defer bifrost.startSDKUnaryTrace(ctx).release()
 	}
 
 	response, err := bifrost.makeChatCompletionRequest(ctx, req)
@@ -1173,9 +1289,11 @@ func (bifrost *Bifrost) makeResponsesRequest(ctx *schemas.BifrostContext, req *s
 
 // ResponsesRequest sends a responses request to the specified provider.
 func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	// If ctx is nil, use the bifrost context (defensive check for mcp agent mode)
+	// The initial request and its MCP continuations share one request context.
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.newRequestContext(nil)
+		defer ctx.Cancel()
+		defer bifrost.startSDKUnaryTrace(ctx).release()
 	}
 
 	response, err := bifrost.makeResponsesRequest(ctx, req)
@@ -1210,21 +1328,18 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 		}
 	}
 	// In large payload mode, Input is intentionally nil — body streams directly to upstream
-	if req.Input == nil {
-		isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
-		if !isLargePayload {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: "responses not provided for responses stream request",
-				},
-				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:            schemas.ResponsesStreamRequest,
-					Provider:               req.Provider,
-					OriginalModelRequested: req.Model,
-					ResolvedModelUsed:      req.Model,
-				},
-			}
+	if req.Input == nil && (ctx == nil || ctx.Value(schemas.BifrostContextKeyLargePayloadMode) != true) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "responses not provided for responses stream request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.ResponsesStreamRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
 		}
 	}
 
@@ -1331,9 +1446,6 @@ func (bifrost *Bifrost) ResponsesRetrieveRequest(ctx *schemas.BifrostContext, re
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 	if req.Provider == "" {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1382,9 +1494,6 @@ func (bifrost *Bifrost) ResponsesRetrieveStreamRequest(ctx *schemas.BifrostConte
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 	if req.Provider == "" {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1427,9 +1536,6 @@ func (bifrost *Bifrost) ResponsesDeleteRequest(ctx *schemas.BifrostContext, req 
 				RequestType: schemas.ResponsesDeleteRequest,
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 	if req.Provider == "" {
 		return nil, &schemas.BifrostError{
@@ -1477,9 +1583,6 @@ func (bifrost *Bifrost) ResponsesCancelRequest(ctx *schemas.BifrostContext, req 
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 	if req.Provider == "" {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1525,9 +1628,6 @@ func (bifrost *Bifrost) ResponsesInputItemsRequest(ctx *schemas.BifrostContext, 
 				RequestType: schemas.ResponsesInputItemsRequest,
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 	if req.Provider == "" {
 		return nil, &schemas.BifrostError{
@@ -2665,9 +2765,6 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 
 	provider := bifrost.getProviderByKey(req.Provider)
 	if provider == nil {
@@ -2708,9 +2805,6 @@ func (bifrost *Bifrost) BatchListRequest(ctx *schemas.BifrostContext, req *schem
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.BatchListRequest
@@ -2748,9 +2842,6 @@ func (bifrost *Bifrost) BatchRetrieveRequest(ctx *schemas.BifrostContext, req *s
 				Message: "batch_id is required for batch retrieve request",
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -2790,9 +2881,6 @@ func (bifrost *Bifrost) BatchCancelRequest(ctx *schemas.BifrostContext, req *sch
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.BatchCancelRequest
@@ -2830,9 +2918,6 @@ func (bifrost *Bifrost) BatchDeleteRequest(ctx *schemas.BifrostContext, req *sch
 				Message: "batch_id is required for batch delete request",
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -2881,9 +2966,6 @@ func (bifrost *Bifrost) BatchResultsRequest(ctx *schemas.BifrostContext, req *sc
 				Provider:    req.Provider,
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -2934,9 +3016,6 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.FileUploadRequest
@@ -2972,9 +3051,6 @@ func (bifrost *Bifrost) FileListRequest(ctx *schemas.BifrostContext, req *schema
 				RequestType: schemas.FileListRequest,
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -3014,9 +3090,6 @@ func (bifrost *Bifrost) FileRetrieveRequest(ctx *schemas.BifrostContext, req *sc
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.FileRetrieveRequest
@@ -3054,9 +3127,6 @@ func (bifrost *Bifrost) FileDeleteRequest(ctx *schemas.BifrostContext, req *sche
 				Message: "file_id is required for file delete request",
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -3096,9 +3166,6 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.FileContentRequest
@@ -3122,9 +3189,6 @@ func (bifrost *Bifrost) CachedContentCreateRequest(ctx *schemas.BifrostContext, 
 	if req.Model == "" {
 		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "model is required for cached content create request"}}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.CachedContentCreateRequest
 	bifrostReq.CachedContentCreateRequest = req
@@ -3142,9 +3206,6 @@ func (bifrost *Bifrost) CachedContentListRequest(ctx *schemas.BifrostContext, re
 	}
 	if req.Provider == "" {
 		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content list request"}}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.CachedContentListRequest
@@ -3167,9 +3228,6 @@ func (bifrost *Bifrost) CachedContentRetrieveRequest(ctx *schemas.BifrostContext
 	if req.Name == "" {
 		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content retrieve request"}}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.CachedContentRetrieveRequest
 	bifrostReq.CachedContentRetrieveRequest = req
@@ -3191,9 +3249,6 @@ func (bifrost *Bifrost) CachedContentUpdateRequest(ctx *schemas.BifrostContext, 
 	if req.Name == "" {
 		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content update request"}}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.CachedContentUpdateRequest
 	bifrostReq.CachedContentUpdateRequest = req
@@ -3214,9 +3269,6 @@ func (bifrost *Bifrost) CachedContentDeleteRequest(ctx *schemas.BifrostContext, 
 	}
 	if req.Name == "" {
 		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content delete request"}}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.CachedContentDeleteRequest
@@ -3293,11 +3345,7 @@ func (bifrost *Bifrost) PassthroughStream(
 // no provider config on the standalone path, so the default is false and only the per-request
 // override is honored, mirroring the per-request half of the LLM pipeline's logic.
 //
-// Callers must only pass request-scoped contexts, never the shared instance context
-// (bifrost.ctx): SetValue mutates the receiver's value map, so writing here would stamp the
-// flag onto state shared by unrelated calls. Nil-ctx standalone executions therefore skip this
-// entirely — consumers treat a missing key as false, and the per-request override keys can
-// never be present on the instance context, so the outcome is identical.
+// Standalone calls without an explicit context use the default false value.
 func ensureMCPRawStorageContext(ctx *schemas.BifrostContext) {
 	if ctx == nil {
 		return
@@ -3334,7 +3382,8 @@ func ensureMCPTracerContext(ctx *schemas.BifrostContext, tracer schemas.Tracer) 
 // handling, error enrichment — lives on MCPManager.ExecuteChatTool.
 func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.newRequestContext(nil)
+		defer ctx.Cancel()
 	} else {
 		ensureMCPRawStorageContext(ctx)
 		ensureMCPTracerContext(ctx, bifrost.getTracer())
@@ -3354,7 +3403,8 @@ func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall
 // message. Thin delegator — see ExecuteChatMCPTool for the rationale.
 func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.newRequestContext(nil)
+		defer ctx.Cancel()
 	} else {
 		ensureMCPRawStorageContext(ctx)
 		ensureMCPTracerContext(ctx, bifrost.getTracer())
@@ -3396,9 +3446,6 @@ func (bifrost *Bifrost) ContainerCreateRequest(ctx *schemas.BifrostContext, req 
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerCreateRequest
@@ -3428,9 +3475,6 @@ func (bifrost *Bifrost) ContainerListRequest(ctx *schemas.BifrostContext, req *s
 				Message: "provider is required for container list request",
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -3470,9 +3514,6 @@ func (bifrost *Bifrost) ContainerRetrieveRequest(ctx *schemas.BifrostContext, re
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerRetrieveRequest
@@ -3510,9 +3551,6 @@ func (bifrost *Bifrost) ContainerDeleteRequest(ctx *schemas.BifrostContext, req 
 				Message: "container_id is required for container delete request",
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -3560,9 +3598,6 @@ func (bifrost *Bifrost) ContainerFileCreateRequest(ctx *schemas.BifrostContext, 
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerFileCreateRequest
@@ -3600,9 +3635,6 @@ func (bifrost *Bifrost) ContainerFileListRequest(ctx *schemas.BifrostContext, re
 				Message: "container_id is required for container file list request",
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -3650,9 +3682,6 @@ func (bifrost *Bifrost) ContainerFileRetrieveRequest(ctx *schemas.BifrostContext
 			},
 		}
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
 
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerFileRetrieveRequest
@@ -3666,7 +3695,8 @@ func (bifrost *Bifrost) ContainerFileRetrieveRequest(ctx *schemas.BifrostContext
 }
 
 // LiveSessionContentRequest downloads a stored GPT Live session's recording from the specified provider.
-func (bifrost *Bifrost) LiveSessionContentRequest(ctx *schemas.BifrostContext, req *schemas.BifrostLiveContentRequest) (*schemas.LiveContentResponse, *schemas.BifrostError) {
+// Read the returned body to EOF or close it when done.
+func (bifrost *Bifrost) LiveSessionContentRequest(ctx *schemas.BifrostContext, req *schemas.BifrostLiveContentRequest) (content *schemas.LiveContentResponse, bifrostErr *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -3691,8 +3721,17 @@ func (bifrost *Bifrost) LiveSessionContentRequest(ctx *schemas.BifrostContext, r
 			},
 		}
 	}
+
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.newRequestContext(nil)
+		defer bifrost.startSDKUnaryTrace(ctx).release()
+		defer func() {
+			if content == nil || content.Body == nil {
+				ctx.Cancel()
+				return
+			}
+			content.Body = &sdkRecordingBody{body: content.Body, ctx: ctx}
+		}()
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -3704,6 +3743,45 @@ func (bifrost *Bifrost) LiveSessionContentRequest(ctx *schemas.BifrostContext, r
 		return nil, err
 	}
 	return response.LiveContentResponse, nil
+}
+
+// sdkRecordingBody owns the implicit request context until the download ends.
+type sdkRecordingBody struct {
+	body      io.ReadCloser
+	ctx       *schemas.BifrostContext
+	closed    atomic.Bool
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (b *sdkRecordingBody) Read(p []byte) (int, error) {
+	if b.closed.Load() {
+		return 0, io.EOF
+	}
+	n, err := b.body.Read(p)
+	if err == io.EOF {
+		_ = b.close(true)
+	}
+	return n, err
+}
+
+func (b *sdkRecordingBody) Close() error {
+	return b.close(false)
+}
+
+func (b *sdkRecordingBody) close(consumed bool) error {
+	b.closeOnce.Do(func() {
+		b.closed.Store(true)
+		if consumed {
+			// The body can release its connection for reuse before cancellation.
+			defer b.ctx.Cancel()
+		} else {
+			// Interrupt the upstream read so Close can skip draining an abandoned body.
+			b.ctx.Cancel()
+		}
+		b.closeErr = b.body.Close()
+	})
+	return b.closeErr
 }
 
 // ContainerFileContentRequest retrieves the content of a file from a container.
@@ -3739,9 +3817,6 @@ func (bifrost *Bifrost) ContainerFileContentRequest(ctx *schemas.BifrostContext,
 				Message: "file_id is required for container file content request",
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -3788,9 +3863,6 @@ func (bifrost *Bifrost) ContainerFileDeleteRequest(ctx *schemas.BifrostContext, 
 				Message: "file_id is required for container file delete request",
 			},
 		}
-	}
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrostReq := bifrost.getBifrostRequest()
@@ -5414,7 +5486,8 @@ func (bifrost *Bifrost) GetProviderByKey(providerKey schemas.ModelProvider) sche
 func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, additionalModels ...string) (schemas.Key, error) {
 	requestCtx := ctx
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.newRequestContext(nil)
+		defer ctx.Cancel()
 	}
 	key, err := bifrost.selectKeyForProviderRequestType(ctx, requestType, providerKey, model, additionalModels...)
 	// The session's turns are logged on the caller's context, so the key's content-logging decision
@@ -5465,7 +5538,7 @@ func (bifrost *Bifrost) baseProviderType(providerKey schemas.ModelProvider) sche
 // the normal inference path (e.g. realtime WebSocket/WebRTC sessions).
 func (bifrost *Bifrost) ComputeRawStorageForProvider(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider) bool {
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.requestParent
 	}
 	if ctx == nil {
 		return false
@@ -5514,7 +5587,8 @@ type RealtimeTurnHooks struct {
 // should validate req.Provider after this returns if a provider is required.
 func (bifrost *Bifrost) RunPreRequestHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.newRequestContext(nil)
+		defer ctx.Cancel()
 	}
 
 	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
@@ -5535,8 +5609,9 @@ func (bifrost *Bifrost) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sch
 // and returns a PostHookRunner for per-chunk post-processing.
 // Used by WebSocket handlers that bypass the normal inference path but still need plugin hooks.
 func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*WSStreamHooks, *schemas.BifrostError) {
-	if ctx == nil {
-		ctx = bifrost.ctx
+	owned := ctx == nil
+	if owned {
+		ctx = bifrost.newRequestContext(nil)
 	}
 
 	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
@@ -5568,6 +5643,9 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 			tracer.CleanupStreamAccumulator(traceID)
 		}
 		bifrost.releasePluginPipeline(pipeline)
+		if owned {
+			ctx.Cancel()
+		}
 	}
 
 	// Capture provider/model from the original request for early-exit paths below.
@@ -5634,7 +5712,11 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	}
 
 	wsProvider, wsModel, _ := preReq.GetRequestFields()
+	preCtx := ctx
 	postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if ctx == nil {
+			ctx = preCtx
+		}
 		ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, requestStartedAt)
 		// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
 		// can read requestType/provider/model from the chunk or error.
@@ -5678,8 +5760,9 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 		bifrostErr.ExtraFields.RequestType = schemas.RealtimeRequest
 		return nil, bifrostErr
 	}
-	if ctx == nil {
-		ctx = bifrost.ctx
+	owned := ctx == nil
+	if owned {
+		ctx = bifrost.newRequestContext(nil)
 	}
 
 	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
@@ -5706,6 +5789,9 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 			tracer.CleanupStreamAccumulator(traceID)
 		}
 		bifrost.releasePluginPipeline(pipeline)
+		if owned {
+			ctx.Cancel()
+		}
 	}
 	provider, model, _ := req.GetRequestFields()
 
@@ -5766,8 +5852,12 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 	drainAndAttachPluginLogs(ctx)
 	provider, model, _ = preReq.GetRequestFields()
 
+	preCtx := ctx
 	return &RealtimeTurnHooks{
 		PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			if ctx == nil {
+				ctx = preCtx
+			}
 			ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, requestStartedAt)
 			resolvedModel := model
 			// Live admits aliases before selecting its session key; the meter supplies the
@@ -6081,9 +6171,10 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.newRequestContext(nil)
+		defer ctx.Cancel()
+		defer bifrost.startSDKUnaryTrace(ctx).release()
 	}
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
@@ -6106,8 +6197,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		stampRequestedRoute(ctx, requested)
 	}
 
-	// Reset first: bifrost.ctx is shared across every nil-ctx caller. A later agent turn
-	// keeps turn 1's totals so earlier turns' provider time is not counted as overhead.
+	// A caller can reuse its context. Reset once per request so a later MCP turn
+	// keeps the earlier turns' provider time.
 	if continuation == nil {
 		ctx.ResetUpstreamLatency()
 		// Whole-request start for top-down overhead (total minus upstream). On ctx so
@@ -6328,6 +6419,28 @@ func (bifrost *Bifrost) continueOnServedRoute(ctx *schemas.BifrostContext, req *
 	return result, bifrostErr
 }
 
+// sdkStreamContext keeps an implicit context alive through delivery of the last
+// chunk. A live stream supplies its forwarder's completion signal. Errors,
+// empty streams and single cached responses finish during dispatch.
+type sdkStreamContext struct {
+	ctx  *schemas.BifrostContext
+	done <-chan struct{}
+}
+
+func (s *sdkStreamContext) release() {
+	if s.done == nil {
+		s.ctx.Cancel()
+		return
+	}
+	go func() {
+		select {
+		case <-s.done:
+			s.ctx.Cancel()
+		case <-s.ctx.Done():
+		}
+	}()
+}
+
 // handleStreamRequest handles the stream request to the provider based on the request type
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
@@ -6336,9 +6449,11 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
-	// Handle nil context early to prevent blocking
+	var owned *sdkStreamContext
 	if ctx == nil {
-		ctx = bifrost.ctx
+		ctx = bifrost.newRequestContext(nil)
+		owned = &sdkStreamContext{ctx: ctx}
+		defer owned.release()
 	}
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
@@ -6405,7 +6520,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		return firstTokenTimeout
 	}
 
-	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req, attemptFirstTokenTimeout(len(fallbacks) > 0))
+	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req, attemptFirstTokenTimeout(len(fallbacks) > 0), owned)
 	primaryHeaders, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
 	if primaryErr != nil {
 		// GetErrorString, not %v on the error itself: BifrostError.String marshals the
@@ -6468,7 +6583,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		}
 
 		// Try the fallback provider
-		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq, attemptFirstTokenTimeout(i < len(fallbacks)-1))
+		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq, attemptFirstTokenTimeout(i < len(fallbacks)-1), owned)
 		// Layer on Primary/IsFallback on errors. For the success case the
 		// result is a chan of stream chunks emitted asynchronously — those
 		// chunks already carry per-attempt RoutingInfo populated upstream,
@@ -6798,7 +6913,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 //
 // firstTokenTimeout is this attempt's TTFT deadline; 0 disables it.
-func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, firstTokenTimeout time.Duration) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, firstTokenTimeout time.Duration, owned *sdkStreamContext) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Each attempt gets its own log row; mark where its window begins.
 	ctx.MarkAttemptStart()
 	ctx.MarkStreamAttemptStart()
@@ -6901,6 +7016,11 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		if shortCircuit.Stream != nil {
 			outputStream := make(chan *schemas.BifrostStreamChunk)
 			releasePipeline = false // pipeline is released inside the goroutine after stream drains
+			var done chan struct{}
+			if owned != nil {
+				done = make(chan struct{})
+				owned.done = done
+			}
 
 			// Snapshot RequestType before the closure. The *BifrostRequest is released
 			// back to bifrostRequestPool when handleStreamRequest returns (via defer);
@@ -6928,6 +7048,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			}
 
 			go func() {
+				if done != nil {
+					defer close(done)
+				}
 				defer func() {
 					drainAndAttachPluginLogs(ctx) // ensure logs are drained even if stream closes without a final chunk
 					pipeline.FinalizeStreamingPostHookSpans(ctx)
@@ -7067,6 +7190,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 
 	onStream := func(stream chan *schemas.BifrostStreamChunk) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		if owned != nil {
+			owned.done = msg.streamDone
+		}
 		bifrost.releaseChannelMessage(msg)
 		return stream, nil
 	}
@@ -7325,6 +7451,7 @@ func executeRequestWithRetries[T any](
 	model string,
 	req *schemas.BifrostRequest,
 	logger schemas.Logger,
+	onStreamReady ...func(done <-chan struct{}),
 ) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
 	isStreamRequest := IsStreamRequestType(requestType)
@@ -7408,7 +7535,7 @@ func executeRequestWithRetries[T any](
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
 
-		// Reset the trail on the first attempt so a reused or shared context (bifrost.ctx)
+		// Reset the trail on the first attempt so a reused caller context
 		// doesn't carry over records from a previous request.
 		if keyProvider != nil && attempts == 0 {
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{})
@@ -7801,6 +7928,9 @@ func executeRequestWithRetries[T any](
 					result = any(closedCh).(T)
 				} else {
 					result = any(checkedStream).(T)
+					for _, ready := range onStreamReady {
+						ready(drainDone)
+					}
 				}
 			}
 		}
@@ -8676,7 +8806,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					})
 				}
 				return streamCh, streamErr
-			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
+			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger, func(done <-chan struct{}) {
+				req.streamDone = done
+			})
 		} else {
 			result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
@@ -8915,6 +9047,10 @@ func (bifrost *Bifrost) billAbandonedTerminal(req *ChannelMessage, result *schem
 // Ends the root span and flushes a trace whose completion the transport skipped,
 // mirroring the streaming trace completer.
 func (bifrost *Bifrost) completeAbandonedTrace(ctx *schemas.BifrostContext) {
+	if trace := sdkUnaryTraceFrom(ctx); trace != nil {
+		trace.release()
+		return
+	}
 	tracer, traceID, err := GetTracerFromContext(ctx)
 	if err != nil || tracer == nil {
 		return
@@ -11238,6 +11374,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	msg.Err = nil
 	msg.queueSpan = nil
 	msg.firstTokenTimeout = 0
+	msg.streamDone = nil
 	msg.streamPostHooksRan = false
 	bifrost.channelMessagePool.Put(msg)
 }
@@ -11749,8 +11886,8 @@ func (bifrost *Bifrost) Shutdown() {
 	defer bifrost.providerLifecycleMu.Unlock()
 
 	bifrost.logger.Info("closing all request channels...")
-	// Cancel the context if not already done
-	if bifrost.ctx.Err() == nil && bifrost.cancel != nil {
+	// Cancel instance services and any active implicit SDK contexts.
+	if bifrost.cancel != nil {
 		bifrost.cancel()
 	}
 	// Signal all provider queues to close. Workers exit via pq.done;

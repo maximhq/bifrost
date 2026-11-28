@@ -59,8 +59,7 @@ func TestUpstreamLatencyZeroIsPresent(t *testing.T) {
 	}
 }
 
-// The reset is what keeps the process-global bifrost.ctx (used for every
-// nil-context SDK call) from accumulating across unrelated requests.
+// The reset isolates successive requests when an SDK caller reuses its context.
 func TestUpstreamLatencyResetClearsPreviousRequest(t *testing.T) {
 	ctx := newTestCtx()
 
