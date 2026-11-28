@@ -352427,6 +352427,77 @@
           ]
         }
       ]
+    },
+    {
+      "name": "393. OpenRouter Key-scoped discovery (#9655)",
+      "description": "OpenRouter model discovery must not append models from supplemental catalogs outside the authenticated user catalog. Local fixture: node tests/e2e/api/runners/openrouter-model-discovery-fixture.mjs 18955. Use an isolated Bifrost with only OpenRouter, network_config.base_url=http://127.0.0.1:18955, key value openrouter-discovery-fixture, models=[\"*\"], and client.enforce_auth_on_inference=false. Set openrouterDiscoveryFixture=1 for this folder. Both authenticated main and user catalogs contain only openai/fixture-allowed; the supplemental embeddings catalog contains qwen/fixture-restricted-embedding. The specified-provider and aggregate routes must return only the permitted model.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('openrouterDiscoveryFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('OpenRouter lists only models permitted by the fixture key', function () {",
+              "  var body = pm.response.text();",
+              "  pm.expect(pm.response.code, body).to.equal(200);",
+              "  var ids = pm.response.json().data.map(function (model) { return model.id; });",
+              "  pm.expect(ids, body).to.deep.equal(['openrouter/openai/fixture-allowed']);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "[EXPECT-200] OpenRouter Key-scoped discovery by provider - openrouter/openai/fixture-allowed - #9655",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=openrouter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] OpenRouter Key-scoped discovery across providers - openrouter/openai/fixture-allowed - #9655",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

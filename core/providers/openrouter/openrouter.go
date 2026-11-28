@@ -68,9 +68,14 @@ func (provider *OpenRouterProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.OpenRouter
 }
 
+// SupportsKeyScopedModelDiscovery reports that OpenRouter offers an authenticated model list.
+func (provider *OpenRouterProvider) SupportsKeyScopedModelDiscovery() bool {
+	return true
+}
+
 // validateKey verifies the API key is valid using OpenRouter's /v1/auth/key endpoint.
-// OpenRouter's /v1/models endpoint doesn't require authentication, so list models
-// will succeed even with an invalid key. This method catches invalid keys.
+// The public /v1/models catalog is available without authentication, so a
+// successful listing alone does not validate a key during provider add/update.
 func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
 	keyValue := key.Value.GetValue()
 	if keyValue == "" {
@@ -150,10 +155,17 @@ func (provider *OpenRouterProvider) fetchSupplementalModels(ctx *schemas.Bifrost
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	keyScoped := schemas.UseKeyScopedModelDiscovery(provider, request)
+	path := "/v1/models"
+	if keyScoped {
+		path = "/v1/models/user?output_modalities=all"
+	}
+
 	// Validate the key first using /v1/auth/key (only during provider add/update).
 	// OpenRouter's /v1/models doesn't require auth, so we need this extra check.
+	// The key-scoped endpoint authenticates directly and does not need this extra check.
 	shouldValidate := false
-	if v, ok := ctx.Value(schemas.BifrostContextKeyValidateKeys).(bool); ok && v {
+	if v, ok := ctx.Value(schemas.BifrostContextKeyValidateKeys).(bool); !keyScoped && ok && v {
 		shouldValidate = true
 		if validateErr := provider.validateKey(ctx, key); validateErr != nil {
 			return nil, validateErr
@@ -169,7 +181,7 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models"))
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	keyValue := key.Value.GetValue()
@@ -183,7 +195,7 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	if bifrostErr != nil {
 		if shouldValidate {
 			// Key is valid (validated above) but transport error on models endpoint.
-			// Return empty response; allowed models will be backfilled below.
+			// Return empty response.
 			return &schemas.BifrostListModelsResponse{}, nil
 		}
 		return nil, bifrostErr
@@ -226,7 +238,9 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 
 	// Merge in the embedding-model and decision-model catalogs, which OpenRouter's
 	// default /v1/models response omits entirely.
-	if modelsFetched {
+	// Only supplement the public catalog; supplemental lists may include models
+	// outside the key's permitted set.
+	if modelsFetched && !keyScoped {
 		existing := make(map[string]bool, len(openrouterResponse.Data))
 		for _, m := range openrouterResponse.Data {
 			existing[strings.ToLower(m.ID)] = true
@@ -271,6 +285,7 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		BlacklistedModels: normalizedBlacklist,
 		Aliases:           normalizedAliases,
 		Unfiltered:        request.Unfiltered,
+		KeyScoped:         keyScoped,
 		ProviderKey:       schemas.OpenRouter,
 		MatchFns:          providerUtils.DefaultMatchFns(),
 	}
@@ -299,6 +314,9 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		openrouterResponse.Data = filteredData
 	}
 
+	if keyScoped {
+		openrouterResponse.Data = providerUtils.FilterKeyScopedModels(ctx, key.ID, openrouterResponse.Data)
+	}
 	openrouterResponse.ExtraFields.Latency = latency.Milliseconds()
 
 	return &openrouterResponse, nil
@@ -307,6 +325,12 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 // ListModels performs a list models request to OpenRouter's API.
 // Requests are made concurrently for improved performance.
 func (provider *OpenRouterProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if schemas.UseKeyScopedModelDiscovery(provider, request) && len(keys) > 0 {
+		keys = providerUtils.FilterKeyScopedKeys(ctx, provider.GetProviderKey(), keys)
+		if len(keys) == 0 {
+			return &schemas.BifrostListModelsResponse{Data: []schemas.Model{}}, nil
+		}
+	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
 		keys,

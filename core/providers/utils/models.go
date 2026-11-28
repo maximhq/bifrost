@@ -11,6 +11,7 @@
 package utils
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -175,6 +176,7 @@ type ListModelsPipeline struct {
 	// reads AliasConfig.ModelID for matching and Alias surfacing.
 	Aliases     schemas.KeyAliases
 	Unfiltered  bool
+	KeyScoped   bool // Stay within the upstream key's model set.
 	ProviderKey schemas.ModelProvider
 	// MatchFns is the ordered list of equivalence functions used for every
 	// model ID comparison. Use DefaultMatchFns() for standard behaviour;
@@ -245,6 +247,61 @@ func (p *ListModelsPipeline) resolveModelID(modelID string) []aliasMatch {
 		return strings.ToLower(candidates[i].key) < strings.ToLower(candidates[j].key)
 	})
 	return candidates
+}
+
+// FilterKeyScopedKeys limits upstream discovery calls to the caller's provider keys.
+// Per-model restrictions are checked by FilterKeyScopedModels after discovery.
+func FilterKeyScopedKeys(ctx *schemas.BifrostContext, provider schemas.ModelProvider, keys []schemas.Key) []schemas.Key {
+	if skip, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); skip {
+		return keys
+	}
+	if _, direct := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); direct {
+		return keys
+	}
+	grant := ctx.Grant()
+	if grant == nil || grant.Access() == nil {
+		return keys
+	}
+	access := grant.Access()
+	if !access.IsModelAllowed(string(provider), "") {
+		return nil
+	}
+	ids, restricted := access.KeysForModel(string(provider), "")
+	if !restricted {
+		return keys
+	}
+	return slices.DeleteFunc(slices.Clone(keys), func(key schemas.Key) bool {
+		return !slices.Contains(ids, key.ID)
+	})
+}
+
+// FilterKeyScopedModels applies the caller's grant while the contributing key
+// is still known. It takes ownership of the model slice and compacts it in place.
+func FilterKeyScopedModels(ctx *schemas.BifrostContext, keyID string, models []schemas.Model) []schemas.Model {
+	if skip, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); skip {
+		return models
+	}
+	grant := ctx.Grant()
+	if grant == nil {
+		return models
+	}
+	access := grant.Access()
+	if access == nil {
+		return models
+	}
+	// A caller-supplied credential has no configured key ID to authorize.
+	_, direct := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+	return slices.DeleteFunc(models, func(model schemas.Model) bool {
+		provider, name := schemas.ParseModelString(model.ID, "")
+		if !access.IsModelAllowed(string(provider), name) {
+			return true
+		}
+		if direct {
+			return false
+		}
+		ids, restricted := access.KeysForModel(string(provider), name)
+		return restricted && !slices.Contains(ids, keyID)
+	})
 }
 
 // FilterModel applies the full filter pipeline for a single model from the API response.
@@ -352,6 +409,9 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 //
 // Blacklist always wins — nothing blacklisted is added in either case.
 func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.Model {
+	if p.KeyScoped {
+		return nil
+	}
 	var result []schemas.Model
 
 	if !p.Unfiltered && p.AllowedModels.IsRestricted() {
