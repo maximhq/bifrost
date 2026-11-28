@@ -4728,7 +4728,11 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		}
 		if seed, ok := params.ExtraParams["seed"]; ok {
 			if val, success := schemas.SafeExtractInt(seed); success {
-				config.Seed = schemas.Ptr(int32(val))
+				geminiSeed, err := toGeminiSeed(val)
+				if err != nil {
+					return config, err
+				}
+				config.Seed = geminiSeed
 			}
 		}
 	}

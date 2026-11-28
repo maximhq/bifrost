@@ -1579,6 +1579,15 @@ func ConvertBifrostResponsesUsageToGeminiUsageMetadata(usage *schemas.ResponsesR
 	return metadata
 }
 
+// toGeminiSeed narrows a caller-supplied seed to the int32 Gemini accepts, refusing
+// out-of-range values as a caller error instead of letting them wrap around.
+func toGeminiSeed(seed int) (*int32, error) {
+	if seed < math.MinInt32 || seed > math.MaxInt32 {
+		return nil, providerUtils.InvalidRequestErrorf("seed must be between %d and %d for Gemini generationConfig.seed, got %d", math.MinInt32, math.MaxInt32, seed)
+	}
+	return schemas.Ptr(int32(seed)), nil
+}
+
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
 func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string, provider schemas.ModelProvider, model string) (GenerationConfig, error) {
 	config := GenerationConfig{}
@@ -1601,6 +1610,13 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 	}
 	if params.Stop != nil {
 		config.StopSequences = params.Stop
+	}
+	if params.Seed != nil {
+		seed, err := toGeminiSeed(*params.Seed)
+		if err != nil {
+			return config, err
+		}
+		config.Seed = seed
 	}
 	if params.MaxCompletionTokens != nil {
 		config.MaxOutputTokens = int32(*params.MaxCompletionTokens)

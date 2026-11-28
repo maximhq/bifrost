@@ -132,6 +132,10 @@ Conventions (match the existing collection exactly):
   "the field reached the provider and it rejected it" pins) or an exact `[EXPECT-<code>]`
   such as `[EXPECT-422]`. Put the tag in the name of every case that expects a non-200
   reply, or the run fails on the injected "Status code is 200" assertion.
+- **Run-mode tags** (read by the collection-level prerequest script, matched in the request
+  NAME): `[PREVIEW]` runs only with `--env-var include_preview=1`; `[SKIP]` runs only with
+  `--env-var include_skip=1`; `[COMPAT-SKIP]` is skipped when `compat` is set, for rows that
+  assert a value compat may legitimately drop.
 - **Test scripts** (Postman `event[].script.exec`, plain ES5 JavaScript):
   - Never skip any error status code. Do NOT open the script with an early-return
     guard like `if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }`
