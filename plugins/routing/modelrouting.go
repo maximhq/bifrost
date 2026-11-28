@@ -346,8 +346,13 @@ func isConditionalRouter(router *configstore.ModelRouter) bool {
 }
 
 // routerFireKey is what a chained router is remembered by once it has fired
-// in a request, so it does not fire again: its own id.
+// in a request, so it does not fire again: the routing rule it was made from,
+// or its own id. Routers made from one rule share the key, since the rule
+// fired once however many routers it became.
 func routerFireKey(router *configstore.ModelRouter) string {
+	if router.Meta != nil && len(router.Meta.RoutingRuleIDs) > 0 {
+		return "rule:" + router.Meta.RoutingRuleIDs[0]
+	}
 	return "router:" + router.ID
 }
 

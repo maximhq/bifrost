@@ -24,6 +24,16 @@ func NormalizeModelRouterMode(mode string) string {
 	return mode
 }
 
+// ModelRouterMeta is what the gateway records about a router for itself. It is
+// written once, by the upgrade that turned routing rules into routers, and no
+// API or config.json entry sets it.
+type ModelRouterMeta struct {
+	// RoutingRuleIDs are the routing rules the router was made from: logs a
+	// rule recorded before the upgrade are listed under the router, and routers
+	// made from one rule fire once in a chain, as the rule did.
+	RoutingRuleIDs []string `json:"routing_rule_ids,omitempty"`
+}
+
 // TableModelRouter stores one model router and the routing that decides which
 // requests it takes; its targets live in model_router_targets. A classifier
 // router is a named complexity classifier with its own phrases and settings;
@@ -38,11 +48,12 @@ func NormalizeModelRouterMode(mode string) string {
 // the same scope holds when a router is created or renamed, and nothing else
 // compares names.
 type TableModelRouter struct {
-	ID          string `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	Name        string `gorm:"type:varchar(255);not null" json:"name"`
-	Description string `gorm:"type:text" json:"description"`
-	Mode        string `gorm:"type:varchar(20);not null;default:'classifier'" json:"mode"` // "classifier" or "conditional"; set when the router is created
-	Classifier  string `gorm:"type:varchar(20);not null" json:"classifier"`                // "semantic", "decision" or "llm"
+	ID          string           `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	Name        string           `gorm:"type:varchar(255);not null" json:"name"`
+	Description string           `gorm:"type:text" json:"description"`
+	Mode        string           `gorm:"type:varchar(20);not null;default:'classifier'" json:"mode"` // "classifier" or "conditional"; set when the router is created
+	Meta        *ModelRouterMeta `gorm:"type:text;serializer:json" json:"-"`                         // set once by the upgrade that made the router from routing rules; NULL otherwise
+	Classifier  string           `gorm:"type:varchar(20);not null" json:"classifier"`                // "semantic", "decision" or "llm"
 
 	// Routing: which requests the router takes, and what the walk does after
 	// it. These columns do carry defaults, each the value a router without
