@@ -181,7 +181,7 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := s.Handle(&req, sessionID, identity, f)
+	res := s.HandleWithHeaders(&req, sessionID, identity, f, r.Header)
 
 	if res.NewSession != nil {
 		w.Header().Set(HeaderSessionID, res.NewSession.ID)

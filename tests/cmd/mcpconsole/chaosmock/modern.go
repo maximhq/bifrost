@@ -114,7 +114,7 @@ func (s *Server) serveModern(w http.ResponseWriter, r *http.Request, req *reques
 	if s.failRequest(w, f) {
 		return
 	}
-	s.writeHandled(w, s.Handle(req, "", identity, f), f, true)
+	s.writeHandled(w, s.HandleWithHeaders(req, "", identity, f, r.Header), f, true)
 }
 
 // discoverResult is the payload of server/discover. 2026-07-28 carries the server's name and

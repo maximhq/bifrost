@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -371,6 +372,12 @@ type handleResult struct {
 // cannot change how this exchange finishes. A request that started against a
 // healthy server completes against a healthy server.
 func (s *Server) Handle(req *request, sessionID, identity string, f Faults) handleResult {
+	return s.HandleWithHeaders(req, sessionID, identity, f, nil)
+}
+
+// HandleWithHeaders runs one JSON-RPC message like Handle, carrying the HTTP
+// request headers so tools with ReplyHeaders enabled can echo them.
+func (s *Server) HandleWithHeaders(req *request, sessionID, identity string, f Faults, headers http.Header) handleResult {
 	// Hang before anything else. A client's own timeout is what should cut
 	// this short, and putting the sleep first means even a method that would
 	// have failed still takes the full time, which is what a wedged upstream
@@ -389,7 +396,7 @@ func (s *Server) Handle(req *request, sessionID, identity string, f Faults) hand
 	case MethodToolsList:
 		return s.handleToolsList(req, identity, f)
 	case MethodToolsCall:
-		return s.handleToolsCall(req, identity, f)
+		return s.handleToolsCall(req, identity, f, headers)
 	case MethodPromptsList:
 		return s.handlePromptsList(req, identity, f)
 	case MethodPromptsGet:
@@ -521,7 +528,7 @@ func (s *Server) handleToolsList(req *request, identity string, f Faults) handle
 }
 
 // handleToolsCall runs one tool call against the tool set, applying the tool's scripted reply and faults.
-func (s *Server) handleToolsCall(req *request, identity string, f Faults) handleResult {
+func (s *Server) handleToolsCall(req *request, identity string, f Faults, headers http.Header) handleResult {
 	var params callParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return handleResult{Response: newError(req.ID, CodeInvalidParams, "invalid tools/call params")}
@@ -568,7 +575,7 @@ func (s *Server) handleToolsCall(req *request, identity string, f Faults) handle
 		}
 	}
 
-	res := s.toolReply(req, tool, params)
+	res := s.toolReply(req, tool, params, headers)
 	if len(tool.Progress) > 0 && hasJSON(params.Meta.ProgressToken) {
 		res.Notifications = progressNotifications(params.Meta.ProgressToken, tool.Progress)
 		res.ProgressTool = tool.Name
@@ -597,7 +604,7 @@ func progressNotifications(token json.RawMessage, steps []ProgressStep) [][]byte
 }
 
 // toolReply is the result a call to tool answers with when nothing is faulted.
-func (s *Server) toolReply(req *request, tool Tool, params callParams) handleResult {
+func (s *Server) toolReply(req *request, tool Tool, params callParams, hdr http.Header) handleResult {
 	switch {
 	case len(tool.Reply) > 0:
 		// Verbatim, so the scenario decides every field of the result,
@@ -619,6 +626,21 @@ func (s *Server) toolReply(req *request, tool Tool, params callParams) handleRes
 		}
 		return handleResult{Response: newResult(req.ID, callResult{
 			Content: []contentBlock{{Type: "text", Text: value}},
+		})}
+	case tool.ReplyHeaders:
+		flat := map[string]string{}
+		for name, values := range hdr {
+			flat[name] = strings.Join(values, ", ")
+		}
+		encoded, err := json.Marshal(struct {
+			Tool    string            `json:"tool"`
+			Headers map[string]string `json:"headers"`
+		}{tool.Name, flat})
+		if err != nil {
+			return handleResult{Response: newError(req.ID, CodeInternalError, "failed to marshal reply headers")}
+		}
+		return handleResult{Response: newResult(req.ID, callResult{
+			Content: []contentBlock{{Type: "text", Text: string(encoded)}},
 		})}
 	}
 

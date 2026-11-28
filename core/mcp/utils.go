@@ -1026,6 +1026,13 @@ func ApplyParamHeaders(conn *client.Client, req *mcp.CallToolRequest, tool *sche
 	if conn == nil || req == nil || tool == nil || tool.Function == nil || tool.Function.Parameters == nil {
 		return
 	}
+	if tool.MCP != nil {
+		if !tool.MCP.HasParamHeaders {
+			return
+		}
+	} else if !orderedMapHasMCPHeader(tool.Function.Parameters.Properties) {
+		return
+	}
 	if !mcp.IsModernProtocol(conn.ProtocolVersion()) {
 		return
 	}
@@ -1055,6 +1062,73 @@ func ApplyParamHeaders(conn *client.Client, req *mcp.CallToolRequest, tool *sche
 	for name, value := range paramHeaders {
 		req.Header.Set(name, value)
 	}
+}
+
+func schemaHasMCPHeader(props map[string]any) bool {
+	for _, prop := range props {
+		if valueHasMCPHeader(prop) {
+			return true
+		}
+	}
+	return false
+}
+
+func orderedMapHasMCPHeader(om *schemas.OrderedMap) bool {
+	if om == nil || om.Len() == 0 {
+		return false
+	}
+	found := false
+	om.Range(func(k string, v interface{}) bool {
+		if k == "x-mcp-header" {
+			if headerName, ok := v.(string); ok && strings.TrimSpace(headerName) != "" {
+				found = true
+				return false
+			}
+		}
+		if valueHasMCPHeader(v) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func valueHasMCPHeader(v any) bool {
+	switch typed := v.(type) {
+	case map[string]any:
+		if headerName, ok := typed["x-mcp-header"].(string); ok && strings.TrimSpace(headerName) != "" {
+			return true
+		}
+		for _, nested := range typed {
+			if valueHasMCPHeader(nested) {
+				return true
+			}
+		}
+	case *schemas.OrderedMap:
+		return orderedMapHasMCPHeader(typed)
+	case schemas.OrderedMap:
+		return orderedMapHasMCPHeader(&typed)
+	case []any:
+		for _, item := range typed {
+			if valueHasMCPHeader(item) {
+				return true
+			}
+		}
+	case []schemas.OrderedMap:
+		for i := range typed {
+			if orderedMapHasMCPHeader(&typed[i]) {
+				return true
+			}
+		}
+	case []map[string]any:
+		for _, item := range typed {
+			if valueHasMCPHeader(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // CallUpstreamTool sends call on conn. With relay, a gateway caller gets an upstream's input_required
@@ -1769,8 +1843,9 @@ func fixBranchArraySchemas(branch map[string]any, logger schemas.Logger) {
 	}
 }
 
-// toolMetadata is the title, icons and output schema mcpTool declares, or nil when it declares none.
+// toolMetadata is the title, icons, output schema and header-binding flag mcpTool declares, or nil when it declares none.
 func toolMetadata(mcpTool *mcp.Tool) *schemas.MCPToolMetadata {
+	hasParamHeaders := mcpTool != nil && schemaHasMCPHeader(mcpTool.InputSchema.Properties)
 	outputSchema := mcpTool.RawOutputSchema
 	if outputSchema == nil && declaresOutputSchema(mcpTool.OutputSchema) {
 		outputSchema, _ = json.Marshal(mcpTool.OutputSchema)
@@ -1783,10 +1858,16 @@ func toolMetadata(mcpTool *mcp.Tool) *schemas.MCPToolMetadata {
 	if mcpTool.Meta != nil && (mcpTool.Meta.ProgressToken != nil || len(mcpTool.Meta.AdditionalFields) > 0) {
 		meta, _ = json.Marshal(mcpTool.Meta)
 	}
-	if mcpTool.Title == "" && len(mcpTool.Icons) == 0 && outputSchema == nil && meta == nil {
+	if mcpTool.Title == "" && len(mcpTool.Icons) == 0 && outputSchema == nil && meta == nil && !hasParamHeaders {
 		return nil
 	}
-	metadata := &schemas.MCPToolMetadata{Title: mcpTool.Title, Icons: mcpTool.Icons, OutputSchema: outputSchema, Meta: meta}
+	metadata := &schemas.MCPToolMetadata{
+		Title:           mcpTool.Title,
+		Icons:           mcpTool.Icons,
+		OutputSchema:    outputSchema,
+		Meta:            meta,
+		HasParamHeaders: hasParamHeaders,
+	}
 	if meta != nil {
 		metadata.UIResourceURI, metadata.Visibility = appsUIMeta(meta)
 	}

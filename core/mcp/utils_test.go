@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/mcpvouch"
@@ -1338,4 +1339,146 @@ func TestConvertMCPToolToBifrostSchema_MissingDescription(t *testing.T) {
 	bifrostTool = convertMCPToolToBifrostSchema(mcpTool, defaultLogger)
 	require.NotNil(t, bifrostTool.Function.Description)
 	assert.Equal(t, "Search the web", *bifrostTool.Function.Description)
+}
+
+func TestToolMetadata_HasParamHeaders(t *testing.T) {
+	plain := mcp.NewTool("plain")
+	assert.Nil(t, toolMetadata(&plain))
+
+	top := mcp.NewTool("top")
+	top.InputSchema.Properties = map[string]any{
+		"action": map[string]any{"type": "string", "x-mcp-header": "Action"},
+	}
+	topMeta := toolMetadata(&top)
+	require.NotNil(t, topMeta)
+	assert.True(t, topMeta.HasParamHeaders)
+
+	nested := mcp.NewTool("nested")
+	nested.InputSchema.Properties = map[string]any{
+		"filter": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"tenant": map[string]any{"type": "string", "x-mcp-header": "Tenant"},
+			},
+		},
+	}
+	nestedMeta := toolMetadata(&nested)
+	require.NotNil(t, nestedMeta)
+	assert.True(t, nestedMeta.HasParamHeaders)
+
+	converted := convertMCPToolToBifrostSchema(&top, defaultLogger)
+	require.NotNil(t, converted.MCP)
+	assert.True(t, converted.MCP.HasParamHeaders)
+	copied := schemas.DeepCopyChatTool(converted)
+	require.NotNil(t, copied.MCP)
+	assert.True(t, copied.MCP.HasParamHeaders)
+}
+
+func BenchmarkApplyParamHeaders(b *testing.B) {
+	newBenchClient := func(protocolVersion string) *client.Client {
+		srv := server.NewMCPServer("bench", "1.0.0")
+		cl, err := client.NewInProcessClient(srv)
+		require.NoError(b, err)
+		require.NoError(b, cl.Start(context.Background()))
+		b.Cleanup(func() { _ = cl.Close() })
+		_, err = cl.Initialize(context.Background(), mcp.InitializeRequest{
+			Params: mcp.InitializeParams{
+				ProtocolVersion: protocolVersion,
+				ClientInfo:      mcp.Implementation{Name: "bench", Version: "1.0.0"},
+			},
+		})
+		require.NoError(b, err)
+		return cl
+	}
+	modernConn := newBenchClient(mcp.LATEST_PROTOCOL_VERSION)
+	legacyConn := newBenchClient("2025-11-25")
+
+	unannotatedWithMeta := &schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: "echo",
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]any{
+					"message": map[string]any{"type": "string"},
+					"count":   map[string]any{"type": "integer"},
+				}),
+			},
+		},
+		MCP: &schemas.MCPToolMetadata{Title: "Echo"},
+	}
+	unannotatedPlain := &schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: "echo",
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]any{
+					"message": map[string]any{"type": "string"},
+					"count":   map[string]any{"type": "integer"},
+				}),
+			},
+		},
+	}
+	annotated := &schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: "action_tool",
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]any{
+					"action": map[string]any{"type": "string", "x-mcp-header": "Action"},
+				}),
+			},
+		},
+		MCP: &schemas.MCPToolMetadata{HasParamHeaders: true},
+	}
+
+	b.Run("unannotated_cached_metadata", func(b *testing.B) {
+		req := mcp.CallToolRequest{
+			Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+			Params:  mcp.CallToolParams{Name: "echo", Arguments: map[string]any{"message": "hi", "count": 1}},
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			ApplyParamHeaders(modernConn, &req, unannotatedWithMeta)
+		}
+	})
+
+	b.Run("unannotated_nil_metadata", func(b *testing.B) {
+		req := mcp.CallToolRequest{
+			Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+			Params:  mcp.CallToolParams{Name: "echo", Arguments: map[string]any{"message": "hi", "count": 1}},
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			ApplyParamHeaders(modernConn, &req, unannotatedPlain)
+		}
+	})
+
+	b.Run("annotated_legacy", func(b *testing.B) {
+		req := mcp.CallToolRequest{
+			Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+			Params:  mcp.CallToolParams{Name: "action_tool", Arguments: map[string]any{"action": "list"}},
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			ApplyParamHeaders(legacyConn, &req, annotated)
+		}
+	})
+
+	b.Run("annotated_modern", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			req := mcp.CallToolRequest{
+				Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+				Params:  mcp.CallToolParams{Name: "action_tool", Arguments: map[string]any{"action": "list"}},
+			}
+			ApplyParamHeaders(modernConn, &req, annotated)
+		}
+	})
 }

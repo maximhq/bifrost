@@ -2055,12 +2055,13 @@ type MCPClientTool struct {
 // MCPToolMetadata is what an MCP tool declares besides its function definition and annotations.
 // Bifrost-internal: never sent to providers.
 type MCPToolMetadata struct {
-	Title         string          `json:"title,omitempty"`
-	Icons         []mcp.Icon      `json:"icons,omitempty"`
-	OutputSchema  json.RawMessage `json:"output_schema,omitempty"`
-	Meta          json.RawMessage `json:"meta,omitempty"`            // the tool's _meta, as sent
-	UIResourceURI string          `json:"ui_resource_uri,omitempty"` // MCP Apps: ui:// resource rendering the tool
-	Visibility    []string        `json:"visibility,omitempty"`      // MCP Apps: empty means model and app
+	Title           string          `json:"title,omitempty"`
+	Icons           []mcp.Icon      `json:"icons,omitempty"`
+	OutputSchema    json.RawMessage `json:"output_schema,omitempty"`
+	Meta            json.RawMessage `json:"meta,omitempty"`              // the tool's _meta, as sent
+	UIResourceURI   string          `json:"ui_resource_uri,omitempty"`   // MCP Apps: ui:// resource rendering the tool
+	Visibility      []string        `json:"visibility,omitempty"`        // MCP Apps: empty means model and app
+	HasParamHeaders bool            `json:"has_param_headers,omitempty"` // true when input schema declares x-mcp-header bindings
 }
 
 // MCP Apps (SEP-1865) extension id, resource mime type and _meta.ui.visibility values.

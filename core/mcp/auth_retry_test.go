@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1441,13 +1443,13 @@ func TestExecuteTool_AuthFailureRetry_PerUser_PreservesParamHeaders(t *testing.T
 	var callCount atomic.Int32
 	httpHandler := server.NewStreamableHTTPServer(upstream)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body [4096]byte
-		n, _ := r.Body.Read(body[:])
-		payload := string(body[:n])
-		r.Body = http.NoBody
-		if n > 0 {
-			r.Body = newReadCloser(payload)
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("read body: %v", err), http.StatusBadRequest)
+			return
 		}
+		payload := string(bodyBytes)
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		if strings.Contains(payload, `"tools/call"`) {
 			mu.Lock()
 			seenHeaders = append(seenHeaders, r.Header.Get("Mcp-Param-Action"))
