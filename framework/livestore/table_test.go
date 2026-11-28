@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -106,7 +107,7 @@ func TestStateTable(t *testing.T) {
 	f := newFixture(t)
 	f.seed(t)
 	f.load(t)
-	usage, err := f.s.NewStateTable[int](context.Background(), "usage", Kind("group"))
+	usage, err := f.s.NewTable[string, *int](context.Background(), "usage", KeyedBy(Kind("group")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,17 +133,51 @@ func TestStateTable(t *testing.T) {
 	}
 }
 
-// TestNewStateTableNeedsAKind checks that a state table must name the kind whose records key it:
-// with no kind, removing a record would never clear its entry. The refused name stays free.
-func TestNewStateTableNeedsAKind(t *testing.T) {
+// TestCompareAndSwapComparesThePointer checks what CompareAndSwap can tell: a new pointer for every
+// write makes any write since a read fail the swap, even one storing an equal value, while storing
+// a pointer that was stored before makes a read of it compare equal again.
+func TestCompareAndSwapComparesThePointer(t *testing.T) {
+	f := newFixture(t)
+	f.load(t)
+	usage, err := f.s.NewTable[string, *int](context.Background(), "usage", KeyedBy(Kind("group")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, same, next := new(int), new(int), new(int)
+	usage.Put("g1", read)
+	usage.Put("g1", same) // a new pointer holding the same value
+	if CompareAndSwap(usage, "g1", read, next) {
+		t.Fatal("a write of a new pointer since the read must fail the swap")
+	}
+	usage.Put("g1", next)
+	usage.Put("g1", read) // the pointer read earlier, stored again
+	if !CompareAndSwap(usage, "g1", read, next) {
+		t.Fatal("a pointer stored again compares equal to a read of it")
+	}
+}
+
+// TestKeyedByNeedsAKindAndStringKeys checks that a table KeyedBy a kind must name a registered
+// kind and have string keys: with no kind, or keys an entity ID cannot be, removing a record would
+// never clear its entry. A refused name stays free.
+func TestKeyedByNeedsAKindAndStringKeys(t *testing.T) {
 	f := newFixture(t)
 	f.load(t)
 	ctx := context.Background()
-	if _, err := f.s.NewStateTable[int](ctx, "usage", Kind("")); err == nil {
-		t.Fatal("NewStateTable with an empty kind must fail")
+	if _, err := f.s.NewTable[string, *int](ctx, "usage", KeyedBy(Kind(""))); err == nil || !strings.Contains(err.Error(), "keyed by no kind") {
+		t.Fatalf("KeyedBy with an empty kind = %v, want an error", err)
+	}
+	if _, err := f.s.NewTable[string, *int](ctx, "usage", KeyedBy(Kind("nope"))); err == nil || !strings.Contains(err.Error(), "unknown kind") {
+		t.Fatalf("KeyedBy with an unknown kind = %v, want an error", err)
+	}
+	if _, err := f.s.NewTable[int, *int](ctx, "usage", KeyedBy(Kind("group"))); err == nil || !strings.Contains(err.Error(), "keys must be strings") {
+		t.Fatalf("KeyedBy with int keys = %v, want an error", err)
+	}
+	type groupID string
+	if _, err := f.s.NewTable[groupID, *int](ctx, "usage", KeyedBy(Kind("group"))); err == nil || !strings.Contains(err.Error(), "keys must be strings") {
+		t.Fatalf("KeyedBy with a named string key type = %v, want an error, since removal looks entries up by plain string", err)
 	}
 	if _, err := f.s.NewTable[string, int](ctx, "usage"); err != nil {
-		t.Fatalf("a name NewStateTable refused must stay free: %v", err)
+		t.Fatalf("a name KeyedBy refused must stay free: %v", err)
 	}
 }
 

@@ -13,7 +13,7 @@ import (
 const tableShards = 64
 
 // TableOption configures a table at creation: WithTTL, WithGeneration, HoldsHandles,
-// WithWriteTimes and Interns make one.
+// WithWriteTimes, KeyedBy and Interns make one.
 type TableOption interface{ applyTable(*tableOptions) }
 
 // tableOptionFunc is a TableOption that sets fields of a table's options.
@@ -28,6 +28,8 @@ type tableOptions struct {
 	gen        func() uint64
 	writeTimes bool
 	handles    bool
+	keyed      bool          // KeyedBy was given
+	keyedBy    Kind          // the kind whose IDs key the table, when keyed
 	interns    []tableBinder // the Interns declarations, bound to the value type at creation
 }
 
@@ -55,6 +57,14 @@ func HoldsHandles() TableOption {
 // write times cannot also be a memo.
 func WithWriteTimes() TableOption {
 	return tableOptionFunc(func(o *tableOptions) { o.writeTimes = true })
+}
+
+// KeyedBy makes the table hold state per entity of kind: its keys are IDs of that kind, so they
+// must be strings, and removing an entity removes its entry. Its values are usually pointers that
+// are never changed once stored, with a new pointer for every write, so CompareAndSwap can tell
+// whether anyone wrote since a read.
+func KeyedBy(kind Kind) TableOption {
+	return tableOptionFunc(func(o *tableOptions) { o.keyed, o.keyedBy = true, kind })
 }
 
 // Table is a map a component owns and writes itself: state tied to an entity, derived views,
@@ -130,8 +140,10 @@ type tableEntry[V any] struct {
 }
 
 // NewTable creates a table under name. It fails when the name is empty, already registered or in
-// the store's reserved internal: range, or the table would keep write times and be a memo, and
-// with ErrInSubscriber when ctx is a subscriber's.
+// the store's reserved internal: range, when the table would keep write times and be a memo, or
+// when it is KeyedBy an empty or unknown kind or its keys are not strings, and with
+// ErrInSubscriber when ctx is a subscriber's. A KeyedBy with no kind is refused rather than made a
+// plain table, whose entries no removal would clear.
 func (s *Store) NewTable[K comparable, V any](ctx context.Context, name string, opts ...TableOption) (*Table[K, V], error) {
 	if err := inSubscriber(ctx); err != nil {
 		return nil, err
@@ -143,40 +155,21 @@ func (s *Store) NewTable[K comparable, V any](ctx context.Context, name string, 
 	if o.writeTimes && o.gen != nil {
 		return nil, fmt.Errorf("livestore: table %q cannot keep write times and be a memo", name)
 	}
+	if o.keyed {
+		if o.keyedBy == "" {
+			return nil, fmt.Errorf("livestore: table %q is keyed by no kind", name)
+		}
+		if _, ok := any(*new(K)).(string); !ok {
+			return nil, fmt.Errorf("livestore: table %q is keyed by %s IDs, so its keys must be strings", name, o.keyedBy)
+		}
+	}
 	interns, err := bindInterns[V](name, o.interns)
 	if err != nil {
 		return nil, err
 	}
 	t := newTable[K, V](name, o)
 	t.interns = interns
-	if err := s.addTable(name, t, ""); err != nil {
-		return nil, err
-	}
-	return t, nil
-}
-
-// NewStateTable creates a table keyed by IDs of kind of: removing an entity of that kind
-// removes its entry. It fails when the name is empty, registered or in the reserved internal:
-// range, or the kind is empty or unknown, and with ErrInSubscriber when ctx is a subscriber's. An
-// empty kind is refused rather than made a plain table, whose entries no removal would clear.
-func (s *Store) NewStateTable[V any](ctx context.Context, name string, of Kind, opts ...TableOption) (*Table[string, *V], error) {
-	if err := inSubscriber(ctx); err != nil {
-		return nil, err
-	}
-	if err := publicTableName(name); err != nil {
-		return nil, err
-	}
-	if of == "" {
-		return nil, fmt.Errorf("livestore: state %q needs a kind", name)
-	}
-	o := collectTableOptions(opts)
-	interns, err := bindInterns[*V](name, o.interns)
-	if err != nil {
-		return nil, err
-	}
-	t := newTable[string, *V](name, o)
-	t.interns = interns
-	if err := s.addTable(name, t, of); err != nil {
+	if err := s.addTable(name, t, o.keyedBy); err != nil {
 		return nil, err
 	}
 	return t, nil
@@ -429,9 +422,10 @@ func (t *Table[K, V]) PutIfAbsent(k K, v V, ttl time.Duration) bool {
 
 // CompareAndSwap stores next under k in t only if the live value is still old, compared with
 // ==; a missing value compares as the zero value, so a nil old inserts only when k is absent.
-// State tables hold pointers, and a value is never changed after it is stored, so "the same
-// pointer" means nobody wrote since it was read. It is a function rather than a method so the
-// compiler can require V to be comparable.
+// With pointer values that are never changed after they are stored and a new pointer for every
+// write, "the same pointer" means nobody wrote since it was read; storing a pointer that was
+// stored before makes a read of it compare equal again. It is a function rather than a method
+// so the compiler can require V to be comparable.
 func CompareAndSwap[K, V comparable](t *Table[K, V], k K, old, next V) bool {
 	e := t.entry(next, t.opts.ttl)
 	sh := t.shard(k)
@@ -625,7 +619,7 @@ func (t *Table[K, V]) clear() {
 	}
 }
 
-// deleteKey removes the entry for an entity ID, for state tables keyed by string.
+// deleteKey removes the entry for an entity ID, for tables KeyedBy a kind, whose keys are strings.
 func (t *Table[K, V]) deleteKey(id string) {
 	if k, ok := any(id).(K); ok {
 		t.Delete(k)

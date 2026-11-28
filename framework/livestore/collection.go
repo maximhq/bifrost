@@ -385,8 +385,8 @@ func (c *Collection[T]) Load(ctx context.Context, id string) (*T, bool, error) {
 // replaced. A kind with both is called twice, its new and changed records first. Calls run before
 // Refresh returns, one call at a time. LoadAll gives subscribers registered before it every
 // record as created. Subscribers rebuild derived data only: they must be fast, cannot fail,
-// and do no slow I/O. Refresh, RefreshKind, Load, NewTable, NewStateTable and DropTable called
-// with the context a subscriber was given return ErrInSubscriber, and registering a collection
+// and do no slow I/O. Refresh, RefreshKind, Load, NewTable and DropTable called with the
+// context a subscriber was given return ErrInSubscriber, and registering a collection
 // or interned set returns ErrLoaded. Table writes never notify.
 func (c *Collection[T]) Subscribe(fn func(ctx context.Context, changes []Change[T])) (cancel func()) {
 	sub := &subscriber[T]{fn: fn}

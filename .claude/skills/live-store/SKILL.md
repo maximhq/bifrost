@@ -19,7 +19,7 @@ Cite names, not line numbers: the examples below are function and file names on 
 |---|---|---|---|
 | Collection | every row of one config-database kind, loaded at boot, refreshed after every write | the row does not exist | a `Register` call in `registerCollections` (`framework/livestore/registry.go`) |
 | Cache | only what was asked for, fetched by a loader | go fetch | `live.NewCache` |
-| Table | what this process writes itself, no loader | nothing was written yet | `live.NewTable`, `live.NewStateTable` |
+| Table | what this process writes itself, no loader | nothing was written yet | `live.NewTable` (`KeyedBy(kind)` for state per entity) |
 | View | state derived from collections that several packages read | the derived value is empty (a provider with no keys has no `ProviderKeyLists` entry, so `Get` returns `nil, false`) | a table in `Store.Views`, rebuilt by a subscriber |
 
 Where each lives:
@@ -45,7 +45,7 @@ Copy the Prompts and PromptVersions registration in `registerCollections`: it sh
 
 - **Cache:** `live.NewCache` with `WithCacheTTL`, and `WithSharedFills` when a load's answer does not depend on when it started (callers arriving during a load share it). Example: `rssfeed.NewManager`; the OAuth2 signing-key cache in `lib/livestore.go`.
 - **Table:** `live.NewTable[K, V](ctx, name, opts...)`, with `WithTTL` for expiring entries (`NewWSTicketStore`).
-- **State keyed by a record:** `live.NewStateTable[V](ctx, name, kind, opts...)`: an entry is dropped when its record is removed (governance usage per budget and rate limit in `plugins/governance/store.go`).
+- **State keyed by a record:** `live.NewTable[string, *V](ctx, name, livestore.KeyedBy(kind))`, with any other option listed after it (`livestore.KeyedBy(kind), livestore.WithTTL(ttl)`): an entry is dropped when its record is removed (governance usage per budget and rate limit in `plugins/governance/store.go`).
 - **Memo of derived values:** a table with `WithGeneration`, invalidated by bumping the generation (governance `permitViews`).
 
 ## 4. Write paths
@@ -122,7 +122,7 @@ What `framework/livestore` offers, by type: when to use each and the contract it
 - `Range(fn)`: every record until `fn` returns false, for boot, admin and background jobs, never the request path (`LocalGovernanceStore.GetGovernanceData`).
 - `Load(ctx, id)`: `Get` that reads the database on a miss and publishes the row with its children, as `Refresh` does. It is the safety net for a row written before a refresh brought it in. A caller never gets a read that started before its call, and a burst costs at most two reads.
 - `ForgetNegative(id)`: drops the miss `WithNegativeTTL` remembers, so the next `Load` reads again; a no-op without it. `Load` checks `Get` first, so a record a refresh brought in is found whatever the miss says.
-- `Subscribe(fn) (cancel)` with `Change[T]{ID, Old, New}` (`Old` nil for a new record, `New` nil for a removed one): called after each publish that changed the kind, with only the records that changed. Upserts publish in dependency order and removals in reverse, and a kind with both is called twice, its new and changed records first; calls run one at a time before `Refresh` returns, and `LoadAll` hands subscribers registered before it every record as created. A store-changing call made with the subscriber's context (`Refresh`, `RefreshKind`, `Load`, `NewTable`, `NewCache`, `NewStateTable`, `DropTable`) returns `ErrInSubscriber`. Table writes never notify (`LocalGovernanceStore.follow`).
+- `Subscribe(fn) (cancel)` with `Change[T]{ID, Old, New}` (`Old` nil for a new record, `New` nil for a removed one): called after each publish that changed the kind, with only the records that changed. Upserts publish in dependency order and removals in reverse, and a kind with both is called twice, its new and changed records first; calls run one at a time before `Refresh` returns, and `LoadAll` hands subscribers registered before it every record as created. A store-changing call made with the subscriber's context (`Refresh`, `RefreshKind`, `Load`, `NewTable`, `NewCache`, `DropTable`) returns `ErrInSubscriber`. Table writes never notify (`LocalGovernanceStore.follow`).
 
 ### Interning
 
@@ -151,7 +151,7 @@ Memory: the shared value once, one pointer per record, and one pool entry per di
 ### Table
 
 - `Store.NewTable[K, V](ctx, name, opts...)`: a table the component writes. It starts empty, so a plugin may create it after the load. Fails on a taken or `internal:` name, and on write times together with a generation.
-- `Store.NewStateTable[V](ctx, name, kind, opts...)`: a `*Table[string, *V]` keyed by IDs of a registered `kind`; removing a record removes its entry (governance budget and rate limit usage).
+- `KeyedBy(kind)`: a state table, keyed by IDs of a registered `kind`, so its keys must be `string`; removing a record removes its entry (governance budget and rate limit usage). Its values are pointers by convention, never changed once stored and new for every write, so `CompareAndSwap` can tell whether anyone wrote since a read; storing a pointer that was stored before makes a read of it compare equal again. `NewTable` refuses an empty or unknown kind and non-string keys.
 - Writes: `Put`, `PutWithTTL` (zero never expires), `Delete`. `PutIfAbsent(k, v, ttl)` stores only when no live value is there, checking only this table, so a later `PutIfNewer` can still replace it (`Sweeper.acquireProviderPollLease`). `CompareAndSwap(t, k, old, next)` is a function comparing with `==`; a nil `old` inserts only when absent. `GetAndDelete(k)` hands a value to exactly one caller (`WSTicketStore.Consume`). `GetOrCompute(k, compute)` may run `compute` concurrently for one key, so its results must be equivalent; in a memo it stores under the generation read before `compute` ran (`permitViewOf`).
 - Reads: `Get`, `Expiry`; `Range` copies each shard first, so `fn` may write; `Len` visits every shard and is not for the request path. `Flush` drops every entry without telling the delete observer, for a component resetting its own state.
 - `WithTTL(ttl)`: `Put` entries expire, read as missing and are swept in the background. `WithGeneration(gen)`: a memo; an entry stored under an older generation reads as missing, so bump the generation to invalidate.
