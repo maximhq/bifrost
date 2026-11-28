@@ -68,3 +68,4 @@
 - fix: streams cancelled before the upstream's first byte run their terminal post-hooks
 - chore: brotli 1.2.8 and dependency updates
 - chore: upgraded Go to 1.27.4
+- feat: mcp - optional `StderrHandler` callback for stdio stderr observability [@justinfx](https://github.com/justinfx)

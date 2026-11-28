@@ -1377,6 +1377,9 @@ type MCPStdioConfig struct {
 	Command string   `json:"command"` // Executable command to run
 	Args    []string `json:"args"`    // Command line arguments
 	Envs    []string `json:"envs"`    // Environment variables required
+
+	// StderrHandler, if set, receives each line the subprocess writes to stderr; it must return. Not serialized.
+	StderrHandler func(line string) `json:"-"`
 }
 
 // MCPTLSConfig holds TLS options for HTTP and SSE MCP connections.

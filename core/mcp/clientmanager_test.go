@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/network"
@@ -2135,6 +2138,176 @@ func TestUnmatchedToolSelections(t *testing.T) {
 	assert.Equal(t, []string{"a_very_long_operation_name_cut"}, unmatchedToolSelections(schemas.WhiteList{"listPets", "a_very_long_operation_name_cut"}, tools, "zoo"))
 	assert.Empty(t, unmatchedToolSelections(schemas.WhiteList{"*"}, tools, "zoo"))
 	assert.Empty(t, unmatchedToolSelections(schemas.WhiteList{"listPets", "createPet"}, tools, "zoo"))
+}
+
+// startedStdioClient spawns command/args via transport.NewStdio and starts
+// it, returning a ready-to-close *client.Client. Mirrors what
+// connectToMCPClient does around createSTDIOConnection, minus the retry loop.
+func startedStdioClient(t *testing.T, command string, args ...string) *client.Client {
+	t.Helper()
+
+	stdioTransport := transport.NewStdio(command, nil, args...)
+	cli := client.NewClient(stdioTransport)
+	require.NoError(t, cli.Start(context.Background()))
+	t.Cleanup(func() { _ = cli.Close() })
+	return cli
+}
+
+// lineCollector is a concurrency-safe StderrHandler sink for assertions.
+type lineCollector struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (c *lineCollector) handle(line string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lines = append(c.lines, line)
+}
+
+func (c *lineCollector) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.lines)
+}
+
+func TestForwardStderrForwardsLinesToHandler(t *testing.T) {
+	t.Parallel()
+
+	cli := startedStdioClient(t, "sh", "-c", `echo first >&2; echo second >&2`)
+
+	var collector lineCollector
+	config := &schemas.MCPClientConfig{
+		ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: collector.handle},
+	}
+	forwardStderr(cli, config)
+
+	require.Eventually(t, func() bool {
+		return len(collector.snapshot()) == 2
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.Equal(t, []string{"first", "second"}, collector.snapshot())
+}
+
+func TestForwardStderrForwardsBlankLines(t *testing.T) {
+	t.Parallel()
+
+	cli := startedStdioClient(t, "sh", "-c", `echo first >&2; echo >&2; echo third >&2`)
+
+	var collector lineCollector
+	config := &schemas.MCPClientConfig{
+		ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: collector.handle},
+	}
+	forwardStderr(cli, config)
+
+	require.Eventually(t, func() bool {
+		return len(collector.snapshot()) == 3
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.Equal(t, []string{"first", "", "third"}, collector.snapshot())
+}
+
+// TestForwardStderrNilPipe covers a stdio transport that never spawned a
+// subprocess (empty command): GetStderr reports ok with a nil reader, which
+// forwardStderr must skip rather than read from in a background goroutine.
+func TestForwardStderrNilPipe(t *testing.T) {
+	t.Parallel()
+
+	cli := client.NewClient(transport.NewStdio("", nil))
+	stderr, ok := client.GetStderr(cli)
+	require.True(t, ok)
+	require.Nil(t, stderr)
+
+	for _, handler := range []func(string){nil, func(string) {}} {
+		config := &schemas.MCPClientConfig{
+			ConnectionType: schemas.MCPConnectionTypeSTDIO,
+			StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: handler},
+		}
+		require.NotPanics(t, func() { forwardStderr(cli, config) })
+	}
+}
+
+func TestForwardStderrIgnoresNonSTDIOConfig(t *testing.T) {
+	t.Parallel()
+
+	cli := startedStdioClient(t, "sh", "-c", `echo unread >&2`)
+
+	// Simulates an HTTP/SSE config, whose StdioConfig is always nil. Must not
+	// panic despite the stdio transport actually being present here.
+	config := &schemas.MCPClientConfig{ConnectionType: schemas.MCPConnectionTypeHTTP}
+	require.NotPanics(t, func() { forwardStderr(cli, config) })
+}
+
+func TestForwardStderrTruncatesOversizedLine(t *testing.T) {
+	t.Parallel()
+
+	// Feed forwardStderrLines from a pipe rather than a subprocess: the stdio
+	// transport keeps only the newest bytes of stderr, so a late reader could
+	// see a shortened first line and make the length assertion timing-dependent.
+	pr, pw := io.Pipe()
+	var collector lineCollector
+	forwardStderrLines(pr, collector.handle)
+
+	go func() {
+		// One unbroken write well past maxStderrLineBytes, then a normal line.
+		_, _ = pw.Write([]byte(strings.Repeat("a", maxStderrLineBytes*3) + "\nsecond\n"))
+		_ = pw.Close()
+	}()
+
+	require.Eventually(t, func() bool {
+		return len(collector.snapshot()) == 2
+	}, 5*time.Second, 10*time.Millisecond)
+
+	lines := collector.snapshot()
+	require.Len(t, lines[0], maxStderrLineBytes, "oversized line should be truncated to maxStderrLineBytes")
+	require.Equal(t, "second", lines[1])
+}
+
+func TestForwardStderrHandlerBlockDoesNotStallReading(t *testing.T) {
+	t.Parallel()
+
+	// io.Pipe writes return only once the reader has consumed them, so every
+	// completed write below proves forwardStderrLines read that line itself,
+	// independent of any buffering in the stdio transport.
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	forwardStderrLines(pr, func(string) {
+		once.Do(func() { close(blocked) })
+		<-release
+	})
+	t.Cleanup(func() { close(release) })
+
+	_, err := io.WriteString(pw, "first\n")
+	require.NoError(t, err)
+	select {
+	case <-blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler was never called")
+	}
+
+	// The handler is now stuck. Write well past the queue capacity.
+	written := make(chan error, 1)
+	go func() {
+		for i := range stderrQueueSize * 4 {
+			if _, err := fmt.Fprintf(pw, "line-%d\n", i); err != nil {
+				written <- err
+				return
+			}
+		}
+		written <- nil
+	}()
+	select {
+	case err := <-written:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader stopped consuming stderr while the handler was blocked")
+	}
 }
 
 // These make the test binary serve newMatrixUpstream instead of running tests, so an upstream on the
