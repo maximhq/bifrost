@@ -11,7 +11,7 @@ import "time"
 // Nodes claim a due run by moving NextRunAt on while Version still matches,
 // so exactly one of them starts it.
 type TableComplexitySuggestionSchedule struct {
-	RouterID     string     `gorm:"type:varchar(64);primaryKey" json:"router_id"`
+	RouterID     string     `gorm:"type:varchar(255);primaryKey" json:"router_id"`
 	ScheduleHash string     `gorm:"type:varchar(64);not null" json:"schedule_hash"` // of the settings NextRunAt was computed from
 	NextRunAt    time.Time  `gorm:"not null" json:"next_run_at"`
 	LastRunAt    *time.Time `json:"last_run_at,omitempty"` // the slot the last claimed run was due at

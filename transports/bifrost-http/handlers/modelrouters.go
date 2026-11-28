@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 
 	"github.com/fasthttp/router"
@@ -90,9 +91,16 @@ func (h *RoutingHandler) visibleModelRouter(path string, handler fasthttp.Reques
 	}
 }
 
-// pathID reads a route parameter.
+// pathID reads a route parameter, decoded. The router matches the path as it
+// was sent and hands the parameter back still percent-encoded, and a router's
+// id may hold a space, a slash or any other character a client has to encode,
+// so the id is decoded here before anything looks it up. A parameter that does
+// not decode is used as it was sent.
 func pathID(ctx *fasthttp.RequestCtx, name string) string {
 	id, _ := ctx.UserValue(name).(string)
+	if decoded, err := url.PathUnescape(id); err == nil {
+		id = decoded
+	}
 	return strings.TrimSpace(id)
 }
 
@@ -140,11 +148,17 @@ func decodeStrictJSON(ctx *fasthttp.RequestCtx, payload any) bool {
 }
 
 // prepareModelRouter validates a router body for saving: its identity, its
-// config, and the runtime dependencies that config needs.
+// config, and the runtime dependencies that config needs. A conditional
+// router classifies nothing, so it has no config to check: any the body sends
+// is dropped, as the store drops it.
 func (h *RoutingHandler) prepareModelRouter(ctx *fasthttp.RequestCtx, router *configstore.ModelRouter) bool {
 	if err := configstore.ValidateModelRouterIdentity(router); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return false
+	}
+	if router.Mode == configstoreTables.ModelRouterModeConditional {
+		router.ComplexityAnalyzerConfig = configstore.ComplexityAnalyzerConfig{}
+		return true
 	}
 	normalized, err := complexity.ValidateAndNormalize(&router.ComplexityAnalyzerConfig)
 	if err != nil {
@@ -160,6 +174,27 @@ func (h *RoutingHandler) prepareModelRouter(ctx *fasthttp.RequestCtx, router *co
 		return false
 	}
 	router.ComplexityAnalyzerConfig = *normalized
+	return true
+}
+
+// modelRouterNameFree answers 409 and returns false when another router in the
+// scope already has the name. Names are compared only here, when a person
+// creates or renames a router: the store keeps no constraint on them, so
+// routers a config file or a migration brings in keep the names they have.
+func (h *RoutingHandler) modelRouterNameFree(ctx *fasthttp.RequestCtx, routerID, name string, routing *configstore.ModelRouterRouting) bool {
+	scope, scopeID := "global", (*string)(nil)
+	if routing != nil {
+		scope, scopeID = routing.Scope, routing.ScopeID
+	}
+	taken, err := h.configStore.ModelRouterNameTaken(ctx, routerID, name, scope, scopeID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the model router's name: %v", err))
+		return false
+	}
+	if taken {
+		SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("a model router named %q already exists in this scope", name))
+		return false
+	}
 	return true
 }
 
@@ -208,8 +243,9 @@ func (h *RoutingHandler) getModelRouter(ctx *fasthttp.RequestCtx) {
 }
 
 // createModelRouter stores and serves a new router. An omitted id is
-// generated. A body without routing creates the router off, global, and
-// after every other global router.
+// generated, and an omitted mode makes a classifier router. A body without
+// routing creates the router off, global, and after every other global
+// router. A name another router in the same scope has is refused.
 func (h *RoutingHandler) createModelRouter(ctx *fasthttp.RequestCtx) {
 	router, ok := decodeModelRouter(ctx)
 	if !ok {
@@ -222,6 +258,9 @@ func (h *RoutingHandler) createModelRouter(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if router.Routing != nil && !h.prepareModelRouterRouting(ctx, router.Routing, true) {
+		return
+	}
+	if !h.modelRouterNameFree(ctx, router.ID, router.Name, router.Routing) {
 		return
 	}
 	if err := h.configStore.CreateModelRouter(ctx, router); err != nil {
@@ -258,7 +297,9 @@ func (h *RoutingHandler) createModelRouter(ctx *fasthttp.RequestCtx) {
 // setting keeps the stored config, so a rename never writes back a config it
 // read earlier. A body with classifier settings replaces the whole config,
 // whose sections are validated together. Targets and routing are saved on
-// their own endpoints and are left as they are, whatever the body holds.
+// their own endpoints and are left as they are, whatever the body holds, and
+// so is the mode the router was created with. A new name another
+// router in the same scope has is refused.
 func (h *RoutingHandler) updateModelRouter(ctx *fasthttp.RequestCtx) {
 	id := pathID(ctx, "router_id")
 	router, ok := decodeModelRouter(ctx)
@@ -283,6 +324,7 @@ func (h *RoutingHandler) updateModelRouter(ctx *fasthttp.RequestCtx) {
 		if !sentConfig {
 			router.ComplexityAnalyzerConfig = before.ComplexityAnalyzerConfig
 		}
+		router.Mode = before.Mode
 	}
 	router.ID = id
 	router.Routing = nil
@@ -292,6 +334,9 @@ func (h *RoutingHandler) updateModelRouter(ctx *fasthttp.RequestCtx) {
 		}
 	} else if err := configstore.ValidateModelRouterIdentity(router); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if before != nil && router.Name != before.Name && !h.modelRouterNameFree(ctx, id, router.Name, before.Routing) {
 		return
 	}
 	if err := h.configStore.UpdateModelRouter(ctx, router); err != nil {
@@ -326,8 +371,8 @@ func (h *RoutingHandler) updateModelRouter(ctx *fasthttp.RequestCtx) {
 
 // sentModelRouterFields reports which top-level fields a router body sends,
 // and whether it sends any classifier setting: every field besides the id,
-// name, description, targets and routing. The body has already been decoded
-// strictly, so every field is a known one.
+// name, description, mode, targets and routing. The body has already
+// been decoded strictly, so every field is a known one.
 func sentModelRouterFields(body []byte) (sent map[string]bool, sentConfig bool) {
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(body, &fields)
@@ -335,7 +380,7 @@ func sentModelRouterFields(body []byte) (sent map[string]bool, sentConfig bool) 
 	for name := range fields {
 		sent[name] = true
 		switch name {
-		case "id", "name", "description", "targets", "routing":
+		case "id", "name", "description", "mode", "targets", "routing":
 		default:
 			sentConfig = true
 		}
@@ -370,10 +415,15 @@ func (h *RoutingHandler) deleteModelRouter(ctx *fasthttp.RequestCtx) {
 }
 
 // resetModelRouter restores a router's phrases to the built-in defaults and
-// keeps its other settings.
+// keeps its other settings. A conditional router has no phrases, so the
+// request is refused.
 func (h *RoutingHandler) resetModelRouter(ctx *fasthttp.RequestCtx) {
 	id := pathID(ctx, "router_id")
 	before, _ := h.configStore.GetModelRouter(ctx, id)
+	if before != nil && before.Mode == configstoreTables.ModelRouterModeConditional {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("model router %q is a conditional router and has no classifier to reset", id))
+		return
+	}
 	defaults := complexity.DefaultAnalyzerConfig()
 	restored, err := h.configStore.ResetModelRouter(ctx, id, &defaults)
 	if err != nil {
@@ -444,13 +494,20 @@ func (h *RoutingHandler) getModelRouterStatus(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// sendModelRouterNotServed answers for a router the routing plugin does not
-// serve. A saved router can be left out at startup, as session routing
-// without a session store is, so the store decides: a saved router is reported as
-// not loaded (503), and only one that is not saved as not found (404).
+// sendModelRouterNotServed answers for a router the routing plugin has no
+// classifier for. A saved router can be left out at startup, as session
+// routing without a session store is, so the store decides: a saved router is
+// reported as not loaded (503), and only one that is not saved as not found
+// (404). A conditional router never has a classifier, so a route that asks
+// for one is a bad request (400).
 func (h *RoutingHandler) sendModelRouterNotServed(ctx *fasthttp.RequestCtx, id string) {
-	if _, err := h.configStore.GetModelRouter(ctx, id); errors.Is(err, configstore.ErrNotFound) {
+	router, err := h.configStore.GetModelRouter(ctx, id)
+	if errors.Is(err, configstore.ErrNotFound) {
 		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("model router %q not found", id))
+		return
+	}
+	if router != nil && router.Mode == configstoreTables.ModelRouterModeConditional {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("model router %q is a conditional router and has no classifier", id))
 		return
 	}
 	SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("model router %q is saved but not loaded; the gateway log says why (session routing needs a KV store)", id))
@@ -492,14 +549,14 @@ func (h *RoutingHandler) setModelRouterTargets(ctx *fasthttp.RequestCtx) {
 	}
 	targets := req.Targets
 	for i, t := range targets {
+		if t.ProviderKeyName != nil && strings.TrimSpace(*t.ProviderKeyName) != "" {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("targets[%d]: provider_key_name is a config.json-only field; send key_id over the API", i))
+			return
+		}
 		if err := validateRoutingFallbacks(t.ParsedFallbacks); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("targets[%d]: %s", i, err.Error()))
 			return
 		}
-	}
-	if err := configstore.ValidateModelRouterTargets(targets); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
 	}
 	// Targets this version cannot read make the router unreadable; replacing
 	// them repairs it, as saving or resetting its config does, so that read
@@ -509,13 +566,24 @@ func (h *RoutingHandler) setModelRouterTargets(ctx *fasthttp.RequestCtx) {
 		sendModelRouterLoadError(ctx, id, err)
 		return
 	}
+	// The targets are checked against the router's mode. An unreadable router
+	// gives none here, so the store's own check, against the stored mode, is
+	// the one that refuses them.
 	var beforeTargets any
 	if before != nil {
+		if err := configstore.ValidateModelRouterTargets(before.Mode, targets); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		beforeTargets = before.Targets
 	}
 	if err := h.configStore.SetModelRouterTargets(ctx, id, targets); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("model router %q not found", id))
+			return
+		}
+		if errors.Is(err, configstore.ErrInvalidModelRouterTargets) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save model router targets: %v", err))
@@ -573,14 +641,17 @@ type modelRouterRoutingUpdate struct {
 	CelExpression *string        `json:"cel_expression"`
 	Query         map[string]any `json:"query"`
 	Priority      *int           `json:"priority"`
+	Chain         *bool          `json:"chain"`
+	EmptyTarget   *string        `json:"empty_target"`
 }
 
-// setModelRouterRouting changes which requests a router takes: whether it is
-// on, its scope, its condition and its priority within the scope. Only the
-// fields the body sends change, so a switch that sends {"enabled": ...} never
-// writes back a scope, condition or priority it read earlier. The builder
-// state describes the condition, so a condition sent without one clears the
-// stored state.
+// setModelRouterRouting changes which requests a router takes, and what the
+// walk does once it has: whether it is on, its scope, its condition, its
+// priority within the scope, whether it is chained, and what a classifier
+// router does with a request it has no target for (empty_target). Only the fields the body
+// sends change, so a switch that sends {"enabled": ...} never writes back a
+// scope, condition or priority it read earlier. The builder state describes
+// the condition, so a condition sent without one clears the stored state.
 func (h *RoutingHandler) setModelRouterRouting(ctx *fasthttp.RequestCtx) {
 	id := pathID(ctx, "router_id")
 	var update modelRouterRoutingUpdate
@@ -613,6 +684,12 @@ func (h *RoutingHandler) setModelRouterRouting(ctx *fasthttp.RequestCtx) {
 	}
 	if update.Priority != nil {
 		routing.Priority = *update.Priority
+	}
+	if update.Chain != nil {
+		routing.Chain = *update.Chain
+	}
+	if update.EmptyTarget != nil {
+		routing.EmptyTarget = *update.EmptyTarget
 	}
 	// The scope's entity is looked up only when this update names the scope.
 	if !h.prepareModelRouterRouting(ctx, &routing, update.Scope != nil || update.ScopeID != nil) {

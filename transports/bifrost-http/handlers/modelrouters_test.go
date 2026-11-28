@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -258,12 +259,14 @@ func TestModelRouterTargetsEndpoint(t *testing.T) {
 	// the one only this endpoint makes, and bodies that do not say what the
 	// targets are: each would otherwise read as no targets and clear them.
 	invalid := map[string]string{
-		"weights do not sum":         `{"targets":[{"tier":"SIMPLE","model":"a","weight":0.5}]}`,
-		"config-only fallback field": `{"targets":[{"tier":"SIMPLE","model":"m","weight":1,"fallbacks":[{"provider":"openai","model":"gpt-4o","provider_key_name":"k"}]}]}`,
-		"empty body object":          `{}`,
-		"misspelled targets key":     `{"target":[{"tier":"SIMPLE","model":"m","weight":1}]}`,
-		"null targets":               `{"targets":null}`,
-		"unknown target field":       `{"targets":[{"tier":"SIMPLE","model":"m","weight":1,"ttft_timeout_ms":500}]}`,
+		"weights do not sum":            `{"targets":[{"tier":"SIMPLE","model":"a","weight":0.5}]}`,
+		"config-only fallback field":    `{"targets":[{"tier":"SIMPLE","model":"m","weight":1,"fallbacks":[{"provider":"openai","model":"gpt-4o","provider_key_name":"k"}]}]}`,
+		"empty body object":             `{}`,
+		"misspelled targets key":        `{"target":[{"tier":"SIMPLE","model":"m","weight":1}]}`,
+		"null targets":                  `{"targets":null}`,
+		"unknown target field":          `{"targets":[{"tier":"SIMPLE","model":"m","weight":1,"timeout_ms":500}]}`,
+		"first-token deadline too long": `{"targets":[{"tier":"SIMPLE","model":"m","weight":1,"ttft_timeout_ms":300001}]}`,
+		"a target without a tier":       `{"targets":[{"model":"m","weight":1}]}`,
 	}
 	for name, payload := range invalid {
 		t.Run(name, func(t *testing.T) {
@@ -281,6 +284,19 @@ func TestModelRouterTargetsEndpoint(t *testing.T) {
 	status, body = call(t, h.setModelRouterTargets, `{"targets":[]}`, map[string]string{"router_id": "support"})
 	require.Equal(t, fasthttp.StatusOK, status, "%v", body)
 	assert.Nil(t, body["targets"], "no targets clears them")
+
+	// A target can carry a first-token deadline, and can keep the request's
+	// provider and model by naming neither.
+	status, body = call(t, h.setModelRouterTargets,
+		`{"targets":[{"tier":"SIMPLE","model":"m","weight":1,"ttft_timeout_ms":500},{"tier":"MEDIUM","weight":1,"fallbacks":["openai/gpt-4o"]}]}`,
+		map[string]string{"router_id": "support"})
+	require.Equal(t, fasthttp.StatusOK, status, "%v", body)
+	stored, err = store.GetModelRouter(context.Background(), "support")
+	require.NoError(t, err)
+	require.Len(t, stored.Targets, 2)
+	assert.Nil(t, stored.Targets[0].Model, "the MEDIUM target keeps the request's model")
+	require.NotNil(t, stored.Targets[1].TTFTTimeoutMs)
+	assert.Equal(t, 500, *stored.Targets[1].TTFTTimeoutMs)
 
 	// Targets this version cannot read make the router unreadable; saving new
 	// targets replaces them and repairs it, as saving or resetting its config does.
@@ -635,12 +651,11 @@ func TestModelRouterCreateRefusals(t *testing.T) {
 		{"a virtual key that does not exist", withRouting(`{"scope":"virtual_key","scope_id":"no-such-key","priority":9}`), fasthttp.StatusBadRequest, "virtual key 'no-such-key' not found"},
 		{"a negative priority", withRouting(`{"scope":"global","priority":-1}`), fasthttp.StatusBadRequest, "priority must be 0 or greater"},
 		{"a priority another router in the scope holds", withRouting(`{"scope":"global","priority":4}`), fasthttp.StatusConflict, "use a different priority"},
-		{"a name another router has", modelRouterBody("fresh", "Support"), fasthttp.StatusConflict, `already exists: a model router with id "fresh" or name "Support"`},
-		{"an id another router has", modelRouterBody("support", "Fresh"), fasthttp.StatusConflict, `already exists: a model router with id "support" or name "Fresh"`},
+		{"a name another router in the scope has", modelRouterBody("fresh", "Support"), fasthttp.StatusConflict, `a model router named "Support" already exists in this scope`},
+		{"an id another router has", modelRouterBody("support", "Fresh"), fasthttp.StatusConflict, `already exists: a model router with id "support"`},
 		{"the reserved id", modelRouterBody("defaults", "Fresh"), fasthttp.StatusBadRequest, "reserved"},
-		{"an id with a slash", modelRouterBody("fresh/router", "Fresh"), fasthttp.StatusBadRequest, "may contain only letters, digits, '-' and '_'"},
-		{"an id with a space", modelRouterBody("fresh router", "Fresh"), fasthttp.StatusBadRequest, "may contain only letters, digits, '-' and '_'"},
-		{"an id longer than 64 characters", modelRouterBody(strings.Repeat("a", 65), "Fresh"), fasthttp.StatusBadRequest, "at most 64 characters"},
+		{"an id longer than 255 characters", modelRouterBody(strings.Repeat("a", 256), "Fresh"), fasthttp.StatusBadRequest, "at most 255 characters"},
+		{"an unknown mode", modelRouterBody("fresh", "Fresh", `"mode":"weighted"`), fasthttp.StatusBadRequest, `invalid mode "weighted"`},
 		{"no name", `{"id":"fresh",` + modelRouterPhrases + `}`, fasthttp.StatusBadRequest, "requires a name"},
 		{"no phrases", `{"id":"fresh","name":"Fresh"}`, fasthttp.StatusBadRequest, "keyword lists must be non-empty"},
 		{"an unknown field", modelRouterBody("fresh", "Fresh", `"priority":1`), fasthttp.StatusBadRequest, "unknown field"},
@@ -662,6 +677,91 @@ func TestModelRouterCreateRefusals(t *testing.T) {
 			assert.Empty(t, manager.reloadedRouters, "a refused create serves nothing")
 		})
 	}
+}
+
+// TestModelRouterIDsAreDecodedFromThePath pins that a router's id may carry
+// characters a client has to encode in a path, as a routing rule's may, and
+// that every route that names a router decodes its id: the router matches the
+// path as it was sent and hands the id back still encoded.
+func TestModelRouterIDsAreDecodedFromThePath(t *testing.T) {
+	h, _, store := modelRouterHandler(t)
+	ctx := context.Background()
+	id := "support team/eu"
+	modelRouterOK(t, h.createModelRouter, modelRouterBody(id, "Support EU"), nil)
+	encoded := map[string]string{"router_id": url.PathEscape(id)}
+	require.NotEqual(t, id, encoded["router_id"], "the id does not survive a path unencoded")
+
+	body := modelRouterOK(t, h.getModelRouter, "", encoded)
+	assert.Equal(t, id, body["id"])
+	modelRouterOK(t, h.updateModelRouter, `{"name":"Support Europe"}`, encoded)
+	modelRouterOK(t, h.setModelRouterTargets, `{"targets":[{"tier":"SIMPLE","model":"m","weight":1}]}`, encoded)
+	modelRouterOK(t, h.setModelRouterRouting, `{"enabled":true}`, encoded)
+
+	stored, err := store.GetModelRouter(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, "Support Europe", stored.Name)
+	assert.Len(t, stored.Targets, 1)
+	assert.True(t, stored.Routing.Enabled)
+
+	modelRouterOK(t, h.deleteModelRouter, "", encoded)
+	_, err = store.GetModelRouter(ctx, id)
+	require.ErrorIs(t, err, configstore.ErrNotFound)
+}
+
+// TestConditionalModelRouterEndpoints pins a conditional router over the API.
+// It is created with a mode and no classifier settings, and any sent are
+// dropped; its targets name no tier; its routing can chain; its mode is set
+// when it is created and no update changes it; and the routes that act on a
+// classifier refuse it, since it has none.
+func TestConditionalModelRouterEndpoints(t *testing.T) {
+	h, _, store := modelRouterHandler(t)
+	body := modelRouterOK(t, h.createModelRouter, `{"id":"fast-lane","name":"Fast lane","mode":"conditional","classifier":"llm"}`, nil)
+	assert.Equal(t, "conditional", body["mode"])
+	assert.NotContains(t, body, "classifier", "a conditional router stores no classifier settings")
+	path := modelRouterPath("fast-lane")
+
+	modelRouterOK(t, h.setModelRouterTargets, `{"targets":[{"provider":"openai","model":"gpt-4o-mini","weight":0.5},{"weight":0.5}]}`, path)
+	status, _ := call(t, h.setModelRouterTargets, `{"targets":[{"tier":"SIMPLE","model":"m","weight":1}]}`, path)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, "a conditional router's targets name no tier")
+	stored, err := store.GetModelRouter(context.Background(), "fast-lane")
+	require.NoError(t, err)
+	assert.Len(t, stored.Targets, 2, "the refused targets changed nothing")
+
+	routingOf := func(body map[string]any) map[string]any {
+		routing, _ := body["routing"].(map[string]any)
+		return routing
+	}
+	body = modelRouterOK(t, h.setModelRouterRouting, `{"enabled":true,"chain":true}`, path)
+	assert.Equal(t, true, routingOf(body)["chain"])
+	body = modelRouterOK(t, h.setModelRouterRouting, `{"priority":7}`, path)
+	assert.Equal(t, true, routingOf(body)["chain"], "an update that does not send chain keeps it")
+	body = modelRouterOK(t, h.setModelRouterRouting, `{"chain":false,"empty_target":"next_router"}`, path)
+	assert.NotContains(t, routingOf(body), "chain")
+	assert.Equal(t, "next_router", routingOf(body)["empty_target"])
+	body = modelRouterOK(t, h.setModelRouterRouting, `{"enabled":false}`, path)
+	assert.Equal(t, "next_router", routingOf(body)["empty_target"], "an update that does not send empty_target keeps it")
+	body = modelRouterOK(t, h.setModelRouterRouting, `{"empty_target":"original_model"}`, path)
+	assert.NotContains(t, routingOf(body), "empty_target", "original_model is what a routing without the field means, so it is not written back")
+	status, _ = call(t, h.setModelRouterRouting, `{"empty_target":"skip"}`, path)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, "empty_target is next_router or original_model")
+
+	body = modelRouterOK(t, h.updateModelRouter, `{"name":"Fast lane","mode":"classifier"}`, path)
+	assert.Equal(t, "conditional", body["mode"], "the mode is set when the router is created")
+
+	status, _ = call(t, h.resetModelRouter, "", path)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, "a conditional router has no phrases to reset")
+
+	// The routing plugin builds no classifier for a conditional router. The
+	// fake manager plays a router it has built none for under the id
+	// "unserved", so a route that asks for the classifier answers that this
+	// router has none, rather than that it failed to load.
+	modelRouterOK(t, h.createModelRouter, `{"id":"unserved","name":"Unserved","mode":"conditional"}`, nil)
+	status, answer := call(t, h.getModelRouterStatus, "", modelRouterPath("unserved"))
+	assert.Equal(t, fasthttp.StatusBadRequest, status, "%v", answer)
+	assert.Contains(t, fmt.Sprint(answer), "has no classifier")
+
+	body = modelRouterOK(t, h.createModelRouter, modelRouterBody("support", "Support"), nil)
+	assert.Equal(t, "classifier", body["mode"], "a router created without a mode is a classifier")
 }
 
 // TestModelRouterCreateIgnoresTargetsAndGeneratesID pins that a create body's
@@ -713,6 +813,8 @@ func TestModelRouterUpdate(t *testing.T) {
 		`"routing":{"enabled":true,"scope":"team","scope_id":"team-1","cel_expression":"model == \"support-assistant\"","priority":2}`), nil)
 	modelRouterOK(t, h.setModelRouterTargets, `{"targets":[{"tier":"SIMPLE","provider":"openai","model":"gpt-4o-mini","weight":1}]}`, modelRouterPath("support"))
 	modelRouterOK(t, h.createModelRouter, modelRouterBody("billing", "Billing", `"description":"Billing desk"`), nil)
+	modelRouterOK(t, h.createModelRouter, modelRouterBody("team-billing", "Team billing",
+		`"routing":{"scope":"team","scope_id":"team-1","priority":3}`), nil)
 
 	refused := []struct {
 		name    string
@@ -720,7 +822,7 @@ func TestModelRouterUpdate(t *testing.T) {
 		status  int
 		message string
 	}{
-		{"the name of another router", `{"name":"Billing"}`, fasthttp.StatusConflict, "already exists"},
+		{"the name of another router in its scope", `{"name":"Team billing"}`, fasthttp.StatusConflict, `a model router named "Team billing" already exists in this scope`},
 		{"tier boundaries out of order", `{` + modelRouterPhrases + `,"tier_boundaries":{"simple_medium":0.9,"medium_complex":0.1}}`, fasthttp.StatusBadRequest, "tier boundaries must satisfy"},
 		{"an unknown classifier", `{` + modelRouterPhrases + `,"classifier":"bogus"}`, fasthttp.StatusBadRequest, "complexity classifier must be"},
 		{"a classifier setting without the phrases, which the config it replaces had", `{"classifier":"semantic"}`, fasthttp.StatusBadRequest, "keyword lists must be non-empty"},
@@ -742,6 +844,12 @@ func TestModelRouterUpdate(t *testing.T) {
 	t.Run("its own name is not a conflict", func(t *testing.T) {
 		body := modelRouterOK(t, h.updateModelRouter, `{"name":"Support"}`, modelRouterPath("support"))
 		assert.Equal(t, "Support", body["name"])
+	})
+
+	t.Run("a name a router in another scope has is not a conflict", func(t *testing.T) {
+		body := modelRouterOK(t, h.updateModelRouter, `{"name":"Billing"}`, modelRouterPath("support"))
+		assert.Equal(t, "Billing", body["name"], "the team's router may share a name with a global one")
+		modelRouterOK(t, h.updateModelRouter, `{"name":"Support"}`, modelRouterPath("support"))
 	})
 
 	t.Run("an id in the body never redirects the write", func(t *testing.T) {

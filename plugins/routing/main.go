@@ -95,8 +95,9 @@ type RoutingPlugin struct {
 
 	routers         atomic.Pointer[map[string]*modelRouterRuntime] // model routers by id, replaced whole under routersMu; see modelrouters.go
 	routersMu       sync.Mutex
-	routerMatcher   *rules.ModelRouterMatcher                   // enabled routers' routing; picks the one that takes a request
-	routerRecords   *livestore.Collection[registry.ModelRouter] // saved routers: name, targets and routing
+	routerMatcher   *rules.ModelRouterMatcher                   // enabled routers' routing; walks the ones that take a request
+	routerRecords   *livestore.Collection[registry.ModelRouter] // saved routers: name, mode, targets and routing
+	chainMaxDepth   *int                                        // the configured cap on chain steps, read live; the rule engine reads the same value
 	runtimeCtx      context.Context                             // with warmCoordinator and dimensionStore: what routers built later reuse
 	warmCoordinator complexity.WarmCoordinator
 	dimensionStore  complexity.EmbeddingDimensionStore
@@ -211,6 +212,7 @@ func InitFromStore(
 		llmClassifier:      complexity.NewLLMClassifier(logger),
 		runtimeCtx:         ctx,
 		live:               live,
+		chainMaxDepth:      chainMaxDepth,
 	}
 	if config != nil {
 		plugin.sessions = config.Sessions
@@ -549,7 +551,7 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 	}
 	// Model routers run after the routing rules and before the virtual key's
 	// allowlist and load balancing, which must see the model they choose.
-	chainFromRouter := p.applyModelRouters(ctx, req, scope)
+	chainFromRouter := p.applyModelRouters(ctx, req, scope, false)
 
 	_, routedModel, routedFallbacks := req.GetRequestFields()
 	// Here and not in applyRoutingRules: the large-payload path routes a synthetic request and
@@ -572,9 +574,15 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 }
 
 // routeLargePayloadModel wraps a model string in a synthetic BifrostRequest, runs the same
-// rule evaluation and virtual key materialization as the main PreRequestHook path, and returns the resolved
-// model (provider-prefixed when a provider was selected, plain model otherwise). Used by the
-// large-payload branch where req.Model is empty because the body wasn't parsed.
+// rule evaluation, model router walk and virtual key materialization as the main PreRequestHook
+// path, and returns the resolved model (provider-prefixed when a provider was selected, plain model
+// otherwise). Used by the large-payload branch where req.Model is empty because the body wasn't
+// parsed.
+//
+// The synthetic request carries no messages, so a classifier router has nothing to classify here:
+// it routes only on a tier the session already remembers, and otherwise passes the request on (see
+// applyModelRouters). Only the model is read back, so a target's fallbacks are not attached, as a
+// routing rule's are not; its key pin and first-token deadline are, since both live on ctx.
 func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, scope rules.GovernanceScope, modelIn string, requestType schemas.RequestType) (string, error) {
 	// Parse a provider-prefixed model string the same way the transport does for
 	// body-having requests, so an explicit prefix like "openai/gpt-4o" lands in
@@ -588,6 +596,7 @@ func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, scop
 	if _, err := p.applyRoutingRules(ctx, synthetic, scope); err != nil {
 		return modelIn, err
 	}
+	p.applyModelRouters(ctx, synthetic, scope, true)
 
 	// Publish before load balancing, exactly as the body-having path does: the allowlist is
 	// matched against the key's allowed/blacklisted model patterns, which are written against

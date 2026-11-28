@@ -193,44 +193,69 @@ func (m *ModelRouterMatcher) HasRoutes() bool {
 	return m.groups.Load() > 0
 }
 
-// Match returns the id of the first enabled router whose condition holds,
-// walking the routing rules' scope order (virtual key, user, team, customer,
-// global) and priority within a scope; "" when none does. Only the first
-// match counts. A condition that fails to evaluate is logged on the request
-// and skipped.
+// Match returns the id of the first enabled router whose condition holds, in
+// the order Walk visits them; "" when none does.
 func (m *ModelRouterMatcher) Match(ctx *schemas.BifrostContext, evaluation *EvaluationContext) (string, error) {
-	if m == nil || evaluation == nil {
-		return "", nil
+	matched := ""
+	err := m.Walk(ctx, evaluation, nil, func(routerID string) bool {
+		matched = routerID
+		return true
+	})
+	return matched, err
+}
+
+// Walk visits each enabled router whose condition holds on evaluation, in the
+// routing rules' order: by scope (virtual key, user, team, customer, global),
+// then by priority within a scope. visit is given the router's id and reports
+// whether the walk ends there; a router that passes the request on returns
+// false, and the walk goes on to the next one that matches. skip, when not
+// nil, names routers the walk passes over without evaluating their
+// condition, which is how a chained router that already fired stays out of a
+// later pass. A condition that fails to evaluate is logged on the request and
+// its router skipped.
+//
+// Conditions are evaluated only as far as the walk gets, so a request the
+// first router takes costs one evaluation, as it did when only the first
+// match counted.
+func (m *ModelRouterMatcher) Walk(ctx *schemas.BifrostContext, evaluation *EvaluationContext, skip func(routerID string) bool, visit func(routerID string) (stop bool)) error {
+	if m == nil || evaluation == nil || visit == nil {
+		return nil
 	}
 	variables, err := extractRoutingVariables(evaluation)
 	if err != nil {
-		return "", fmt.Errorf("failed to extract routing variables: %w", err)
+		return fmt.Errorf("failed to extract routing variables: %w", err)
 	}
 	for _, level := range buildScopeChain(evaluation.Scope) {
 		group, _ := m.routes.Get(scopeKey(level.ScopeName, level.ScopeID))
 		for _, route := range group {
-			if route.program == nil {
-				return route.routerID, nil
-			}
-			matched, err := evaluateCELExpression(route.program, variables)
-			if err != nil {
-				if ctx != nil {
-					ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelWarn,
-						fmt.Sprintf("Model router '%s' skipped: its condition failed to evaluate: %v", route.name, err))
-				}
+			if skip != nil && skip(route.routerID) {
 				continue
 			}
-			if matched {
-				return route.routerID, nil
+			if route.program != nil {
+				matched, err := evaluateCELExpression(route.program, variables)
+				if err != nil {
+					if ctx != nil {
+						ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelRouter, schemas.LogLevelWarn,
+							fmt.Sprintf("Model router '%s' skipped: its condition failed to evaluate: %v", route.name, err))
+					}
+					continue
+				}
+				if !matched {
+					continue
+				}
+			}
+			if visit(route.routerID) {
+				return nil
 			}
 		}
 	}
-	return "", nil
+	return nil
 }
 
 // SelectModelRouterTarget picks a router's target for tier, splitting by
 // weight when the tier has several. ok is false when the router has no target
-// for the tier.
+// for the tier. A conditional router's targets carry no tier, so its pick is
+// the one for the empty tier.
 func SelectModelRouterTarget(targets []configstoreTables.TableModelRouterTarget, tier string) (configstoreTables.TableModelRouterTarget, bool) {
 	candidates := make([]configstoreTables.TableModelRouterTarget, 0, len(targets))
 	for _, t := range targets {

@@ -614,6 +614,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
+	{IDs: []string{"add_model_router_modes"}, run: migrationAddModelRouterModes},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -13968,6 +13969,94 @@ func migrationAddModelRouterSuggestionTierColumns(ctx context.Context, db *gorm.
 				if err := dropColumnIfExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
 					return fmt.Errorf("drop %s column from model_routers: %w", column, err)
 				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// modelRouterModeColumns give a router its mode, chaining, and its choice for a
+// request no tier places.
+var modelRouterModeColumns = []string{"Mode", "ChainRouter", "EmptyTarget"}
+
+// modelRouterNameIndex is the unique index router names had before a router
+// could share its name with one in another scope.
+const modelRouterNameIndex = "idx_model_router_name"
+
+// modelRouterIDColumns hold a router's id. They are widened to the width of a
+// routing rule's id.
+var modelRouterIDColumns = []struct {
+	model  any
+	table  string
+	column string
+}{
+	{&tables.TableModelRouter{}, "model_routers", "id"},
+	{&tables.TableModelRouterTarget{}, "model_router_targets", "router_id"},
+	{&tables.TableComplexitySuggestionSchedule{}, "model_routing_suggestion_schedules", "router_id"},
+}
+
+// migrationAddModelRouterModes adds a router's mode, chaining and no-model
+// setting and a target's first-token deadline, drops the unique index
+// on router names, and widens the router id columns to 255 characters.
+//
+// The new columns default to what a router did before they existed: a
+// classifier that is not chained and keeps the request's model when a tier
+// has none. So no router that routes today changes. SQLite does not enforce
+// varchar(n), so the widening runs on Postgres only, where it rewrites
+// nothing. The rollback drops the columns and leaves the index dropped and
+// the ids wide: narrowing would fail on an id written since, and names two
+// routers now share could not be made unique again.
+func migrationAddModelRouterModes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_router_modes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range modelRouterModeColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
+					return fmt.Errorf("add %s column to model_routers: %w", column, err)
+				}
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelRouterTarget{}, "TTFTTimeoutMs"); err != nil {
+				return fmt.Errorf("add ttft_timeout_ms column to model_router_targets: %w", err)
+			}
+			mg := tx.Migrator()
+			if mg.HasIndex(&tables.TableModelRouter{}, modelRouterNameIndex) {
+				if err := mg.DropIndex(&tables.TableModelRouter{}, modelRouterNameIndex); err != nil {
+					return fmt.Errorf("drop %s on model_routers: %w", modelRouterNameIndex, err)
+				}
+			}
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			for _, c := range modelRouterIDColumns {
+				if !mg.HasTable(c.model) {
+					continue
+				}
+				if err := tx.Exec("ALTER TABLE " + c.table + " ALTER COLUMN " + c.column + " TYPE varchar(255)").Error; err != nil {
+					return fmt.Errorf("widen %s.%s: %w", c.table, c.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range modelRouterModeColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
+					return fmt.Errorf("drop %s column from model_routers: %w", column, err)
+				}
+			}
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelRouterTarget{}, "TTFTTimeoutMs"); err != nil {
+				return fmt.Errorf("drop ttft_timeout_ms column from model_router_targets: %w", err)
 			}
 			return nil
 		},

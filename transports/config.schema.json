@@ -7383,26 +7383,37 @@
     },
     "model_router": {
       "type": "object",
-      "description": "One model router: an id, a name and a description beside the same settings as complexity_analyzer_config; the model each tier gets; and the routing that decides which requests it takes, after the routing rules.",
+      "description": "One model router: an id, a name, a description and a mode; its targets; and the routing that decides which requests it takes, after the routing rules. A classifier router carries the same settings as complexity_analyzer_config and has a target list per tier. A conditional router classifies nothing and has one target list.",
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "\\S",
           "not": {
             "const": "defaults"
           },
-          "description": "Stable router id. `defaults` is reserved: it names the endpoint that serves a new router's defaults."
+          "description": "Stable router id: any text of up to 255 characters, as a routing rule's id is. `defaults` is reserved: it names the endpoint that serves a new router's defaults."
         },
         "name": {
           "type": "string",
           "minLength": 1,
           "maxLength": 255,
           "pattern": "\\S",
-          "description": "Display name, unique across routers. Must contain a non-whitespace character."
+          "description": "Display name. Must contain a non-whitespace character. Two routers may share a name: the dashboard and the API keep names distinct within a scope, and the file is not checked."
         },
         "description": {
           "type": "string",
           "description": "What the router is for."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "classifier",
+            "conditional"
+          ],
+          "default": "classifier",
+          "description": "How the router routes. classifier (the default) classifies each request it takes as SIMPLE, MEDIUM or COMPLEX and sends it to its target for that tier. conditional classifies nothing: it sends every request its routing takes to one of its targets, which name no tier, and needs none of the classifier settings. The mode is set when the router is created and a later change in the file is not applied."
         },
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
@@ -7437,7 +7448,7 @@
         },
         "targets": {
           "type": "array",
-          "description": "The model each tier gets. A tier with no target keeps the request's model; weights within a tier sum to 1. Omit to keep the targets set in the dashboard; an empty list clears them.",
+          "description": "A classifier router's model for each tier, or a conditional router's targets. Weights within a tier, or across a conditional router's targets, sum to 1. Omit to keep the targets set in the dashboard; an empty list clears them.",
           "items": {
             "$ref": "#/$defs/model_router_target"
           }
@@ -7448,10 +7459,49 @@
       },
       "required": [
         "id",
-        "name",
-        "keywords"
+        "name"
       ],
       "allOf": [
+        {
+          "description": "A classifier router needs its phrases, and each of its targets names a tier. A conditional router's targets name none.",
+          "if": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "conditional"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "targets": {
+                "items": {
+                  "not": {
+                    "required": [
+                      "tier"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "required": [
+              "keywords"
+            ],
+            "properties": {
+              "targets": {
+                "items": {
+                  "required": [
+                    "tier"
+                  ]
+                }
+              }
+            }
+          }
+        },
         {
           "description": "The llm classifier answers with the llm block's model, so choosing it needs that block; the loader rejects it otherwise.",
           "if": {
@@ -7606,7 +7656,7 @@
     },
     "model_router_target": {
       "type": "object",
-      "description": "One model for one tier of a model router. Omitting provider or model keeps the request's value.",
+      "description": "One target of a model router: one model for one tier of a classifier router, or one of a conditional router's targets. Omitting provider or model keeps the request's value, and a target that names neither keeps both while still applying its key, fallbacks and first-token deadline.",
       "properties": {
         "tier": {
           "type": "string",
@@ -7614,28 +7664,42 @@
             "SIMPLE",
             "MEDIUM",
             "COMPLEX"
-          ]
+          ],
+          "description": "The tier the target serves. Required for a classifier router's targets; a conditional router's targets name none."
         },
         "provider": {
           "type": "string",
           "minLength": 1,
+          "pattern": "[^\\s\u000b\u0085   -     　]",
           "description": "Target provider name (e.g., 'openai', 'azure'). Omit to use the incoming request provider"
         },
         "model": {
           "type": "string",
           "minLength": 1,
+          "pattern": "[^\\s\u000b\u0085   -     　]",
           "description": "Target model name. Omit to use the incoming request model"
+        },
+        "provider_key_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional provider key name. Resolved to internal key_id at config load time. Requires provider."
         },
         "key_id": {
           "type": "string",
           "minLength": 1,
-          "description": "Optional provider key ID to pin for this target. Requires provider."
+          "description": "Optional provider key ID to pin for this target. Requires provider. Not together with provider_key_name."
         },
         "weight": {
           "type": "number",
           "exclusiveMinimum": 0,
           "maximum": 1,
-          "description": "Probability weight within the tier (must be > 0). All weights in a tier must sum to 1"
+          "description": "Probability weight within the tier, or across a conditional router's targets (must be > 0). The weights of a tier, or of a conditional router, must sum to 1"
+        },
+        "ttft_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000,
+          "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target, as on a routing rule's target. It takes effect only when the request has fallbacks. Omit for no deadline."
         },
         "fallbacks": {
           "type": "array",
@@ -7646,42 +7710,27 @@
         }
       },
       "required": [
-        "tier",
         "weight"
-      ],
-      "$comment": "A blank provider or model is no value: the loader trims both and skips a router whose target then sets neither.",
-      "anyOf": [
-        {
-          "required": [
-            "provider"
-          ],
-          "properties": {
-            "provider": {
-              "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
-            }
-          }
-        },
-        {
-          "required": [
-            "model"
-          ],
-          "properties": {
-            "model": {
-              "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
-            }
-          }
-        }
       ],
       "dependentRequired": {
         "key_id": [
           "provider"
+        ],
+        "provider_key_name": [
+          "provider"
+        ]
+      },
+      "not": {
+        "required": [
+          "key_id",
+          "provider_key_name"
         ]
       },
       "additionalProperties": false
     },
     "model_router_routing": {
       "type": "object",
-      "description": "Which requests a model router takes. Routers are tried after the routing rules, on the request as the routing rules left it: narrowest scope first (virtual key, user, team, customer, then global), by priority within a scope, and the first enabled router whose condition holds classifies the request. Omit to keep the routing set in the dashboard; a router created without it starts off, global, after the other global routers.",
+      "description": "Which requests a model router takes, and what happens once it has. Routers are tried after the routing rules, on the request as the routing rules left it: narrowest scope first (virtual key, user, team, customer, then global), by priority within a scope. An enabled router whose condition holds takes the request: a conditional router applies one of its targets, and a classifier router classifies the request and applies its target for that tier. A router that applies a target ends the walk unless it is chained. Omit to keep the routing set in the dashboard; a router created without it starts off, global, after the other global routers.",
       "properties": {
         "enabled": {
           "type": "boolean",
@@ -7717,6 +7766,20 @@
           "type": "integer",
           "minimum": 0,
           "description": "Order within the scope; lower is tried first. Unique within the scope among model routers, separate from routing rule priorities."
+        },
+        "chain": {
+          "type": "boolean",
+          "default": false,
+          "description": "Walk the routers again, from the top, on the provider and model this router chose, as a routing rule with chain_rule re-enters the rules. A chained router fires once in a request, the walk repeats at most routing_chain_max_depth times, and only the last router's key, fallbacks and first-token deadline are applied."
+        },
+        "empty_target": {
+          "type": "string",
+          "enum": [
+            "next_router",
+            "original_model"
+          ],
+          "default": "original_model",
+          "description": "Classifier routers only: what happens to a request the router has no target for, because it produced no tier or the tier has no target. next_router passes the request to the next router. original_model, the default, keeps the request's provider and model and ends the walk. A conditional router with no target always passes the request on."
         }
       },
       "allOf": [

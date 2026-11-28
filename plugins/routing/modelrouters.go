@@ -17,7 +17,10 @@ import (
 // modelRouterRuntime is one classifier as the plugin serves it: its config
 // and the classifiers built from it.
 //
-// Every model router owns one. The Complexity Router page's config, which
+// Every classifier router owns one. A conditional router classifies nothing,
+// so it has none: the plugin serves it from its saved record and its routing
+// alone, and a gateway with many of them builds nothing for them. The
+// Complexity Router page's config, which
 // routing rules read complexity_tier from, is served by the plugin's own
 // fields, the ones it had before routers existed; complexityRuntime views
 // them as a runtime with no id, so one classification path serves both.
@@ -242,10 +245,16 @@ func (rt *modelRouterRuntime) close(logger schemas.Logger) {
 // ReloadModelRouter serves a saved router: built the first time it is seen
 // and reconfigured after, with its routing recorded for the model router
 // step. A config that cannot be served, or a routing condition that does not
-// compile, leaves the router as it was.
+// compile, leaves the router as it was. A conditional router has no
+// classifier to build, so only its routing is recorded.
 func (p *RoutingPlugin) ReloadModelRouter(router *configstore.ModelRouter) error {
 	if router == nil {
 		return fmt.Errorf("model router is nil")
+	}
+	if isConditionalRouter(router) {
+		p.routersMu.Lock()
+		defer p.routersMu.Unlock()
+		return p.setModelRouterRoutingLocked(router.ID, router.Name, router.Routing)
 	}
 	resolved, err := p.resolveRouterConfig(&router.ComplexityAnalyzerConfig)
 	if err != nil {
@@ -300,11 +309,28 @@ func (p *RoutingPlugin) setModelRouterRoutingLocked(id, name string, routing *co
 func (p *RoutingPlugin) SetModelRouterRouting(id string, routing configstore.ModelRouterRouting) error {
 	p.routersMu.Lock()
 	defer p.routersMu.Unlock()
-	rt, ok := p.modelRouter(id)
+	name, ok := p.servedRouterName(id)
 	if !ok {
 		return configstore.ErrNotFound
 	}
-	return p.setModelRouterRoutingLocked(id, rt.displayName(), &routing)
+	return p.setModelRouterRoutingLocked(id, name, &routing)
+}
+
+// servedRouterName returns the name of a router the plugin serves: a
+// classifier router it has built, or a conditional router the live store
+// holds, which needs nothing built.
+func (p *RoutingPlugin) servedRouterName(id string) (string, bool) {
+	if rt, ok := p.modelRouter(id); ok {
+		return rt.displayName(), true
+	}
+	record, ok := p.routerRecord(id)
+	if !ok || !isConditionalRouter(&record.Router) {
+		return "", false
+	}
+	if record.Router.Name != "" {
+		return record.Router.Name, true
+	}
+	return id, true
 }
 
 // RemoveModelRouter stops serving a deleted router, closes its classifiers
@@ -349,14 +375,16 @@ func (p *RoutingPlugin) loadModelRouters() {
 	defer p.routersMu.Unlock()
 	for _, record := range records {
 		router := &record.Router
-		resolved, err := p.resolveRouterConfig(&router.ComplexityAnalyzerConfig)
-		if err != nil {
-			if p.logger != nil {
-				p.logger.Warn("[Routing] failed to serve model router %q: %v", router.ID, err)
+		if !isConditionalRouter(router) {
+			resolved, err := p.resolveRouterConfig(&router.ComplexityAnalyzerConfig)
+			if err != nil {
+				if p.logger != nil {
+					p.logger.Warn("[Routing] failed to serve model router %q: %v", router.ID, err)
+				}
+				continue
 			}
-			continue
+			p.serveModelRouterLocked(router, resolved)
 		}
-		p.serveModelRouterLocked(router, resolved)
 		if err := p.setModelRouterRoutingLocked(router.ID, router.Name, router.Routing); err != nil && p.logger != nil {
 			p.logger.Warn("[Routing] model router %q takes no requests: its routing condition does not compile: %v", router.ID, err)
 		}

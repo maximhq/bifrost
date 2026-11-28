@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"math"
@@ -17,28 +18,78 @@ import (
 	"gorm.io/gorm"
 )
 
-// ValidateModelRouterTargets checks each target and, per tier, that no two
-// targets are the same and that their weights sum to 1. It upper-cases each
-// tier in place. No targets is valid: every tier then keeps the request's
-// model.
-func ValidateModelRouterTargets(targets []tables.TableModelRouterTarget) error {
+// maxModelRouterTTFTTimeoutMs caps a target's first-token deadline, as routing
+// rules cap theirs.
+const maxModelRouterTTFTTimeoutMs = 300000
+
+// ErrInvalidModelRouterTargets is matched by the error SetModelRouterTargets
+// returns when it refuses the targets themselves, so a caller can tell a bad
+// request from a failed write. Only the store knows the mode the targets are
+// checked against when the stored router cannot otherwise be read.
+var ErrInvalidModelRouterTargets = errors.New("invalid model router targets")
+
+// modelRouterTargetsError marks a targets check's error as
+// ErrInvalidModelRouterTargets without changing its message, which callers
+// send to the client as it is.
+type modelRouterTargetsError struct{ err error }
+
+// Error returns the check's own message.
+func (e *modelRouterTargetsError) Error() string { return e.err.Error() }
+
+// Unwrap returns the check's error.
+func (e *modelRouterTargetsError) Unwrap() error { return e.err }
+
+// Is reports a match for ErrInvalidModelRouterTargets.
+func (e *modelRouterTargetsError) Is(target error) bool {
+	return target == ErrInvalidModelRouterTargets
+}
+
+// ValidateModelRouterTargets checks each target of a router in mode and, per
+// tier, that no two targets are the same and that their weights sum to 1. A
+// classifier router's targets each name a tier; a conditional router's name
+// none and are checked as one group. It upper-cases each tier and stores a
+// first-token deadline of 0, which means none, as nil, both in place. No
+// targets is valid: a classifier router then has no model for any tier, and a
+// conditional router passes every request on.
+func ValidateModelRouterTargets(mode string, targets []tables.TableModelRouterTarget) error {
+	conditional := tables.NormalizeModelRouterMode(mode) == tables.ModelRouterModeConditional
 	totals := make(map[string]float64, 3)
 	seen := make(map[string]struct{}, len(targets))
 	for i := range targets {
 		t := &targets[i]
 		t.Tier = strings.ToUpper(strings.TrimSpace(t.Tier))
-		if !tables.IsModelRouterTier(t.Tier) {
+		switch {
+		case conditional && t.Tier != "":
+			return fmt.Errorf("targets[%d]: a conditional router's targets take no tier, got %q", i, t.Tier)
+		case !conditional && !tables.IsModelRouterTier(t.Tier):
 			return fmt.Errorf("targets[%d]: tier must be SIMPLE, MEDIUM or COMPLEX, got %q", i, t.Tier)
 		}
 		provider, model, keyID := strings.TrimSpace(derefStr(t.Provider)), strings.TrimSpace(derefStr(t.Model)), strings.TrimSpace(derefStr(t.KeyID))
-		if provider == "" && model == "" {
-			return fmt.Errorf("targets[%d]: a target must set a provider, a model or both", i)
-		}
 		if keyID != "" && provider == "" {
 			return fmt.Errorf("targets[%d]: key_id requires provider to be set", i)
 		}
+		// A config.json target may name its key instead; the loader resolves the
+		// name to a key_id before the targets are stored. Until then the name
+		// tells two targets on the same provider and model apart.
+		if keyName := strings.TrimSpace(derefStr(t.ProviderKeyName)); keyName != "" {
+			if keyID != "" {
+				return fmt.Errorf("targets[%d]: key_id cannot be set together with provider_key_name", i)
+			}
+			if provider == "" {
+				return fmt.Errorf("targets[%d]: provider_key_name requires provider to be set", i)
+			}
+			keyID = "name:" + keyName
+		}
 		if !(t.Weight > 0) {
 			return fmt.Errorf("targets[%d]: weight must be greater than 0, got %v", i, t.Weight)
+		}
+		if t.TTFTTimeoutMs != nil {
+			if *t.TTFTTimeoutMs < 0 || *t.TTFTTimeoutMs > maxModelRouterTTFTTimeoutMs {
+				return fmt.Errorf("targets[%d]: ttft_timeout_ms must be between 1 and %d (0 disables it)", i, maxModelRouterTTFTTimeoutMs)
+			}
+			if *t.TTFTTimeoutMs == 0 {
+				t.TTFTTimeoutMs = nil
+			}
 		}
 		for j, fb := range t.ParsedFallbacks {
 			if p := strings.TrimSpace(string(fb.Provider)); p == "" || !schemas.IsKnownProvider(p) {
@@ -47,6 +98,9 @@ func ValidateModelRouterTargets(targets []tables.TableModelRouterTarget) error {
 		}
 		identity := t.Tier + "|" + strings.ToLower(provider) + "|" + strings.ToLower(model) + "|" + keyID
 		if _, dup := seen[identity]; dup {
+			if conditional {
+				return fmt.Errorf("targets[%d]: duplicate target: provider=%q model=%q key_id=%q", i, provider, model, keyID)
+			}
 			return fmt.Errorf("targets[%d]: duplicate target for tier %s: provider=%q model=%q key_id=%q", i, t.Tier, provider, model, keyID)
 		}
 		seen[identity] = struct{}{}
@@ -59,6 +113,9 @@ func ValidateModelRouterTargets(targets []tables.TableModelRouterTarget) error {
 	sort.Strings(tiers)
 	for _, tier := range tiers {
 		if math.Abs(totals[tier]-1.0) > 0.001 {
+			if conditional {
+				return fmt.Errorf("target weights must sum to 1, got %.4f", totals[tier])
+			}
 			return fmt.Errorf("target weights for tier %s must sum to 1, got %.4f", tier, totals[tier])
 		}
 	}
@@ -69,7 +126,9 @@ func ValidateModelRouterTargets(targets []tables.TableModelRouterTarget) error {
 // hash in a canonical order, so reordering them in the file changes nothing.
 // A fallback that pins a key, by key_id or provider_key_name, is written in
 // its JSON form so the pin is part of the hash; an unpinned one is written as
-// its "provider/model" string.
+// its "provider/model" string. A first-token deadline is written only when a
+// target sets one, so the hash of an entry written before targets had one is
+// unchanged.
 func writeModelRouterTargetsHash(h hash.Hash, targets []tables.TableModelRouterTarget) {
 	lines := make([]string, 0, len(targets))
 	for _, t := range targets {
@@ -83,14 +142,18 @@ func writeModelRouterTargetsHash(h hash.Hash, targets []tables.TableModelRouterT
 			}
 			fallbacks = append(fallbacks, entry)
 		}
-		lines = append(lines, strings.Join([]string{
+		fields := []string{
 			strings.ToUpper(strings.TrimSpace(t.Tier)),
 			strings.TrimSpace(derefStr(t.Provider)),
 			strings.TrimSpace(derefStr(t.Model)),
 			strings.TrimSpace(derefStr(t.KeyID)),
 			strconv.FormatFloat(t.Weight, 'g', -1, 64),
 			strings.Join(fallbacks, ","),
-		}, "|"))
+		}
+		if t.TTFTTimeoutMs != nil && *t.TTFTTimeoutMs > 0 {
+			fields = append(fields, "ttft="+strconv.Itoa(*t.TTFTTimeoutMs))
+		}
+		lines = append(lines, strings.Join(fields, "|"))
 	}
 	sort.Strings(lines)
 	writeHashField(h, "targets", strings.Join(lines, "\n"))
@@ -143,15 +206,14 @@ func loadModelRouterTargets(ctx context.Context, db *gorm.DB, routerIDs ...strin
 	return targets, unreadable, nil
 }
 
-// SetModelRouterTargets replaces a router's targets, the model each tier of
-// the router gets. The router must have been saved: ErrNotFound otherwise.
-// The write holds the router's row lock, so a concurrent DeleteModelRouter
-// cannot leave targets behind.
+// SetModelRouterTargets replaces a router's targets: the model each tier of a
+// classifier router gets, or a conditional router's one target list. The
+// router must have been saved: ErrNotFound otherwise. The targets are checked
+// against the stored router's mode, under its row lock, which also keeps a
+// concurrent DeleteModelRouter from leaving targets behind; targets that do
+// not pass are refused with an error matching ErrInvalidModelRouterTargets.
 func (s *RDBConfigStore) SetModelRouterTargets(ctx context.Context, routerID string, targets []tables.TableModelRouterTarget, tx ...*gorm.DB) error {
 	routerID = strings.TrimSpace(routerID)
-	if err := ValidateModelRouterTargets(targets); err != nil {
-		return err
-	}
 	return s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
 		row, err := s.lockModelRouterRow(ctx, txDB, routerID)
 		if err != nil {
@@ -159,6 +221,9 @@ func (s *RDBConfigStore) SetModelRouterTargets(ctx context.Context, routerID str
 		}
 		if row == nil {
 			return ErrNotFound
+		}
+		if err := ValidateModelRouterTargets(row.Mode, targets); err != nil {
+			return &modelRouterTargetsError{err: err}
 		}
 		return writeModelRouterTargets(ctx, txDB, routerID, targets)
 	})

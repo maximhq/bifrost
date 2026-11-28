@@ -264,16 +264,65 @@ func TestModelRouterConfigSkipsBadEntries(t *testing.T) {
 		routerJSON("support", " ", `"description":"invalid, no name"`, "x-simple", "x-medium", "x-complex")+","+
 		routerJSON("support", "Support", `"description":"first"`, "a-simple", "a-medium", "a-complex")+","+
 		routerJSON("support", "Support again", `"description":"second"`, "b-simple", "b-medium", "b-complex")+","+
-		routerJSON("bad id!", "Bad", "", "c-simple", "c-medium", "c-complex")+","+
+		routerJSON("defaults", "Reserved id", "", "c-simple", "c-medium", "c-complex")+","+
+		routerJSON("weighted", "Unknown mode", `"mode":"weighted"`, "e-simple", "e-medium", "e-complex")+","+
 		routerJSON("general", "General", "", "d-simple", "d-medium", "d-complex")+
 		`]}`)
 
 	support, err := store.GetModelRouter(ctx, "support")
 	require.NoError(t, err)
 	assert.Equal(t, "first", support.Description)
-	requireModelRouterAbsent(t, store, "bad id!")
+	requireModelRouterAbsent(t, store, "defaults")
+	requireModelRouterAbsent(t, store, "weighted")
 	_, err = store.GetModelRouter(ctx, "general")
 	require.NoError(t, err, "the entries after a bad one still apply")
+}
+
+// TestModelRouterConfigConditionalRouters pins a conditional router declared
+// in config.json: it needs no classifier settings, its targets name no tier,
+// its routing can chain, and its id may carry characters a routing rule's id
+// may, so a rule keeps its id when it becomes a router. A classifier router's
+// routing can pass on a request it has no model for, and its targets can
+// carry a first-token deadline.
+func TestModelRouterConfigConditionalRouters(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+
+	bootFromJSON(t, store, `{"model_routers":[`+
+		`{"id":"fast lane/eu","name":"Fast lane","mode":"conditional",`+
+		`"targets":[{"provider":"openai","model":"gpt-4o-mini","weight":0.75,"ttft_timeout_ms":1500},{"weight":0.25,"fallbacks":["anthropic/claude-sonnet"]}],`+
+		`"routing":{"enabled":true,"scope":"global","cel_expression":"model == \"gpt-4o\"","priority":0,"chain":true}},`+
+		routerJSON("support", "Support", `"targets":[{"tier":"SIMPLE","model":"gpt-4o-mini","weight":1,"ttft_timeout_ms":900}],`+
+			`"routing":{"enabled":true,"scope":"global","priority":1,"empty_target":"next_router"}`, "s", "m", "c")+","+
+		`{"id":"tiered","name":"Tiered","mode":"conditional","targets":[{"tier":"SIMPLE","model":"m","weight":1}]}`+
+		`]}`)
+
+	fast, err := store.GetModelRouter(ctx, "fast lane/eu")
+	require.NoError(t, err)
+	assert.Equal(t, tables.ModelRouterModeConditional, fast.Mode)
+	assert.Equal(t, configstore.ComplexityAnalyzerConfig{}, fast.ComplexityAnalyzerConfig, "a conditional router stores no classifier settings")
+	require.Len(t, fast.Targets, 2)
+	assert.Equal(t, "gpt-4o-mini", *fast.Targets[0].Model)
+	require.NotNil(t, fast.Targets[0].TTFTTimeoutMs)
+	assert.Equal(t, 1500, *fast.Targets[0].TTFTTimeoutMs)
+	assert.Nil(t, fast.Targets[1].Provider, "the second target keeps the request's provider and model")
+	assert.Nil(t, fast.Targets[1].Model)
+	require.Len(t, fast.Targets[1].ParsedFallbacks, 1)
+	require.NotNil(t, fast.Routing)
+	assert.True(t, fast.Routing.Chain)
+	assert.Empty(t, fast.Routing.EmptyTarget)
+
+	support, err := store.GetModelRouter(ctx, "support")
+	require.NoError(t, err)
+	assert.Equal(t, tables.ModelRouterModeClassifier, support.Mode, "an entry without a mode is a classifier")
+	require.NotNil(t, support.Routing)
+	assert.Equal(t, tables.ModelRouterEmptyTargetNextRouter, support.Routing.EmptyTarget)
+	require.Len(t, support.Targets, 1)
+	require.NotNil(t, support.Targets[0].TTFTTimeoutMs)
+	assert.Equal(t, 900, *support.Targets[0].TTFTTimeoutMs)
+
+	requireModelRouterAbsent(t, store, "tiered")
 }
 
 // TestModelRouterConfigReplacesUnreadableRouter pins that a router whose stored
@@ -323,13 +372,28 @@ func TestModelRouterConfigSchema(t *testing.T) {
 			`"targets":[{"tier":"COMPLEX","provider":"anthropic","model":"claude-opus","weight":0.5,"fallbacks":["openai/gpt-4o"]},{"tier":"COMPLEX","provider":"anthropic","model":"claude-sonnet","weight":0.5}],`+
 			`"routing":{"enabled":true,"scope":"team","scope_id":"team-1","cel_expression":"model == \"support-assistant\"","query":{"combinator":"and","rules":[]},"priority":2}`, "s", "m", "c") + "," +
 		routerJSON("llm-router", "LLM", `"classifier":"llm","llm":{"provider":"openai","model":"gpt-4o-mini"},"session":{"enabled":true}`, "s", "m", "c") + "," +
-		routerJSON("suggested", "Suggested", semantic+`,"suggestions":{"enabled":true,"provider":"openai","model":"gpt-4.1-mini","lookback_days":7}`, "s", "m", "c") +
+		routerJSON("suggested", "Suggested", semantic+`,"suggestions":{"enabled":true,"provider":"openai","model":"gpt-4.1-mini","lookback_days":7}`, "s", "m", "c") + "," +
+		// An id may carry any character, as a routing rule's may.
+		routerJSON("support desk/eu", "Support EU", `"mode":"classifier","targets":[{"tier":"SIMPLE","weight":1,"ttft_timeout_ms":1500}],`+
+			`"routing":{"scope":"global","priority":3,"chain":true,"empty_target":"next_router"}`, "s", "m", "c") + "," +
+		// A conditional router needs no classifier settings, and its targets name no tier.
+		`{"id":"fast-lane","name":"Fast lane","mode":"conditional",` +
+		`"targets":[{"provider":"openai","model":"gpt-4o-mini","weight":0.5},{"weight":0.5,"fallbacks":["anthropic/claude-sonnet"]}],` +
+		`"routing":{"enabled":true,"scope":"global","priority":4,"chain":true}}` +
 		`]}`
 	require.NoError(t, ValidateConfigSchema([]byte(valid), schema))
 
 	invalid := map[string]string{
 		"list under governance":                   `{"governance":{"model_routers":[` + routerJSON("support", "Support", "", "s", "m", "c") + `]}}`,
-		"id with a space":                         `{"model_routers":[` + routerJSON("support desk", "Support", "", "s", "m", "c") + `]}`,
+		"whitespace-only id":                      `{"model_routers":[` + routerJSON("  ", "Support", "", "s", "m", "c") + `]}`,
+		"id longer than 255 characters":           `{"model_routers":[` + routerJSON(strings.Repeat("a", 256), "Support", "", "s", "m", "c") + `]}`,
+		"unknown mode":                            `{"model_routers":[` + routerJSON("support", "Support", `"mode":"weighted"`, "s", "m", "c") + `]}`,
+		"unknown empty_target":                    `{"model_routers":[` + routerJSON("support", "Support", `"routing":{"scope":"global","empty_target":"skip"}`, "s", "m", "c") + `]}`,
+		"classifier router without phrases":       `{"model_routers":[{"id":"support","name":"Support"}]}`,
+		"classifier target without a tier":        `{"model_routers":[` + routerJSON("support", "Support", `"targets":[{"model":"m","weight":1}]`, "s", "m", "c") + `]}`,
+		"conditional target with a tier":          `{"model_routers":[{"id":"fast-lane","name":"Fast lane","mode":"conditional","targets":[{"tier":"SIMPLE","model":"m","weight":1}]}]}`,
+		"first-token deadline of zero":            `{"model_routers":[` + routerJSON("support", "Support", `"targets":[{"tier":"SIMPLE","model":"m","weight":1,"ttft_timeout_ms":0}]`, "s", "m", "c") + `]}`,
+		"first-token deadline too long":           `{"model_routers":[` + routerJSON("support", "Support", `"targets":[{"tier":"SIMPLE","model":"m","weight":1,"ttft_timeout_ms":300001}]`, "s", "m", "c") + `]}`,
 		"missing name":                            `{"model_routers":[{"id":"support","keywords":{"simple_keywords":["s"],"medium_keywords":["m"],"complex_keywords":["c"]}}]}`,
 		"whitespace-only name":                    `{"model_routers":[` + routerJSON("support", "  ", "", "s", "m", "c") + `]}`,
 		"reserved id":                             `{"model_routers":[` + routerJSON("defaults", "Defaults", "", "s", "m", "c") + `]}`,
@@ -549,6 +613,64 @@ func TestModelRouterConfigFallbackKeyNames(t *testing.T) {
 
 	boot("billing", "Billing", withFallback(`{"provider":"anthropic","provider_key_name":"Missing"}`))
 	requireModelRouterAbsent(t, store, "billing")
+}
+
+// TestModelRouterConfigTargetKeyNames pins that a target's own
+// provider_key_name is resolved to its key_id at load, as a routing rule
+// target's is, and only the key_id is stored; that a changed key name is a
+// changed entry; that two targets on one provider and model may each name a
+// key; and that a name that does not resolve, a name beside a key_id, or a
+// name without a provider skips the router entry.
+func TestModelRouterConfigTargetKeyNames(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	require.NoError(t, addProviderWithKeys(ctx, store, schemas.Anthropic, configstore.ProviderConfig{}, []schemas.Key{
+		{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "k-anthropic-backup", Name: "Anthropic Backup", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}))
+	boot := func(id, name, targets string) {
+		bootFromJSON(t, store, `{"model_routers":[`+routerJSON(id, name, `"targets":[`+targets+`]`, "s", "m", "c")+`]}`)
+	}
+	named := func(keyName string, weight string) string {
+		return `{"tier":"SIMPLE","provider":"anthropic","model":"claude-sonnet-4","provider_key_name":"` + keyName + `","weight":` + weight + `}`
+	}
+	keyIDs := func(id string) []string {
+		router, err := store.GetModelRouter(ctx, id)
+		require.NoError(t, err)
+		ids := make([]string, 0, len(router.Targets))
+		for _, target := range router.Targets {
+			assert.Nil(t, target.ProviderKeyName, "the config-only alias is not stored")
+			require.NotNil(t, target.KeyID)
+			ids = append(ids, *target.KeyID)
+		}
+		return ids
+	}
+
+	boot("support", "Support", named("Anthropic Prod", "1"))
+	assert.Equal(t, []string{"k-anthropic-prod"}, keyIDs("support"))
+
+	boot("support", "Support", named("Anthropic Backup", "1"))
+	assert.Equal(t, []string{"k-anthropic-backup"}, keyIDs("support"), "a changed key name is a changed entry")
+
+	boot("support", "Support", named("Anthropic Prod", "0.5")+","+named("Anthropic Backup", "0.5"))
+	assert.ElementsMatch(t, []string{"k-anthropic-prod", "k-anthropic-backup"}, keyIDs("support"),
+		"two targets on one provider and model, each naming a key, are two targets")
+
+	refused := map[string]string{
+		"a name that does not resolve": named("Missing", "1"),
+		"a name beside a key_id":       `{"tier":"SIMPLE","provider":"anthropic","model":"claude-sonnet-4","provider_key_name":"Anthropic Prod","key_id":"k-anthropic-prod","weight":1}`,
+		"a name without a provider":    `{"tier":"SIMPLE","model":"claude-sonnet-4","provider_key_name":"Anthropic Prod","weight":1}`,
+	}
+	for name, targets := range refused {
+		t.Run(name, func(t *testing.T) {
+			boot("support", "Support desk", targets)
+			router, err := store.GetModelRouter(ctx, "support")
+			require.NoError(t, err)
+			assert.Equal(t, "Support", router.Name, "the entry is skipped whole")
+			assert.Len(t, router.Targets, 2, "and the stored targets are left as they were")
+		})
+	}
 }
 
 // TestModelRouterConfigFallbackKeyRotation pins that a fallback pinned by
@@ -1277,12 +1399,13 @@ func TestModelRouterConfigSplitModeDashboardTargetsPerEntry(t *testing.T) {
 	assert.ElementsMatch(t, []string{"sales-medium", "sales-medium-2"}, storedModelRouter(t, store, "sales").Keywords.MediumKeywords, "the added phrase is merged in")
 }
 
-// TestModelRouterConfigDuplicateName pins what an operator gets when two
-// entries share a name under different ids, which the schema cannot check:
-// names are unique across routers, so the entry declared first is kept and the
-// later one is skipped whole, on every boot, while the entries around it load
-// with the targets and routing they declare. A name a dashboard router
-// already holds is refused the same way, and that router is left as it was.
+// TestModelRouterConfigDuplicateName pins that config.json does not compare
+// names. Two entries that share a name under different ids both load, on every
+// boot, with the targets and routing each declares, and an entry whose name a
+// dashboard router already holds loads beside it and leaves that router as it
+// was. Routing rules may share a name, and each keeps its name when it becomes
+// a router, so the file is not where names are kept apart: the dashboard and
+// the API do that, within a scope.
 func TestModelRouterConfigDuplicateName(t *testing.T) {
 	initTestLogger()
 	entries := []string{
@@ -1300,12 +1423,16 @@ func TestModelRouterConfigDuplicateName(t *testing.T) {
 				bootModelRouters(t, store, mode.prefix, entries...)
 
 				support := storedModelRouter(t, store, "support")
-				assert.Equal(t, "first", support.Description, "boot %d: the entry declared first keeps the name", boot)
+				assert.Equal(t, "first", support.Description, "boot %d", boot)
 				assert.Equal(t, 1, support.Routing.Priority)
 				assert.Equal(t, []string{"SIMPLE openai/gpt-4o-mini 1"}, storedTargetModels(t, store, "support"))
-				requireModelRouterAbsent(t, store, "support-eu")
+				supportEU := storedModelRouter(t, store, "support-eu")
+				assert.Equal(t, "Support", supportEU.Name, "boot %d: the second entry keeps the name it shares", boot)
+				assert.Equal(t, "second", supportEU.Description)
+				assert.Equal(t, 2, supportEU.Routing.Priority)
+				assert.Equal(t, []string{"SIMPLE openai/gpt-4.1-nano 1"}, storedTargetModels(t, store, "support-eu"))
 				general := storedModelRouter(t, store, "general")
-				assert.Equal(t, 3, general.Routing.Priority, "boot %d: the entry after the skipped one still loads", boot)
+				assert.Equal(t, 3, general.Routing.Priority, "boot %d", boot)
 				assert.True(t, general.Routing.Enabled)
 				assert.Equal(t, []string{"COMPLEX anthropic/claude-opus 1"}, storedTargetModels(t, store, "general"))
 			}
@@ -1322,8 +1449,8 @@ func TestModelRouterConfigDuplicateName(t *testing.T) {
 
 		bootModelRouters(t, store, `{`, entries[0], entries[2])
 
-		requireModelRouterAbsent(t, store, "support")
-		assert.Equal(t, dashboard, storedModelRouterRow(t, store, "dashboard"), "the router that holds the name is left as it was")
+		assert.Equal(t, "Support", storedModelRouter(t, store, "support").Name, "the entry loads beside the dashboard router that shares its name")
+		assert.Equal(t, dashboard, storedModelRouterRow(t, store, "dashboard"), "the dashboard router is left as it was")
 		assert.Equal(t, 3, storedModelRouter(t, store, "general").Routing.Priority)
 	})
 }

@@ -120,12 +120,11 @@ func TestModelRouterTargetsNeedASavedRouter(t *testing.T) {
 	assert.Zero(t, rows, "no router row is created")
 }
 
-// TestValidateModelRouterTargets pins what targets are checked for before
-// they are stored.
+// TestValidateModelRouterTargets pins what a classifier router's targets are
+// checked for before they are stored.
 func TestValidateModelRouterTargets(t *testing.T) {
 	cases := map[string]func(targets []tables.TableModelRouterTarget){
-		"unknown tier":           func(ts []tables.TableModelRouterTarget) { ts[0].Tier = "HARD" },
-		"target changes nothing": func(ts []tables.TableModelRouterTarget) { ts[0].Provider, ts[0].Model = nil, nil },
+		"unknown tier": func(ts []tables.TableModelRouterTarget) { ts[0].Tier = "HARD" },
 		"key without provider": func(ts []tables.TableModelRouterTarget) {
 			ts[0].Provider, ts[0].KeyID = nil, bifrost.Ptr("key-1")
 		},
@@ -140,10 +139,10 @@ func TestValidateModelRouterTargets(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			targets := testModelRouterTargets()
 			mutate(targets)
-			require.Error(t, ValidateModelRouterTargets(targets))
+			require.Error(t, ValidateModelRouterTargets(tables.ModelRouterModeClassifier, targets))
 		})
 	}
-	assert.NoError(t, ValidateModelRouterTargets(nil), "no targets is valid")
+	assert.NoError(t, ValidateModelRouterTargets(tables.ModelRouterModeClassifier, nil), "no targets is valid")
 }
 
 // TestGenerateModelRouterHashTargets pins that a config.json router entry's
@@ -282,7 +281,7 @@ func TestValidateModelRouterTargetsDuplicates(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateModelRouterTargets(tc.targets)
+			err := ValidateModelRouterTargets(tables.ModelRouterModeClassifier, tc.targets)
 			if tc.duplicate {
 				require.ErrorContains(t, err, "duplicate target for tier SIMPLE")
 				return
@@ -323,7 +322,7 @@ func TestValidateModelRouterTargetsWeights(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateModelRouterTargets(tc.targets)
+			err := ValidateModelRouterTargets(tables.ModelRouterModeClassifier, tc.targets)
 			if tc.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -336,14 +335,15 @@ func TestValidateModelRouterTargetsWeights(t *testing.T) {
 // TestValidateModelRouterTargetsShapes pins which targets are well formed
 // beyond the cases TestValidateModelRouterTargets refuses: a tier typed in any
 // letter case or with padding is upper-cased, a provider on its own (with or
-// without a pinned key) is a target, and a blank string counts as unset.
+// without a pinned key) is a target, a blank string counts as unset, and a
+// target that names neither a provider nor a model keeps the request's own.
 func TestValidateModelRouterTargetsShapes(t *testing.T) {
 	t.Run("a padded or mixed-case tier is upper-cased in place", func(t *testing.T) {
 		targets := []tables.TableModelRouterTarget{
 			testModelRouterTarget(" Complex ", "openai", "gpt-5", "", 1),
 			testModelRouterTarget("\tsimple\n", "openai", "gpt-4o-mini", "", 1),
 		}
-		require.NoError(t, ValidateModelRouterTargets(targets))
+		require.NoError(t, ValidateModelRouterTargets(tables.ModelRouterModeClassifier, targets))
 		assert.Equal(t, tables.ModelRouterTierComplex, targets[0].Tier)
 		assert.Equal(t, tables.ModelRouterTierSimple, targets[1].Tier)
 	})
@@ -353,23 +353,27 @@ func TestValidateModelRouterTargetsShapes(t *testing.T) {
 		"provider with a pinned key": testModelRouterTarget("SIMPLE", "openai", "", "key-1", 1),
 		"a key-pinned fallback": {Tier: "SIMPLE", Model: bifrost.Ptr("gpt-4o"), Weight: 1,
 			ParsedFallbacks: []tables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "anthropic", Model: "claude-sonnet", KeyID: "key-1"}}}},
+		"neither provider nor model": testModelRouterTarget("SIMPLE", "", "", "", 1),
+		"a blank provider and model": {Tier: "SIMPLE", Provider: bifrost.Ptr("  "), Model: bifrost.Ptr(""), Weight: 1},
+		"keeping the model, with a fallback": {Tier: "SIMPLE", Weight: 1,
+			ParsedFallbacks: []tables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "anthropic", Model: "claude-sonnet"}}}},
 	}
 	for name, target := range valid {
 		t.Run(name, func(t *testing.T) {
-			require.NoError(t, ValidateModelRouterTargets([]tables.TableModelRouterTarget{target}))
+			require.NoError(t, ValidateModelRouterTargets(tables.ModelRouterModeClassifier, []tables.TableModelRouterTarget{target}))
 		})
 	}
 
 	invalid := map[string]tables.TableModelRouterTarget{
-		"blank provider and model":  {Tier: "SIMPLE", Provider: bifrost.Ptr("  "), Model: bifrost.Ptr(""), Weight: 1},
-		"key with a blank provider": {Tier: "SIMPLE", Provider: bifrost.Ptr(" "), Model: bifrost.Ptr("gpt-4o"), KeyID: bifrost.Ptr("key-1"), Weight: 1},
-		"blank tier":                testModelRouterTarget("  ", "openai", "gpt-4o", "", 1),
+		"key with a blank provider":           {Tier: "SIMPLE", Provider: bifrost.Ptr(" "), Model: bifrost.Ptr("gpt-4o"), KeyID: bifrost.Ptr("key-1"), Weight: 1},
+		"key with neither provider nor model": {Tier: "SIMPLE", KeyID: bifrost.Ptr("key-1"), Weight: 1},
+		"blank tier":                          testModelRouterTarget("  ", "openai", "gpt-4o", "", 1),
 		"fallback without a provider": {Tier: "SIMPLE", Model: bifrost.Ptr("gpt-4o"), Weight: 1,
 			ParsedFallbacks: []tables.RoutingFallback{{Fallback: schemas.Fallback{Model: "gpt-4o"}}}},
 	}
 	for name, target := range invalid {
 		t.Run(name, func(t *testing.T) {
-			require.Error(t, ValidateModelRouterTargets([]tables.TableModelRouterTarget{target}))
+			require.Error(t, ValidateModelRouterTargets(tables.ModelRouterModeClassifier, []tables.TableModelRouterTarget{target}))
 		})
 	}
 
@@ -387,6 +391,112 @@ func TestValidateModelRouterTargetsShapes(t *testing.T) {
 		assert.Nil(t, got[0].KeyID)
 		assert.Nil(t, got[1].Provider, "a model-only target keeps the request's provider")
 	})
+}
+
+// TestValidateModelRouterTargetsConditional pins a conditional router's
+// targets: they name no tier and are one group, so their weights sum to 1
+// together and a provider and model may appear once, and a target may keep
+// the request's model as a routing rule's can.
+func TestValidateModelRouterTargetsConditional(t *testing.T) {
+	conditional := tables.ModelRouterModeConditional
+	valid := map[string][]tables.TableModelRouterTarget{
+		"one target":          {testModelRouterTarget("", "openai", "gpt-4o", "", 1)},
+		"a weighted split":    {testModelRouterTarget("", "openai", "gpt-4o", "", 0.7), testModelRouterTarget("", "anthropic", "claude-sonnet", "", 0.3)},
+		"keeping the model":   {testModelRouterTarget("", "", "", "", 1)},
+		"a padded blank tier": {testModelRouterTarget("  ", "openai", "gpt-4o", "", 1)},
+		"no targets":          nil,
+	}
+	for name, targets := range valid {
+		t.Run(name, func(t *testing.T) {
+			require.NoError(t, ValidateModelRouterTargets(conditional, targets))
+		})
+	}
+
+	invalid := map[string]struct {
+		targets []tables.TableModelRouterTarget
+		wantErr string
+	}{
+		"a tier": {[]tables.TableModelRouterTarget{testModelRouterTarget("SIMPLE", "openai", "gpt-4o", "", 1)},
+			"a conditional router's targets take no tier"},
+		"weights that do not sum": {[]tables.TableModelRouterTarget{testModelRouterTarget("", "openai", "gpt-4o", "", 0.5)},
+			"target weights must sum to 1"},
+		"the same target twice": {[]tables.TableModelRouterTarget{
+			testModelRouterTarget("", "openai", "gpt-4o", "", 0.5), testModelRouterTarget("", "OpenAI", "gpt-4o", "", 0.5)},
+			"duplicate target: provider"},
+		"keeping the model twice": {[]tables.TableModelRouterTarget{
+			testModelRouterTarget("", "", "", "", 0.5), testModelRouterTarget("", "", "", "", 0.5)},
+			"duplicate target: provider"},
+	}
+	for name, tc := range invalid {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorContains(t, ValidateModelRouterTargets(conditional, tc.targets), tc.wantErr)
+		})
+	}
+
+	t.Run("a classifier router refuses a target without a tier", func(t *testing.T) {
+		err := ValidateModelRouterTargets(tables.ModelRouterModeClassifier, []tables.TableModelRouterTarget{testModelRouterTarget("", "openai", "gpt-4o", "", 1)})
+		require.ErrorContains(t, err, "tier must be SIMPLE, MEDIUM or COMPLEX")
+	})
+	t.Run("an empty mode is a classifier's", func(t *testing.T) {
+		require.Error(t, ValidateModelRouterTargets("", []tables.TableModelRouterTarget{testModelRouterTarget("", "openai", "gpt-4o", "", 1)}))
+		require.NoError(t, ValidateModelRouterTargets("", []tables.TableModelRouterTarget{testModelRouterTarget("SIMPLE", "openai", "gpt-4o", "", 1)}))
+	})
+
+	t.Run("the store checks targets against the stored router's mode", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		router := testModelRouter("fast-lane", "Fast lane")
+		router.Mode = conditional
+		require.NoError(t, store.CreateModelRouter(ctx, router))
+		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
+
+		require.Error(t, store.SetModelRouterTargets(ctx, "fast-lane", testModelRouterTargets()), "tiered targets do not fit a conditional router")
+		require.NoError(t, store.SetModelRouterTargets(ctx, "fast-lane", []tables.TableModelRouterTarget{
+			testModelRouterTarget("", "openai", "gpt-4o", "", 0.6),
+			testModelRouterTarget("", "", "", "", 0.4),
+		}))
+		assert.Equal(t, []string{" openai/gpt-4o@ 0.6", " /@ 0.4"}, describeModelRouterTargets(storedModelRouterTargets(t, store, "fast-lane")))
+		require.Error(t, store.SetModelRouterTargets(ctx, "support", []tables.TableModelRouterTarget{testModelRouterTarget("", "openai", "gpt-4o", "", 1)}),
+			"a target without a tier does not fit a classifier router")
+	})
+}
+
+// TestModelRouterTargetFirstTokenDeadline pins a target's first-token
+// deadline: optional, at most five minutes, 0 stored as none, kept through a
+// save, and part of a config.json entry's hash only when a target sets one.
+func TestModelRouterTargetFirstTokenDeadline(t *testing.T) {
+	withDeadline := func(ms int) []tables.TableModelRouterTarget {
+		target := testModelRouterTarget("SIMPLE", "openai", "gpt-4o", "", 1)
+		target.TTFTTimeoutMs = bifrost.Ptr(ms)
+		return []tables.TableModelRouterTarget{target}
+	}
+	for _, ms := range []int{1, 1500, maxModelRouterTTFTTimeoutMs} {
+		require.NoError(t, ValidateModelRouterTargets(tables.ModelRouterModeClassifier, withDeadline(ms)), "%d ms is in range", ms)
+	}
+	for _, ms := range []int{-1, maxModelRouterTTFTTimeoutMs + 1} {
+		require.ErrorContains(t, ValidateModelRouterTargets(tables.ModelRouterModeClassifier, withDeadline(ms)), "ttft_timeout_ms must be between", "%d ms is out of range", ms)
+	}
+	zero := withDeadline(0)
+	require.NoError(t, ValidateModelRouterTargets(tables.ModelRouterModeClassifier, zero))
+	assert.Nil(t, zero[0].TTFTTimeoutMs, "0 means no deadline and is stored as none")
+
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
+	require.NoError(t, store.SetModelRouterTargets(ctx, "support", withDeadline(2000)))
+	got := storedModelRouterTargets(t, store, "support")
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].TTFTTimeoutMs)
+	assert.Equal(t, 2000, *got[0].TTFTTimeoutMs)
+
+	bare := *testModelRouter("support", "Support")
+	bare.Targets = []tables.TableModelRouterTarget{testModelRouterTarget("SIMPLE", "openai", "gpt-4o", "", 1)}
+	unset := bare
+	unset.Targets = withDeadline(0)
+	set := bare
+	set.Targets = withDeadline(2000)
+	assert.Equal(t, GenerateModelRouterHash(bare), GenerateModelRouterHash(unset), "a target without a deadline hashes as it did before deadlines existed")
+	assert.NotEqual(t, GenerateModelRouterHash(bare), GenerateModelRouterHash(set))
 }
 
 // TestModelRouterTargetsReadOrder pins that targets always read back in the

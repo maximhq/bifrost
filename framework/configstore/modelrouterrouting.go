@@ -14,16 +14,28 @@ import (
 	"gorm.io/gorm"
 )
 
-// ModelRouterRouting decides which requests a model router takes.
+// ModelRouterRouting decides which requests a model router takes, and what
+// the walk does once it has.
 //
 // Routers are tried after the routing rules, on the request as the routing
 // rules left it. They are walked in the routing rules' scope order (virtual
-// key, user, team, customer, global) and by priority within a scope, and the
-// first enabled router whose condition holds classifies the request; no other
-// router is tried. A router's routing is saved on its own, by
-// SetModelRouterRouting, so saving its classifier never changes which requests
-// reach it. The store does not compile CelExpression: callers check it with
-// the routing plugin's rules package first.
+// key, user, team, customer, global) and by priority within a scope. An
+// enabled router whose condition holds takes the request: a conditional
+// router applies one of its targets, and a classifier router classifies the
+// request and applies its target for that tier. A router that applies a
+// target ends the walk, unless Chain is set, which walks the routers again
+// from the top on the request as the router left it. A conditional router
+// that applies none passes the request to the next router. A classifier
+// router that applies none, because it produced no tier or has no target for
+// it, ends the walk with the request unchanged, unless EmptyTarget is
+// "next_router", which passes the request on instead. A routing that does not
+// say keeps the request's model, as every router did before the setting
+// existed.
+//
+// A router's routing is saved on its own, by SetModelRouterRouting, so saving
+// its classifier never changes which requests reach it. The store does not
+// compile CelExpression: callers check it with the routing plugin's rules
+// package first.
 type ModelRouterRouting struct {
 	Enabled       bool           `json:"enabled"`
 	Scope         string         `json:"scope"`                    // "global" | "team" | "customer" | "virtual_key" | "user"
@@ -31,6 +43,8 @@ type ModelRouterRouting struct {
 	CelExpression string         `json:"cel_expression,omitempty"` // narrows the requests in scope; empty takes all; may not use complexity_tier
 	Query         map[string]any `json:"query,omitempty"`          // the dashboard's condition builder state; never evaluated
 	Priority      int            `json:"priority"`                 // lower is tried first within a scope
+	Chain         bool           `json:"chain,omitempty"`          // walk the routers again after this one applies a target
+	EmptyTarget   string         `json:"empty_target,omitempty"`   // classifier routers: "next_router" passes on a request with no target; empty is "original_model"
 }
 
 // ErrModelRouterPriorityTaken is returned when another router in the same
@@ -50,14 +64,20 @@ var validModelRouterScopes = map[string]bool{
 
 // ValidateModelRouterRouting checks a router's routing on its own and
 // normalizes it in place: an empty scope is global, a global scope drops its
-// scope ID, and the scope ID and condition are trimmed. Whether the scope's
-// entity exists, and whether the condition compiles, are the caller's checks.
+// scope ID, the scope ID and condition are trimmed, and EmptyTarget is read as
+// normalizeModelRouterEmptyTarget reads it. Whether the scope's entity exists,
+// and whether the condition compiles, are the caller's checks.
 func ValidateModelRouterRouting(routing *ModelRouterRouting) error {
 	if routing == nil {
 		return fmt.Errorf("model router routing is nil")
 	}
 	routing.Scope = strings.TrimSpace(routing.Scope)
 	routing.CelExpression = strings.TrimSpace(routing.CelExpression)
+	emptyTarget, err := normalizeModelRouterEmptyTarget(routing.EmptyTarget)
+	if err != nil {
+		return err
+	}
+	routing.EmptyTarget = emptyTarget
 	if routing.Scope == "" {
 		routing.Scope = "global"
 	}
@@ -78,16 +98,44 @@ func ValidateModelRouterRouting(routing *ModelRouterRouting) error {
 	return nil
 }
 
+// normalizeModelRouterEmptyTarget reads an empty_target value in any letter
+// case. Keeping the request's model is what a routing that names no value
+// means, and what every router did before the setting existed, so
+// "original_model" is stored and returned as the empty value: a router that keeps
+// its requests reads the same whether or not it was saved with the setting.
+func normalizeModelRouterEmptyTarget(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", tables.ModelRouterEmptyTargetOriginalModel:
+		return "", nil
+	case tables.ModelRouterEmptyTargetNextRouter:
+		return tables.ModelRouterEmptyTargetNextRouter, nil
+	}
+	return "", fmt.Errorf("invalid empty_target %q: must be one of: next_router, original_model", value)
+}
+
 // writeModelRouterRoutingHash writes a router's routing into its config.json
 // hash. The condition builder state is left out: it is the dashboard's, and
-// never evaluated.
+// never evaluated. Chain and EmptyTarget are written only when they differ
+// from what a routing without them means, so the hash of an entry written
+// before they existed is unchanged.
 func writeModelRouterRoutingHash(h hash.Hash, routing ModelRouterRouting) {
 	writeHashField(h, "routing.enabled", strconv.FormatBool(routing.Enabled))
 	writeHashField(h, "routing.scope", routing.Scope)
 	writeHashField(h, "routing.scope_id", derefStr(routing.ScopeID))
 	writeHashField(h, "routing.cel_expression", routing.CelExpression)
 	writeHashField(h, "routing.priority", strconv.Itoa(routing.Priority))
+	if routing.Chain {
+		writeHashField(h, "routing.chain", "true")
+	}
+	if routing.EmptyTarget == tables.ModelRouterEmptyTargetNextRouter {
+		writeHashField(h, "routing.empty_target", routing.EmptyTarget)
+	}
 }
+
+// modelRouterRoutingColumns are the columns a routing write selects by name:
+// gorm's Updates skips zero values, and false, global and priority 0 are real
+// settings.
+var modelRouterRoutingColumns = []string{"enabled", "scope", "scope_id", "cel_expression", "query", "priority", "chain_router", "empty_target", "updated_at"}
 
 // setModelRouterRoutingColumns lays routing out on a router's row.
 func setModelRouterRoutingColumns(row *tables.TableModelRouter, routing ModelRouterRouting) error {
@@ -104,6 +152,11 @@ func setModelRouterRoutingColumns(row *tables.TableModelRouter, routing ModelRou
 		row.Query = bifrost.Ptr(string(data))
 	}
 	row.Priority = routing.Priority
+	row.ChainRouter = routing.Chain
+	row.EmptyTarget = routing.EmptyTarget
+	if row.EmptyTarget == tables.ModelRouterEmptyTargetOriginalModel {
+		row.EmptyTarget = ""
+	}
 	return nil
 }
 
@@ -117,6 +170,8 @@ func modelRouterRoutingFromRow(row *tables.TableModelRouter) *ModelRouterRouting
 		ScopeID:       row.ScopeID,
 		CelExpression: row.CelExpression,
 		Priority:      row.Priority,
+		Chain:         row.ChainRouter,
+		EmptyTarget:   row.EmptyTarget,
 	}
 	if routing.Scope == "" {
 		routing.Scope = "global"
@@ -214,7 +269,7 @@ func (s *RDBConfigStore) SetModelRouterRoutings(ctx context.Context, changes []M
 				return err
 			}
 			if err := txDB.WithContext(ctx).Model(row).
-				Select("enabled", "scope", "scope_id", "cel_expression", "query", "priority", "updated_at").
+				Select(modelRouterRoutingColumns).
 				Updates(row).Error; err != nil {
 				return err
 			}
@@ -269,10 +324,8 @@ func (s *RDBConfigStore) SetModelRouterRouting(ctx context.Context, routerID str
 		if err := setModelRouterRoutingColumns(row, routing); err != nil {
 			return err
 		}
-		// Selected by name: gorm's Updates skips zero values, and false, global
-		// and priority 0 are real settings.
 		return txDB.WithContext(ctx).Model(row).
-			Select("enabled", "scope", "scope_id", "cel_expression", "query", "priority", "updated_at").
+			Select(modelRouterRoutingColumns).
 			Updates(row).Error
 	})
 }

@@ -2,29 +2,59 @@ package tables
 
 import "time"
 
-// TableModelRouter stores one model router: a named complexity classifier with
-// its own phrases and settings, and the routing that decides which requests it
-// takes; its per-tier models live in model_router_targets. One column per
-// setting (lists and maps as JSON text). Each optional block (semantic,
+// Modes a model router runs in.
+const (
+	ModelRouterModeClassifier  = "classifier"  // classifies the request and routes it by tier
+	ModelRouterModeConditional = "conditional" // routes every request its condition takes to one target list
+)
+
+// What a classifier router does with a request it has no target for: it
+// produced no tier, or the tier has no target.
+const (
+	ModelRouterEmptyTargetOriginalModel = "original_model" // keeps the request's model and ends the walk
+	ModelRouterEmptyTargetNextRouter    = "next_router"    // passes the request to the next router
+)
+
+// NormalizeModelRouterMode reads a stored or submitted mode, taking an empty
+// one as classifier: routers saved before modes existed are classifiers.
+func NormalizeModelRouterMode(mode string) string {
+	if mode == "" {
+		return ModelRouterModeClassifier
+	}
+	return mode
+}
+
+// TableModelRouter stores one model router and the routing that decides which
+// requests it takes; its targets live in model_router_targets. A classifier
+// router is a named complexity classifier with its own phrases and settings;
+// a conditional router uses none of them and keeps their defaults. One column
+// per setting (lists and maps as JSON text). Each optional block (semantic,
 // decision, llm, session, suggestions) is present exactly when its anchor
 // column is non-NULL. No classifier column has a gorm default, since zero is
 // often a real setting; defaults come from the config's normalization. The
 // configstore package converts to and from the config type.
+//
+// Name carries no unique index: the store refuses a name another router in
+// the same scope holds when a router is created or renamed, and nothing else
+// compares names.
 type TableModelRouter struct {
-	ID          string `gorm:"primaryKey;type:varchar(64)" json:"id"`
-	Name        string `gorm:"type:varchar(255);not null;uniqueIndex:idx_model_router_name" json:"name"`
+	ID          string `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	Name        string `gorm:"type:varchar(255);not null" json:"name"`
 	Description string `gorm:"type:text" json:"description"`
-	Classifier  string `gorm:"type:varchar(20);not null" json:"classifier"` // "semantic", "decision" or "llm"
+	Mode        string `gorm:"type:varchar(20);not null;default:'classifier'" json:"mode"` // "classifier" or "conditional"; set when the router is created
+	Classifier  string `gorm:"type:varchar(20);not null" json:"classifier"`                // "semantic", "decision" or "llm"
 
-	// Routing: which requests the router takes, tried after the routing rules.
-	// These columns do carry defaults, each the value a router without routing
-	// gets, so they can be added to existing rows.
+	// Routing: which requests the router takes, and what the walk does after
+	// it. These columns do carry defaults, each the value a router without
+	// routing gets, so they can be added to existing rows.
 	Enabled       bool    `gorm:"not null;default:false" json:"-"`
 	Scope         string  `gorm:"type:varchar(50);not null;default:'global'" json:"-"` // "global" | "team" | "customer" | "virtual_key" | "user"
 	ScopeID       *string `gorm:"type:varchar(255)" json:"-"`                          // nil for global, otherwise the entity's id
 	CelExpression string  `gorm:"type:text" json:"-"`                                  // empty takes every request in scope
 	Query         *string `gorm:"type:text" json:"-"`                                  // the dashboard's condition builder state, JSON; never evaluated
 	Priority      int     `gorm:"not null;default:0" json:"-"`                         // lower is tried first within a scope
+	ChainRouter   bool    `gorm:"not null;default:false" json:"-"`                     // the routers are walked again after this one applies a target
+	EmptyTarget   string  `gorm:"type:varchar(20);not null;default:''" json:"-"`       // classifier routers: "next_router", or empty for original_model
 
 	// Deprecated lexical tier boundaries, still accepted and returned; zero reads as the default.
 	SimpleMediumBoundary  float64 `json:"-"`

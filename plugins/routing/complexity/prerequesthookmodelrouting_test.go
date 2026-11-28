@@ -3,6 +3,7 @@ package complexity_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -44,6 +45,29 @@ func modelRoutingDecision() *decisionRecorder {
 // given routing.
 func decisionModelRouter(id, name string, targets ...configstoreTables.TableModelRouterTarget) configstore.ModelRouter {
 	return configstore.ModelRouter{ID: id, Name: name, ComplexityAnalyzerConfig: *decisionAnalyzerTestConfig(), Targets: targets}
+}
+
+// conditionalRouter is a router that classifies nothing: it sends every
+// request its routing takes to the given targets, which name no tier, and
+// takes no requests until it is given routing.
+func conditionalRouter(id, name string, targets ...configstoreTables.TableModelRouterTarget) configstore.ModelRouter {
+	router := decisionModelRouter(id, name, targets...)
+	router.Mode = configstoreTables.ModelRouterModeConditional
+	return router
+}
+
+// chained makes a routing chain: the routers are walked again on what its
+// router chooses.
+func chained(routing *configstore.ModelRouterRouting) *configstore.ModelRouterRouting {
+	routing.Chain = true
+	return routing
+}
+
+// passingOn makes a routing pass a request its classifier router cannot place
+// to the next router, instead of keeping it.
+func passingOn(routing *configstore.ModelRouterRouting) *configstore.ModelRouterRouting {
+	routing.EmptyTarget = configstoreTables.ModelRouterEmptyTargetNextRouter
+	return routing
 }
 
 // globalRouting turns a router on for every request in the global scope that
@@ -393,19 +417,80 @@ func TestComplexityTierStaysWithTheComplexityConfig(t *testing.T) {
 	})
 }
 
-// TestModelRoutingSkipsLargePayload pins that a large payload, whose body is
-// not parsed, has no text for a router and skips the step.
-func TestModelRoutingSkipsLargePayload(t *testing.T) {
-	decision := modelRoutingDecision()
-	plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, nil, nil)
-	serveGeneralRouter(t, plugin, tierTarget(complexity.TierSimple, "anthropic", "claude-haiku"))
-	ctx := newRequestContext()
-	metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o"}
-	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, metadata)
-	require.NoError(t, plugin.PreRequestHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}))
-	assert.Equal(t, "gpt-4o", metadata.Model)
-	assert.Zero(t, decision.calls())
-	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID))
+// TestModelRoutingOnLargePayloads pins the step on a large payload, whose body
+// is not parsed. A conditional router routes it on its condition, as a routing
+// rule does. A classifier router has no text to classify, so it routes only on
+// a tier the session already remembers, and otherwise passes the request on
+// whatever its routing says: keeping it would end the walk on a request the
+// router never saw.
+func TestModelRoutingOnLargePayloads(t *testing.T) {
+	// routeLargePayload runs the hook on a large payload for gpt-4o and returns
+	// the model it ends on.
+	routeLargePayload := func(t *testing.T, plugin *routing.RoutingPlugin, ctx *schemas.BifrostContext) string {
+		t.Helper()
+		metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o"}
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, metadata)
+		require.NoError(t, plugin.PreRequestHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}))
+		return metadata.Model
+	}
+
+	t.Run("a classifier router with nothing remembered leaves it alone", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, nil, nil)
+		serveGeneralRouter(t, plugin, tierTarget(complexity.TierSimple, "anthropic", "claude-haiku"))
+		ctx := newRequestContext()
+		assert.Equal(t, "gpt-4o", routeLargePayload(t, plugin, ctx))
+		assert.Zero(t, decision.calls())
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID))
+		assert.NotContains(t, enginesUsed(ctx), schemas.RoutingEngineModelRouter)
+	})
+
+	t.Run("and passes it to the next router, though it keeps what it cannot place", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, nil, nil)
+		serveGeneralRouter(t, plugin, tierTarget(complexity.TierSimple, "anthropic", "claude-haiku"))
+		after := conditionalRouter("after", "After", tierTarget("", "", "gpt-4o-mini"))
+		after.Routing = globalRouting(1, "")
+		require.NoError(t, reloadRouter(plugin, &after))
+		ctx := newRequestContext()
+		assert.Equal(t, "gpt-4o-mini", routeLargePayload(t, plugin, ctx))
+		assert.Zero(t, decision.calls())
+		assert.Equal(t, "after", ctx.Value(schemas.BifrostContextKeyModelRouterID))
+	})
+
+	t.Run("a conditional router routes it on its condition", func(t *testing.T) {
+		mini := conditionalRouter("mini", "Mini", tierTarget("", "", "gpt-4o-mini"))
+		mini.Routing = globalRouting(0, `model == "gpt-4o"`)
+		other := conditionalRouter("other", "Other", tierTarget("", "", "never"))
+		other.Routing = globalRouting(1, `model == "claude-opus"`)
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{mini, other})
+		ctx := newRequestContext()
+		assert.Equal(t, "gpt-4o-mini", routeLargePayload(t, plugin, ctx))
+		assert.Equal(t, "mini", ctx.Value(schemas.BifrostContextKeyModelRouterID))
+	})
+
+	t.Run("a classifier router routes it on the tier the session remembers", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		a := decisionModelRouter("a", "A", everyTierTargets("a")...)
+		a.Routing = globalRouting(0, "")
+		plugin := modelRoutingTestPluginWithConfig(t, newTestKVStore(t), routing.NewMockGovernance(), decision.execute,
+			nil, []configstore.ModelRouter{a})
+
+		turn := complexitySessionContext("s1")
+		req := runPreRequest(t, plugin, turn, mediumText)
+		require.Equal(t, "a-medium", routedModel(req))
+		_, _, err := plugin.PostLLMHook(turn, servedChatResponse(), nil)
+		require.NoError(t, err)
+
+		large := complexitySessionContext("s1")
+		assert.Equal(t, "a-medium", routeLargePayload(t, plugin, large), "the session's turn stays on the model it started on")
+		assert.Equal(t, "a", large.Value(schemas.BifrostContextKeyModelRouterID))
+		assert.Equal(t, 1, decision.calls(), "nothing is classified on a large payload")
+
+		elsewhere := complexitySessionContext("s2")
+		assert.Equal(t, "gpt-4o", routeLargePayload(t, plugin, elsewhere), "another session remembers nothing")
+		assert.Equal(t, 1, decision.calls())
+	})
 }
 
 // TestModelRouterReloadAndRemove pins the plugin's router lifecycle: a reload
@@ -1047,11 +1132,13 @@ func TestRoutingRuleScopeAndRouterScopeAreIndependent(t *testing.T) {
 // Several model routers
 // ---------------------------------------------------------------------------
 
-// TestOnlyTheFirstMatchingRouterIsTried pins that exactly one router gets a
-// request. Once a router's routing matches, the request is its own: if it has
-// no model for the tier, or cannot classify the request, the request keeps
-// its model and the next router is not asked. Only a router whose condition
-// fails, or fails to evaluate, passes the request on.
+// TestOnlyTheFirstMatchingRouterIsTried pins that a classifier router keeps
+// the requests it takes unless its routing says otherwise. Once its routing
+// matches, the request is its own: if it has no model for the tier, or cannot
+// classify the request, the request keeps its model and the next router is
+// not asked. A router whose condition fails, or fails to evaluate, passes the
+// request on. TestClassifierRouterPassesARequestOnWhenToldTo covers the
+// routing that passes on a request the router cannot place.
 func TestOnlyTheFirstMatchingRouterIsTried(t *testing.T) {
 	second := decisionModelRouter("second", "Second", everyTierTargets("second")...)
 	second.Routing = globalRouting(1, "")
@@ -1100,6 +1187,263 @@ func TestOnlyTheFirstMatchingRouterIsTried(t *testing.T) {
 		req = runPreRequest(t, plugin, ctx, complexText)
 		assert.Equal(t, "first-complex", routedModel(req))
 	})
+}
+
+// TestClassifierRouterPassesARequestOnWhenToldTo pins the routing setting for
+// a request a classifier router cannot place. With it set, a router that has
+// no model for the tier, or produces no tier, passes the request to the next
+// router and is not recorded on it; the tiers it does have a model for stay
+// its own. A request no later router takes keeps its model.
+func TestClassifierRouterPassesARequestOnWhenToldTo(t *testing.T) {
+	second := decisionModelRouter("second", "Second", everyTierTargets("second")...)
+	second.Routing = globalRouting(1, "")
+
+	t.Run("no model for the tier", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		first := decisionModelRouter("first", "First", tierTarget(complexity.TierSimple, "", "first-simple"))
+		first.Routing = passingOn(globalRouting(0, ""))
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, nil, []configstore.ModelRouter{first, second})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		assert.Equal(t, "second-complex", routedModel(req))
+		assert.Equal(t, "second", ctx.Value(schemas.BifrostContextKeyModelRouterID), "a router that passes a request on is not recorded on it")
+		assert.Contains(t, routingLogs(ctx), "Model router 'First' has no model for tier=COMPLEX; trying the next router")
+
+		ctx = newRequestContext()
+		req = runPreRequest(t, plugin, ctx, simpleText)
+		assert.Equal(t, "first-simple", routedModel(req), "a tier the router has a model for is its own")
+		assert.Equal(t, "first", ctx.Value(schemas.BifrostContextKeyModelRouterID))
+	})
+
+	t.Run("no tier", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		decision.err = &schemas.BifrostError{Error: &schemas.ErrorField{Message: "decision model unavailable"}}
+		first := decisionModelRouter("first", "First", everyTierTargets("first")...)
+		first.Routing = passingOn(globalRouting(0, ""))
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, nil, []configstore.ModelRouter{first, second})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		assert.Equal(t, "gpt-4o", routedModel(req))
+		assert.Equal(t, "second", ctx.Value(schemas.BifrostContextKeyModelRouterID), "the second router keeps what it cannot place, and is the one recorded")
+		logs := routingLogs(ctx)
+		assert.Contains(t, logs, "Model router 'First' produced no tier; trying the next router")
+		assert.Contains(t, logs, "Model router 'Second' produced no tier; keeping provider=openai, model=gpt-4o")
+	})
+
+	t.Run("no later router takes it", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		only := decisionModelRouter("only", "Only", tierTarget(complexity.TierSimple, "", "only-simple"))
+		only.Routing = passingOn(globalRouting(0, ""))
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, nil, []configstore.ModelRouter{only})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		assert.Equal(t, "gpt-4o", routedModel(req))
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID))
+		assert.NotContains(t, enginesUsed(ctx), schemas.RoutingEngineModelRouter)
+		assert.Equal(t, complexity.TierComplex, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier), "the tier it classified is still recorded")
+	})
+}
+
+// TestConditionalRouterRoutesWithoutClassifying pins a conditional router: it
+// sends the requests its routing takes to its target, classifying nothing,
+// and is recorded on the request as a classifier router is. With no target it
+// passes the request to the next router, as a routing rule without one does.
+// A target that names neither a provider nor a model keeps the request's own
+// and still applies its fallbacks.
+func TestConditionalRouterRoutesWithoutClassifying(t *testing.T) {
+	t.Run("it routes on its condition alone", func(t *testing.T) {
+		governance := routing.NewMockGovernance()
+		decision := modelRoutingDecision()
+		fast := conditionalRouter("fast-lane", "Fast lane", tierTarget("", "anthropic", "claude-haiku"))
+		fast.Routing = globalRouting(0, `model == "gpt-4o"`)
+		plugin := modelRoutingTestPlugin(t, governance, decision, nil, []configstore.ModelRouter{fast})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		provider, model, _ := req.GetRequestFields()
+		assert.Equal(t, schemas.ModelProvider("anthropic"), provider)
+		assert.Equal(t, "claude-haiku", model)
+		assert.Equal(t, []string{"claude-haiku"}, governance.LoadBalancedModels, "load balancing sees the model the router chose")
+		assert.Zero(t, decision.calls(), "a conditional router classifies nothing")
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+		assert.Equal(t, "fast-lane", ctx.Value(schemas.BifrostContextKeyModelRouterID))
+		assert.Equal(t, "Fast lane", ctx.Value(schemas.BifrostContextKeyModelRouterName))
+		assert.Contains(t, enginesUsed(ctx), schemas.RoutingEngineModelRouter)
+		assert.Contains(t, routingLogs(ctx), "Model router 'Fast lane' → provider=anthropic, model=claude-haiku")
+	})
+
+	t.Run("it splits by weight across its targets", func(t *testing.T) {
+		heavy, light := tierTarget("", "", "heavy"), tierTarget("", "", "light")
+		heavy.Weight, light.Weight = 0.8, 0.2
+		split := conditionalRouter("split", "Split", heavy, light)
+		split.Routing = globalRouting(0, "")
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{split})
+
+		picked := map[string]int{}
+		for range 400 {
+			picked[routedModel(runPreRequest(t, plugin, newRequestContext(), complexText))]++
+		}
+		assert.Len(t, picked, 2, "both targets are picked")
+		assert.Greater(t, picked["heavy"], picked["light"])
+	})
+
+	t.Run("without a target it passes the request on", func(t *testing.T) {
+		empty := conditionalRouter("empty", "Empty")
+		empty.Routing = globalRouting(0, "")
+		second := decisionModelRouter("second", "Second", everyTierTargets("second")...)
+		second.Routing = globalRouting(1, "")
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{empty, second})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		assert.Equal(t, "second-complex", routedModel(req))
+		assert.Equal(t, "second", ctx.Value(schemas.BifrostContextKeyModelRouterID))
+		assert.Contains(t, routingLogs(ctx), "Model router 'Empty' has no target; trying the next router")
+	})
+
+	t.Run("a target can keep the request's provider and model", func(t *testing.T) {
+		keep := tierTarget("", "", "")
+		keep.ParsedFallbacks = []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-sonnet"}}}
+		guarded := conditionalRouter("guarded", "Guarded", keep)
+		guarded.Routing = globalRouting(0, "")
+		after := conditionalRouter("after", "After", tierTarget("", "", "never"))
+		after.Routing = globalRouting(1, "")
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{guarded, after})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		provider, model, fallbacks := req.GetRequestFields()
+		assert.Equal(t, schemas.OpenAI, provider)
+		assert.Equal(t, "gpt-4o", model)
+		assert.Equal(t, []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet"}}, fallbacks)
+		assert.Equal(t, "guarded", ctx.Value(schemas.BifrostContextKeyModelRouterID), "keeping the model is a choice, so the walk ends there")
+	})
+}
+
+// TestModelRouterChain pins chaining, which follows the rules a routing rule
+// with chain_rule does: the routers are walked again, from the top, on what a
+// chained router chose; a chained router fires once in a request, and routers
+// made from one routing rule fire as one; the walk repeats at most the
+// configured depth; and only the last router's key, fallbacks and first-token
+// deadline are applied, with a fallback that names no model keeping the model
+// the request arrived with.
+func TestModelRouterChain(t *testing.T) {
+	t.Run("a chained router's choice is walked again from the top", func(t *testing.T) {
+		// Ahead of the chained router in the walk, and matching only what it chooses.
+		reroute := conditionalRouter("reroute", "Reroute", tierTarget("", "anthropic", "claude-opus"))
+		reroute.Routing = globalRouting(0, `model == "gpt-4o-large"`)
+		upgrade := conditionalRouter("upgrade", "Upgrade", tierTarget("", "", "gpt-4o-large"))
+		upgrade.Routing = chained(globalRouting(1, `model == "gpt-4o"`))
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{reroute, upgrade})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		provider, model, _ := req.GetRequestFields()
+		assert.Equal(t, schemas.ModelProvider("anthropic"), provider)
+		assert.Equal(t, "claude-opus", model)
+		assert.Equal(t, "reroute", ctx.Value(schemas.BifrostContextKeyModelRouterID), "the last router to take the request is the one recorded")
+		logs := routingLogs(ctx)
+		assert.Contains(t, logs, "Model router 'Upgrade' → provider=openai, model=gpt-4o-large [chain, continuing]")
+		assert.Contains(t, logs, "Chain step 1: re-evaluating with provider=openai, model=gpt-4o-large")
+	})
+
+	t.Run("a router that is not chained ends the walk", func(t *testing.T) {
+		upgrade := conditionalRouter("upgrade", "Upgrade", tierTarget("", "", "gpt-4o-large"))
+		upgrade.Routing = globalRouting(0, `model == "gpt-4o"`)
+		reroute := conditionalRouter("reroute", "Reroute", tierTarget("", "anthropic", "claude-opus"))
+		reroute.Routing = globalRouting(1, `model == "gpt-4o-large"`)
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{upgrade, reroute})
+		assert.Equal(t, "gpt-4o-large", routedModel(runPreRequest(t, plugin, newRequestContext(), complexText)))
+	})
+
+	t.Run("a chained router fires once", func(t *testing.T) {
+		// It chooses the model it matches, so it would take the request on every pass.
+		loop := conditionalRouter("loop", "Loop", tierTarget("", "", "gpt-4o"))
+		loop.Routing = chained(globalRouting(0, ""))
+		after := conditionalRouter("after", "After", tierTarget("", "", "gpt-4o-mini"))
+		after.Routing = globalRouting(1, "")
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{loop, after})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		assert.Equal(t, "gpt-4o-mini", routedModel(req))
+		assert.Equal(t, "after", ctx.Value(schemas.BifrostContextKeyModelRouterID))
+	})
+
+	t.Run("the walk repeats at most the configured depth", func(t *testing.T) {
+		a := conditionalRouter("a", "A", tierTarget("", "", "step-1"))
+		a.Routing = chained(globalRouting(0, `model == "gpt-4o"`))
+		b := conditionalRouter("b", "B", tierTarget("", "", "step-2"))
+		b.Routing = chained(globalRouting(1, `model == "step-1"`))
+		c := conditionalRouter("c", "C", tierTarget("", "", "step-3"))
+		c.Routing = chained(globalRouting(2, `model == "step-2"`))
+		plugin := modelRoutingTestPluginWithConfig(t, &routing.Config{ChainMaxDepth: schemas.Ptr(2)}, routing.NewMockGovernance(),
+			modelRoutingDecision().execute, nil, []configstore.ModelRouter{a, b, c})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		assert.Equal(t, "step-2", routedModel(req), "two passes ran, and the third router was never reached")
+		assert.Contains(t, routingLogs(ctx), "Chain exceeded max depth (2)")
+	})
+
+	t.Run("only the last router's key, fallbacks and deadline apply", func(t *testing.T) {
+		step := tierTarget("", "openai", "step")
+		step.KeyID = schemas.Ptr("step-key")
+		step.TTFTTimeoutMs = schemas.Ptr(1500)
+		step.ParsedFallbacks = []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-sonnet"}}}
+		first := conditionalRouter("first", "First", step)
+		first.Routing = chained(globalRouting(0, `model == "gpt-4o"`))
+
+		run := func(t *testing.T, final configstoreTables.TableModelRouterTarget) (*schemas.BifrostContext, []schemas.Fallback) {
+			t.Helper()
+			last := conditionalRouter("last", "Last", final)
+			last.Routing = globalRouting(1, `model == "step"`)
+			plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{first, last})
+			ctx := newRequestContext()
+			req := streamRequest(complexText)
+			req.ChatRequest.Fallbacks = []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}}
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
+			require.Equal(t, "final", routedModel(req))
+			_, _, fallbacks := req.GetRequestFields()
+			return ctx, fallbacks
+		}
+
+		ctx, fallbacks := run(t, tierTarget("", "", "final"))
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID), "the first router's key is not the last router's")
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout))
+		assert.Equal(t, []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}}, fallbacks, "the request keeps its own chain")
+
+		own := tierTarget("", "openai", "final")
+		own.KeyID = schemas.Ptr("final-key")
+		own.TTFTTimeoutMs = schemas.Ptr(900)
+		own.ParsedFallbacks = []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: schemas.Azure}}}
+		ctx, fallbacks = run(t, own)
+		assert.Equal(t, "final-key", ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID))
+		assert.Equal(t, 900*time.Millisecond, ctx.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout))
+		assert.Equal(t, []schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o"}}, fallbacks,
+			"a fallback that names no model keeps the model the request arrived with, not one a chained router chose")
+	})
+}
+
+// TestModelRouterTargetFirstTokenDeadline pins a target's first-token
+// deadline: it is set for a streaming request the target is applied to, and
+// not for one that does not stream.
+func TestModelRouterTargetFirstTokenDeadline(t *testing.T) {
+	target := tierTarget(complexity.TierComplex, "anthropic", "claude-opus")
+	target.TTFTTimeoutMs = schemas.Ptr(1500)
+	plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, nil)
+	serveGeneralRouter(t, plugin, target)
+
+	streaming := newRequestContext()
+	require.NoError(t, plugin.PreRequestHook(streaming, streamRequest(complexText)))
+	assert.Equal(t, 1500*time.Millisecond, streaming.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout))
+
+	whole := newRequestContext()
+	runPreRequest(t, plugin, whole, complexText)
+	assert.Nil(t, whole.Value(schemas.BifrostContextKeyStreamFirstTokenTimeout))
 }
 
 // TestModelRouterConditionVariables pins that a router's condition reads the
@@ -1747,6 +2091,18 @@ func BenchmarkPreRequestHookModelRouters(b *testing.B) {
 		r.Routing = globalRouting(priority, condition)
 		return r
 	}
+	conditional := func(id string, priority int, condition string) configstore.ModelRouter {
+		r := conditionalRouter(id, id, tierTarget("", "anthropic", "claude-opus"))
+		r.Routing = globalRouting(priority, condition)
+		return r
+	}
+	// A gateway whose routing rules all became conditional routers: none but
+	// the last takes the request, so every condition is evaluated.
+	thousand := make([]configstore.ModelRouter, 0, 1000)
+	for i := range 999 {
+		thousand = append(thousand, conditional(fmt.Sprintf("router-%04d", i), i, fmt.Sprintf(`model == "model-%d"`, i)))
+	}
+	thousand = append(thousand, conditional("last", 999, `model == "gpt-4o"`))
 	cases := []struct {
 		name    string
 		routers []configstore.ModelRouter
@@ -1757,6 +2113,16 @@ func BenchmarkPreRequestHookModelRouters(b *testing.B) {
 			router("a", 0, `model == "a"`), router("b", 1, `headers["x-app"] == "b"`), router("c", 2, `provider == "c"`),
 		}},
 		{name: "a router takes the request", routers: []configstore.ModelRouter{router("a", 0, `model == "gpt-4o"`)}},
+		{name: "a conditional router takes the request", routers: []configstore.ModelRouter{conditional("a", 0, `model == "gpt-4o"`)}},
+		{name: "a chained conditional router, then another", routers: []configstore.ModelRouter{
+			func() configstore.ModelRouter {
+				r := conditionalRouter("first", "first", tierTarget("", "", "gpt-4o-large"))
+				r.Routing = chained(globalRouting(0, `model == "gpt-4o"`))
+				return r
+			}(),
+			conditional("second", 1, `model == "gpt-4o-large"`),
+		}},
+		{name: "a thousand conditional routers, the last takes the request", routers: thousand},
 	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {

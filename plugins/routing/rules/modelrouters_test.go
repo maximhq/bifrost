@@ -2,6 +2,7 @@ package rules
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -75,6 +76,43 @@ func TestModelRouterMatcherConditions(t *testing.T) {
 	assert.Equal(t, "mini-only", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o-mini"}))
 	assert.Equal(t, "", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o"}), "a missing header is a non-match, not an error")
 	assert.Equal(t, "header", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o", Headers: map[string]string{"x-app": "helpdesk"}}))
+}
+
+// TestModelRouterMatcherWalk pins the walk the model router step runs: every
+// router whose condition holds is visited in order until one ends the walk, a
+// router that passes the request on hands it to the next that matches, a
+// router the caller skips is passed over, and a walk nothing ends visits
+// every match.
+func TestModelRouterMatcherWalk(t *testing.T) {
+	matcher := newTestModelRouterMatcher(t)
+	require.NoError(t, matcher.Set("vk", "VK", routerRouting("virtual_key", "vk-1", 0, "")))
+	require.NoError(t, matcher.Set("team-miss", "Team miss", routerRouting("team", "team-1", 0, `model == "never"`)))
+	require.NoError(t, matcher.Set("team", "Team", routerRouting("team", "team-1", 1, "")))
+	require.NoError(t, matcher.Set("global-first", "Global first", routerRouting("global", "", 0, "")))
+	require.NoError(t, matcher.Set("global-second", "Global second", routerRouting("global", "", 1, "")))
+	evaluation := &EvaluationContext{Model: "gpt-4o", Scope: GovernanceScope{VirtualKeyID: "vk-1", TeamID: "team-1"}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// walk returns the routers visited by a walk that ends at stopAt.
+	walk := func(skip func(string) bool, stopAt string) []string {
+		t.Helper()
+		var visited []string
+		require.NoError(t, matcher.Walk(ctx, evaluation, skip, func(routerID string) bool {
+			visited = append(visited, routerID)
+			return routerID == stopAt
+		}))
+		return visited
+	}
+	assert.Equal(t, []string{"vk"}, walk(nil, "vk"), "the router that ends the walk is the last one asked")
+	assert.Equal(t, []string{"vk", "team", "global-first"}, walk(nil, "global-first"),
+		"a router that passes the request on hands it to the next that matches")
+	assert.Equal(t, []string{"vk", "team", "global-first", "global-second"}, walk(nil, ""), "a walk nothing ends visits every match, in order")
+	assert.Equal(t, []string{"team", "global-second"}, walk(func(id string) bool { return id == "vk" || id == "global-first" }, ""),
+		"a skipped router is passed over")
+
+	require.NoError(t, matcher.Walk(ctx, evaluation, nil, nil), "a walk with no visitor does nothing")
+	var nilMatcher *ModelRouterMatcher
+	require.NoError(t, nilMatcher.Walk(ctx, evaluation, nil, func(string) bool { return true }))
 }
 
 // TestModelRouterMatcherSetAndDelete pins that a router moves with its scope,
@@ -186,6 +224,34 @@ func BenchmarkModelRouterMatcher(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			if id, _ := matcher.Match(ctx, evaluation); id != "" {
+				b.Fatalf("matched %q", id)
+			}
+		}
+	})
+	// The worst case for a gateway holding many routers in one scope: every
+	// condition before the one that takes the request is evaluated.
+	b.Run("a thousand global routers, the last matches", func(b *testing.B) {
+		matcher := newTestModelRouterMatcher(b)
+		for i := range 999 {
+			require.NoError(b, matcher.Set(fmt.Sprintf("router-%04d", i), "Router", routerRouting("global", "", i, fmt.Sprintf(`model == "model-%d"`, i))))
+		}
+		require.NoError(b, matcher.Set("last", "Last", routerRouting("global", "", 999, `model == "support-assistant"`)))
+		b.ReportAllocs()
+		for b.Loop() {
+			if id, _ := matcher.Match(ctx, evaluation); id != "last" {
+				b.Fatalf("matched %q", id)
+			}
+		}
+	})
+	b.Run("a thousand global routers, the first matches", func(b *testing.B) {
+		matcher := newTestModelRouterMatcher(b)
+		require.NoError(b, matcher.Set("first", "First", routerRouting("global", "", 0, `model == "support-assistant"`)))
+		for i := 1; i < 1000; i++ {
+			require.NoError(b, matcher.Set(fmt.Sprintf("router-%04d", i), "Router", routerRouting("global", "", i, fmt.Sprintf(`model == "model-%d"`, i))))
+		}
+		b.ReportAllocs()
+		for b.Loop() {
+			if id, _ := matcher.Match(ctx, evaluation); id != "first" {
 				b.Fatalf("matched %q", id)
 			}
 		}
