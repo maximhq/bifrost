@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Budget, LimitScope, ModelConfig } from "@/lib/types/governance";
 import { budgetPeriodKey, hasDuplicateBudgetPeriods, periodRank, shortPeriod } from "@/lib/budgetOutline";
 import {
 	budgetResetDurationOptions,
@@ -13,10 +14,14 @@ import {
 } from "@/lib/constants/governance";
 import {
 	actionDisabledReason,
+	budgetScopeChargedBy,
 	budgetSignature,
+	budgetsLeftAfterRemoving,
 	getBudgetOverrideValidUntil,
 	getEffectiveBudgetLimit,
 	hasActiveBudgetOverride,
+	isHolderLevelModelConfig,
+	modelConfigAppliesTo,
 	parseResetPeriod,
 	scopeNeedsAllModelsOwner,
 	validateBudgetOverride,
@@ -322,5 +327,59 @@ describe("scopeNeedsAllModelsOwner", () => {
 		for (const scope of [undefined, "", "shared", "model"]) {
 			expect(scopeNeedsAllModelsOwner(scope)).toBe(false);
 		}
+	});
+});
+
+describe("holder-level limits", () => {
+	const budget = (id: string, scope?: LimitScope): Budget => ({
+		id,
+		max_limit: 1,
+		reset_duration: "1d",
+		scope,
+		current_usage: 0,
+		last_reset: "",
+	});
+	const row = (budgets: Budget[], extra: Partial<ModelConfig> = {}): ModelConfig =>
+		({ id: "mc", model_name: "*", budgets, created_at: "", updated_at: "", ...extra }) as ModelConfig;
+
+	it("charges Shared lines, and unset scopes, to both kinds of traffic", () => {
+		expect(budgetScopeChargedBy(undefined, "mcp")).toBe(true);
+		expect(budgetScopeChargedBy("shared", "model")).toBe(true);
+		expect(budgetScopeChargedBy("mcp", "mcp")).toBe(true);
+		expect(budgetScopeChargedBy("mcp", "model")).toBe(false);
+		expect(budgetScopeChargedBy("model", "mcp")).toBe(false);
+	});
+
+	it("knows the holder-level row from narrower ones", () => {
+		expect(isHolderLevelModelConfig({ model_name: "*" })).toBe(true);
+		expect(isHolderLevelModelConfig({ model_name: "*", provider: "openai" })).toBe(false);
+		expect(isHolderLevelModelConfig({ model_name: "gpt-4o" })).toBe(false);
+	});
+
+	it("lists a row on the MCP page only for a Shared or MCP line on the holder-level row", () => {
+		expect(modelConfigAppliesTo(row([budget("a", "model"), budget("b", "mcp")]), "mcp")).toBe(true);
+		expect(modelConfigAppliesTo(row([budget("a")]), "mcp")).toBe(true);
+		expect(modelConfigAppliesTo(row([budget("a", "model")]), "mcp")).toBe(false);
+		expect(modelConfigAppliesTo(row([budget("a", "shared")], { provider: "openai" }), "mcp")).toBe(false);
+		// Model traffic names a model, so a narrower row is charged by it too.
+		expect(modelConfigAppliesTo(row([budget("a", "shared")], { provider: "openai" }), "model")).toBe(true);
+		expect(modelConfigAppliesTo(row([budget("a", "mcp")]), "model")).toBe(false);
+	});
+
+	it("leaves the other page's lines when one page removes its limits", () => {
+		const mixed = row([budget("shared", "shared"), budget("model", "model"), budget("mcp", "mcp")]);
+		expect(budgetsLeftAfterRemoving(mixed, "mcp")?.map((b) => b.id)).toEqual(["model"]);
+		expect(budgetsLeftAfterRemoving(mixed, "model")?.map((b) => b.id)).toEqual(["mcp"]);
+	});
+
+	it("deletes the row when nothing of the other page is left", () => {
+		expect(budgetsLeftAfterRemoving(row([budget("shared"), budget("mcp", "mcp")]), "mcp")).toBeNull();
+		expect(budgetsLeftAfterRemoving(row([budget("shared"), budget("model", "model")]), "model")).toBeNull();
+		expect(budgetsLeftAfterRemoving(row([budget("gpt", "shared")], { model_name: "gpt-4o" }), "model")).toBeNull();
+	});
+
+	it("keeps the row for the rate limit the Models page edits", () => {
+		const withRateLimit = row([budget("mcp", "mcp")], { rate_limit: { id: "rl" } as ModelConfig["rate_limit"] });
+		expect(budgetsLeftAfterRemoving(withRateLimit, "mcp")).toEqual([]);
 	});
 });

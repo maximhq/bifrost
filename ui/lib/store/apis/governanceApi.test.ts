@@ -294,3 +294,121 @@ describe("model router endpoints", () => {
 		});
 	});
 });
+describe("model config lists", () => {
+	const MCP_PAGE_1 = "/api/governance/model-configs?limit=2&offset=0&scope=global%2Cvirtual_key&applies_to=mcp";
+	const MCP_PAGE_2 = "/api/governance/model-configs?limit=2&offset=2&scope=global%2Cvirtual_key&applies_to=mcp";
+	const MODELS_PAGE = "/api/governance/model-configs?limit=25&offset=0";
+	const holder = (id: string, scope: string) => ({
+		id,
+		model_name: "*",
+		scope: "virtual_key",
+		scope_id: id,
+		budgets: [{ id: `${id}-b`, scope }],
+	});
+
+	let gets: string[];
+	let rows: Record<string, unknown>;
+	let store: ReturnType<typeof newStore>;
+	const newStore = () =>
+		configureStore({
+			reducer: { [baseApi.reducerPath]: baseApi.reducer },
+			middleware: (getDefaultMiddleware) => getDefaultMiddleware().concat(baseApi.middleware),
+		});
+	const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+	const page = (...ids: string[]) => ({ model_configs: ids.map((id) => rows[id]), count: ids.length, total_count: 4 });
+	const listed = (args: Parameters<typeof endpoints.getModelConfigs.select>[0]) =>
+		(endpoints.getModelConfigs.select(args)(store.getState()).data?.model_configs ?? []).map((mc) => mc.id);
+	const MCP_ARGS_1 = { applies_to: "mcp" as const, limit: 2, offset: 0, scope: "global,virtual_key" };
+	const MCP_ARGS_2 = { ...MCP_ARGS_1, offset: 2 };
+	const MODELS_ARGS = { limit: 25, offset: 0 };
+
+	beforeEach(async () => {
+		gets = [];
+		rows = { a: holder("a", "mcp"), b: holder("b", "mcp"), c: holder("c", "mcp"), d: holder("d", "shared"), e: holder("e", "model") };
+		store = newStore();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: Request) => {
+				const url = new URL(input.url);
+				const path = url.pathname + url.search;
+				if (input.method === "GET") gets.push(path);
+				if (path === MCP_PAGE_1) return json(page("a", "b"));
+				if (path === MCP_PAGE_2) return json(page("c", "d"));
+				if (path === MODELS_PAGE) return json({ ...page("a", "b", "c", "d", "e"), total_count: 5 });
+				const body = (await input.clone().text()) || "{}";
+				const id = url.pathname.split("/").at(-1) ?? "";
+				return json({ model_config: { ...(rows[id] as object), ...JSON.parse(body), id: input.method === "POST" ? "new" : id } });
+			}),
+		);
+		await Promise.all([
+			store.dispatch(endpoints.getModelConfigs.initiate(MCP_ARGS_1)),
+			store.dispatch(endpoints.getModelConfigs.initiate(MCP_ARGS_2)),
+			store.dispatch(endpoints.getModelConfigs.initiate(MODELS_ARGS)),
+		]);
+		expect(gets).toHaveLength(3);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const reads = () => ({ mcp1: gets.filter((g) => g === MCP_PAGE_1).length, mcp2: gets.filter((g) => g === MCP_PAGE_2).length });
+
+	test("an edit that keeps a row on the MCP page patches the page it is on, and no other", async () => {
+		await store
+			.dispatch(
+				endpoints.updateModelConfig.initiate({ id: "c", data: { budgets: [{ max_limit: 9, reset_duration: "1d", scope: "mcp" }] } }),
+			)
+			.unwrap();
+		expect(listed(MCP_ARGS_1)).toEqual(["a", "b"]);
+		expect(listed(MCP_ARGS_2)).toEqual(["c", "d"]);
+		expect(endpoints.getModelConfigs.select(MCP_ARGS_1)(store.getState()).data?.total_count).toBe(4);
+		// Give a refetch the chance to start, so the count shows that none was asked for.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(reads()).toEqual({ mcp1: 1, mcp2: 1 });
+	});
+
+	test("a row joining the MCP page re-reads its pages instead of adding itself to each", async () => {
+		await store
+			.dispatch(
+				endpoints.updateModelConfig.initiate({ id: "e", data: { budgets: [{ max_limit: 9, reset_duration: "1d", scope: "mcp" }] } }),
+			)
+			.unwrap();
+		await vi.waitFor(() => expect(reads()).toEqual({ mcp1: 2, mcp2: 2 }));
+		expect(listed(MCP_ARGS_1)).toEqual(["a", "b"]);
+		expect(gets.filter((g) => g === MODELS_PAGE)).toHaveLength(1);
+	});
+
+	test("a row leaving the MCP page re-reads its pages", async () => {
+		await store
+			.dispatch(
+				endpoints.updateModelConfig.initiate({ id: "a", data: { budgets: [{ max_limit: 9, reset_duration: "1d", scope: "model" }] } }),
+			)
+			.unwrap();
+		await vi.waitFor(() => expect(reads()).toEqual({ mcp1: 2, mcp2: 2 }));
+	});
+
+	test("a row narrowed off the MCP page re-reads the pages that held it", async () => {
+		await store.dispatch(endpoints.updateModelConfig.initiate({ id: "a", data: { provider: "openai" } })).unwrap();
+		await vi.waitFor(() => expect(reads()).toEqual({ mcp1: 2, mcp2: 2 }));
+	});
+
+	test("a new row with an MCP line re-reads the MCP pages and is not added to a later one", async () => {
+		await store
+			.dispatch(
+				endpoints.createModelConfig.initiate({
+					model_name: "*",
+					scope: "global",
+					budgets: [{ max_limit: 5, reset_duration: "1M", scope: "mcp" }],
+				}),
+			)
+			.unwrap();
+		expect(listed(MCP_ARGS_2)).not.toContain("new");
+		await vi.waitFor(() => expect(reads()).toEqual({ mcp1: 2, mcp2: 2 }));
+	});
+
+	test("the holder lookup asks for the holder-level row alone", async () => {
+		await store.dispatch(endpoints.getModelConfigs.initiate({ scope: "virtual_key", scope_id: "vk-1", holder_level: true }));
+		expect(gets.at(-1)).toBe("/api/governance/model-configs?scope=virtual_key&scope_id=vk-1&holder_level=true");
+	});
+});

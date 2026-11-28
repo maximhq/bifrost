@@ -683,14 +683,14 @@ func (p *GovernancePlugin) aliasTargets(ctx *schemas.BifrostContext) grant.Alias
 // settled for it the same way. A context carrying no grant is a wiring fault evaluation has
 // already refused by the time this runs; it settles nothing.
 //
-// What the list holds is the store's to assemble (see GovernanceStore.GatherLimits): a store that
+// What the list holds is the store's to assemble (see GovernanceStore.GatherLimitsForRequestKind): a store that
 // composes several possible payers settles there on who pays, and this only records the answer. An
 // error is a request whose payers cannot be settled at all; nothing is recorded for it, and the
 // funnel refuses it rather than serving it against half an answer.
 //
 // A budget's scope is applied here, once, so that what is checked, logged and charged agree: an
 // MCP tool execution answers only to "mcp" and "shared" budgets, every other request only to "model"
-// and "shared" ones. See budgetsForRequestKind.
+// and "shared" ones. See BudgetsForRequestKind.
 func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, requestType schemas.RequestType, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
 	g := ctx.Grant()
 	if g == nil {
@@ -707,11 +707,12 @@ func resolveLimitsWith(ctx *schemas.BifrostContext, store GovernanceStore, acces
 	if g == nil {
 		return nil, nil
 	}
-	budgets, rateLimits, err := store.GatherLimits(ctx, access, provider, model)
+	traffic := configstoreTables.RequestScope(requestType)
+	budgets, rateLimits, err := store.GatherLimitsForRequestKind(ctx, access, provider, model, traffic)
 	if err != nil {
 		return nil, err
 	}
-	budgets = budgetsForRequestKind(ctx, store, budgets, configstoreTables.RequestScope(requestType))
+	budgets = BudgetsForRequestKind(ctx, store, budgets, traffic)
 	limits := grant.NewLimits(budgets, rateLimits)
 	g.SetLimits(limits)
 	return limits, nil
@@ -1129,7 +1130,7 @@ func (p *GovernancePlugin) limitsForKeyThatRan(ctx *schemas.BifrostContext, prov
 		return budgets, rateLimits
 	}
 	ctx.SetValue(chargedKeyContext, keyID)
-	ranBudgets, ranRateLimits, err := p.store.GatherLimits(ctx, g.Access(), provider, model)
+	ranBudgets, ranRateLimits, err := p.store.GatherLimitsForRequestKind(ctx, g.Access(), provider, model, configstoreTables.LimitScopeModel)
 	ctx.ClearValue(chargedKeyContext)
 	if err != nil {
 		return budgets, rateLimits

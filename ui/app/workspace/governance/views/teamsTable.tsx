@@ -1,3 +1,4 @@
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import PageTitle from "@/components/pageTitle";
 import { DisabledReason, DisabledReasonMenuItem } from "@/components/ui/disabledReason";
 import { actionDisabledReason } from "@/lib/utils/governance";
@@ -338,7 +339,10 @@ export default function TeamsTable({
 																			<TooltipTrigger asChild>
 																				<div className="space-y-1.5">
 																					<div className="flex items-center justify-between gap-4">
-																						<span className="font-medium">{formatCurrency(b.max_limit)}</span>
+																						<span className="flex items-center gap-1.5 font-medium">
+																							{formatCurrency(b.max_limit)}
+																							<BudgetScopeBadge scope={b.scope} />
+																						</span>
 																						<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration)}</span>
 																					</div>
 																					<Progress

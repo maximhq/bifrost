@@ -6668,6 +6668,15 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	if params.Provider != "" {
 		baseQuery = baseQuery.Where("provider = ?", params.Provider)
 	}
+	// Rows charged by traffic: one of their budgets is charged by it, and they are holder-level when the
+	// traffic names no model (NeedsAllModelsOwner).
+	if params.HolderLevel || params.AppliesTo.NeedsAllModelsOwner() {
+		baseQuery = baseQuery.Where("model_name = ? AND provider IS NULL", tables.ModelConfigAllModels)
+	}
+	if params.AppliesTo != "" {
+		baseQuery = baseQuery.
+			Where("EXISTS (SELECT 1 FROM governance_budgets WHERE governance_budgets.model_config_id = governance_model_configs.id AND governance_budgets.scope IN ?)", tables.ScopesChargedBy(params.AppliesTo))
+	}
 
 	var totalCount int64
 	if err := baseQuery.Count(&totalCount).Error; err != nil {

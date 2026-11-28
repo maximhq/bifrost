@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { DisabledReason } from "@/components/ui/disabledReason";
-import { actionDisabledReason } from "@/lib/utils/governance";
+import { actionDisabledReason, LimitTraffic } from "@/lib/utils/governance";
 import { Wallet } from "lucide-react";
 import { ArrowUpRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -10,19 +10,21 @@ const MODEL_LIMITS_DOCS_URL = "https://docs.getbifrost.ai/features/governance";
 interface ModelLimitsEmptyStateProps {
 	onAddClick: () => void;
 	canCreate?: boolean;
+	traffic?: LimitTraffic;
 }
 
-export function ModelLimitsEmptyState({ onAddClick, canCreate = true }: ModelLimitsEmptyStateProps) {
+export function ModelLimitsEmptyState({ onAddClick, canCreate = true, traffic = "model" }: ModelLimitsEmptyStateProps) {
 	const { t } = useTranslation("models");
+	const isMCPPage = traffic === "mcp";
 	return (
 		<div className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center">
 			<div className="text-muted-foreground">
 				<Wallet className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
 			</div>
 			<div className="flex flex-col gap-1">
-				<h1 className="text-muted-foreground text-xl font-medium">{t("modelLimits.emptyTitle")}</h1>
+				<h1 className="text-muted-foreground text-xl font-medium">{isMCPPage ? t("mcpLimits.emptyTitle") : t("modelLimits.emptyTitle")}</h1>
 				<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
-					{t("modelLimits.emptyDescription")}
+					{isMCPPage ? t("mcpLimits.emptyDescription") : t("modelLimits.emptyDescription")}
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
 					<Button
@@ -40,7 +42,7 @@ export function ModelLimitsEmptyState({ onAddClick, canCreate = true }: ModelLim
 							aria-label={t("modelLimits.addFirstAria")}
 							onClick={onAddClick}
 							disabled={!canCreate}
-							data-testid="model-limits-button-create"
+							data-testid={isMCPPage ? "mcp-limits-button-create" : "model-limits-button-create"}
 						>
 							{t("modelLimits.addLimit")}
 						</Button>

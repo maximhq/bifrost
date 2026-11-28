@@ -1,3 +1,4 @@
+import { isHolderLevelModelConfig, modelConfigAppliesTo } from "@/lib/utils/governance";
 import { virtualKeyMetadataQueryParams } from "@/lib/utils/virtualKeyMetadata";
 import {
 	Budget,
@@ -78,6 +79,14 @@ type PricingOverrideQueryArgs = {
 	offset?: number;
 	search?: string;
 };
+
+// The tag of the MCP page's lists. Their pages are cut on the server, so a row joining or leaving them is
+// not patched into a cached page: these lists are refetched for their page membership and totals.
+const MCP_MODEL_CONFIG_LISTS = { type: "ModelConfigs" as const, id: "MCP_LIST" };
+
+// Whether a model config passes a listing's scope filter, which may name several scopes separated by commas.
+const modelConfigMatchesScopeFilter = (mc: ModelConfig, args?: GetModelConfigsParams) =>
+	!args?.scope || args.scope.split(",").includes(mc.scope || "global");
 
 export const governanceApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -558,9 +567,12 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.scope && { scope: params.scope }),
 					...(params?.scope_id && { scope_id: params.scope_id }),
 					...(params?.provider && { provider: params.provider }),
+					...(params?.applies_to && { applies_to: params.applies_to }),
+					...(params?.holder_level && { holder_level: "true" }),
 				},
 			}),
-			providesTags: ["ModelConfigs"],
+			providesTags: (_result, _error, params) =>
+				params?.applies_to === "mcp" ? ["ModelConfigs", MCP_MODEL_CONFIG_LISTS] : ["ModelConfigs"],
 		}),
 
 		getModelConfig: builder.query<{ model_config: ModelConfig }, string>({
@@ -586,10 +598,13 @@ export const governanceApi = baseApi.injectEndpoints({
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getModelConfigs" || entry?.status !== "fulfilled") continue;
 						const args = entry.originalArgs as GetModelConfigsParams | undefined;
+						// A row joining the MCP page's lists refetches them (MCP_MODEL_CONFIG_LISTS).
+						if (args?.applies_to === "mcp") continue;
 						if (args?.search && !mc.model_name.toLowerCase().includes(args.search.toLowerCase())) continue;
-						if (args?.scope && mc.scope !== args.scope) continue;
+						if (!modelConfigMatchesScopeFilter(mc, args)) continue;
 						if (args?.scope_id && mc.scope_id !== args.scope_id) continue;
 						if (args?.provider && mc.provider !== args.provider) continue;
+						if (args?.holder_level && !isHolderLevelModelConfig(mc)) continue;
 						dispatch(
 							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
 								if (!draft.model_configs) draft.model_configs = [];
@@ -599,6 +614,7 @@ export const governanceApi = baseApi.injectEndpoints({
 							}),
 						);
 					}
+					if (modelConfigAppliesTo(mc, "mcp")) dispatch(governanceApi.util.invalidateTags([MCP_MODEL_CONFIG_LISTS]));
 				} catch {
 					// Mutation failed, do nothing - error handling bubbled up
 				}
@@ -618,19 +634,34 @@ export const governanceApi = baseApi.injectEndpoints({
 			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
-					const queries = (getState() as any).api.queries;
-					for (const entry of Object.values(queries) as any[]) {
-						if (entry?.endpointName !== "getModelConfigs" || entry?.status !== "fulfilled") continue;
+					const mc = data.model_config;
+					const entries = (Object.values((getState() as any).api.queries) as any[]).filter(
+						(entry) => entry?.endpointName === "getModelConfigs" && entry?.status === "fulfilled",
+					);
+					const isMCPList = (entry: any) => (entry.originalArgs as GetModelConfigsParams | undefined)?.applies_to === "mcp";
+					const holdsRow = (entry: any) => entry.data?.model_configs?.some((row: ModelConfig) => row.id === id) ?? false;
+					// A holder-level row leaves the MCP page with its last Shared or MCP line, or when it is narrowed to a
+					// model or provider, and joins it with its first. One found on a cached MCP page that still applies
+					// keeps its place, so every page holding it is patched. Otherwise the row may join or leave the list,
+					// possibly from a page not loaded, which changes each server-cut page's rows and totals, so those
+					// lists are refetched.
+					const onCachedMCPList = entries.some((entry) => isMCPList(entry) && holdsRow(entry));
+					const staysOnMCPList = onCachedMCPList && modelConfigAppliesTo(mc, "mcp");
+					const refreshMCPLists =
+						!staysOnMCPList &&
+						(onCachedMCPList ||
+							(isHolderLevelModelConfig(mc) &&
+								entries.some((entry) => isMCPList(entry) && modelConfigMatchesScopeFilter(mc, entry.originalArgs))));
+					for (const entry of entries) {
+						if (!holdsRow(entry) || (refreshMCPLists && isMCPList(entry))) continue;
 						dispatch(
 							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
-								if (!draft.model_configs) return;
-								const index = draft.model_configs.findIndex((mc) => mc.id === id);
-								if (index !== -1) {
-									draft.model_configs[index] = data.model_config;
-								}
+								const at = draft.model_configs?.findIndex((row) => row.id === id) ?? -1;
+								if (at !== -1) draft.model_configs[at] = mc;
 							}),
 						);
 					}
+					if (refreshMCPLists) dispatch(governanceApi.util.invalidateTags([MCP_MODEL_CONFIG_LISTS]));
 					dispatch(
 						governanceApi.util.updateQueryData("getModelConfig", id, (draft) => {
 							draft.model_config = data.model_config;

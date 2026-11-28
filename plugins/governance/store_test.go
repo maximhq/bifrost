@@ -2633,10 +2633,10 @@ func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
 		literal := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		literal.SetValue(literalLimitsContextKey, true)
 
-		budgets, _, err := store.GatherLimits(normal, nil, schemas.Bedrock, "claude-opus-4-6")
+		budgets, _, err := store.GatherLimitsForRequestKind(normal, nil, schemas.Bedrock, "claude-opus-4-6", configstoreTables.LimitScopeModel)
 		require.NoError(t, err)
 		require.Len(t, budgets, 1, "the alias is resolved, so the target's limit applies")
-		budgets, _, err = store.GatherLimits(literal, nil, schemas.Bedrock, "claude-opus-4-6")
+		budgets, _, err = store.GatherLimitsForRequestKind(literal, nil, schemas.Bedrock, "claude-opus-4-6", configstoreTables.LimitScopeModel)
 		require.NoError(t, err)
 		assert.Empty(t, budgets, "the name runs as written, so the target's limit does not apply")
 
@@ -2673,7 +2673,7 @@ func TestGovernanceStore_KeyAliasTargetsResolvedOncePerAttempt(t *testing.T) {
 	})
 
 	t.Run("GatherLimits with no access", func(t *testing.T) {
-		budgets, _, err := store.GatherLimits(ctx, nil, schemas.Bedrock, "claude-sonnet")
+		budgets, _, err := store.GatherLimitsForRequestKind(ctx, nil, schemas.Bedrock, "claude-sonnet", configstoreTables.LimitScopeModel)
 		require.NoError(t, err)
 		require.Len(t, budgets, 1)
 	})
@@ -2682,7 +2682,7 @@ func TestGovernanceStore_KeyAliasTargetsResolvedOncePerAttempt(t *testing.T) {
 			permitWithProviders(grant.PermitVirtualKey, "vk-a", "a", "bedrock"),
 			permitWithProviders(grant.PermitVirtualKey, "vk-b", "b", "bedrock"),
 		}, "", nil, "", nil)
-		budgets, _, err := store.GatherLimits(ctx, access, schemas.Bedrock, "claude-sonnet")
+		budgets, _, err := store.GatherLimitsForRequestKind(ctx, access, schemas.Bedrock, "claude-sonnet", configstoreTables.LimitScopeModel)
 		require.NoError(t, err)
 		var got []string
 		for _, b := range budgets {
@@ -2750,14 +2750,14 @@ func BenchmarkGatherLimits_KeyAliases(b *testing.B) {
 			} else {
 				h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{schemas.Bedrock: tc.keys})
 			}
-			budgets, _, err := store.GatherLimits(ctx, nil, schemas.Bedrock, tc.model)
+			budgets, _, err := store.GatherLimitsForRequestKind(ctx, nil, schemas.Bedrock, tc.model, configstoreTables.LimitScopeModel)
 			if err != nil || len(budgets) != tc.want {
 				b.Fatalf("%s: %d budgets (err %v), want %d", tc.name, len(budgets), err, tc.want)
 			}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, _, _ = store.GatherLimits(ctx, nil, schemas.Bedrock, tc.model)
+				_, _, _ = store.GatherLimitsForRequestKind(ctx, nil, schemas.Bedrock, tc.model, configstoreTables.LimitScopeModel)
 			}
 		})
 	}

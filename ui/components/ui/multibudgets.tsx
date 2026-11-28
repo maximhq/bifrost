@@ -37,6 +37,8 @@ interface MultiBudgetLinesProps {
 	showScope?: boolean;
 	// Which scopes the selector offers when shown; every scope when omitted.
 	scopeOptions?: readonly LimitScope[];
+	// The scope a new line starts with when the selector is shown; the shared default when omitted.
+	defaultScope?: LimitScope;
 }
 
 export default function MultiBudgetLines({
@@ -50,6 +52,7 @@ export default function MultiBudgetLines({
 	maxLines,
 	showScope = false,
 	scopeOptions,
+	defaultScope,
 }: MultiBudgetLinesProps) {
 	const { t } = useTranslation("governance");
 	const { t: tModels } = useTranslation("models");
@@ -68,13 +71,15 @@ export default function MultiBudgetLines({
 	}, [lines]);
 
 	function addLine() {
-		// Pick the first duration unused by a shared ("shared") line, falling back to the first option value
-		const available = options.find((o) => !usedPeriods.has(budgetPeriodKey(o.value, undefined)));
+		// Pick the first duration unused by a line of the new line's scope, falling back to the first option value
+		const scope = showScope ? defaultScope : undefined;
+		const available = options.find((o) => !usedPeriods.has(budgetPeriodKey(o.value, scope)));
 		onChange([
 			...lines,
 			{
 				max_limit: undefined,
 				reset_duration: available?.value ?? options[0]?.value ?? "",
+				...(scope && { scope }),
 			},
 		]);
 	}

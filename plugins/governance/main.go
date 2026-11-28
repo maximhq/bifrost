@@ -966,7 +966,7 @@ func budgetSettingsOf(ctx context.Context, store GovernanceStore, id string) *co
 	return store.LoadBudget(ctx, id)
 }
 
-// budgetsForRequestKind drops the budgets that are not charged by traffic of the given scope, which a
+// BudgetsForRequestKind drops the budgets that are not charged by traffic of the given scope, which a
 // request's type gives through configstoreTables.RequestScope.
 //
 // Applied to what the store gathered rather than inside the store, so every holder a store composes
@@ -974,27 +974,34 @@ func budgetSettingsOf(ctx context.Context, store GovernanceStore, id string) *co
 // the same rule without each needing to know about request kinds. Budgets are read by ID from the
 // store, the way enforcement reads them; one the store cannot load is kept, since enforcement skips
 // it anyway. The common case, where every budget applies, returns the input without allocating.
-func budgetsForRequestKind(ctx context.Context, store GovernanceStore, budgets []schemas.Limit, traffic configstoreTables.LimitScope) []schemas.Limit {
+func BudgetsForRequestKind(ctx context.Context, store GovernanceStore, budgets []schemas.Limit, traffic configstoreTables.LimitScope) []schemas.Limit {
+	return filterLimits(budgets, func(id string) bool {
+		budget := budgetSettingsOf(ctx, store, id)
+		return budget == nil || budget.Scope.AppliesTo(traffic)
+	})
+}
+
+// filterLimits keeps the limits whose ID applies. Nothing is allocated when all do; on the first
+// drop it copies what was kept so far rather than filtering in place, since the gathered slice may
+// share a backing array with the store's.
+func filterLimits(limits []schemas.Limit, applies func(id string) bool) []schemas.Limit {
 	var kept []schemas.Limit
-	for i, limit := range budgets {
-		budget := budgetSettingsOf(ctx, store, limit.ID)
-		applies := budget == nil || budget.Scope.AppliesTo(traffic)
+	for i, limit := range limits {
+		ok := applies(limit.ID)
 		if kept == nil {
-			if applies {
+			if ok {
 				continue
 			}
-			// First budget to drop: copy what was kept so far rather than filtering in place, since
-			// the gathered slice may share a backing array with the store's.
-			kept = make([]schemas.Limit, i, len(budgets)-1)
-			copy(kept, budgets[:i])
+			kept = make([]schemas.Limit, i, len(limits)-1)
+			copy(kept, limits[:i])
 			continue
 		}
-		if applies {
+		if ok {
 			kept = append(kept, limit)
 		}
 	}
 	if kept == nil {
-		return budgets
+		return limits
 	}
 	return kept
 }
