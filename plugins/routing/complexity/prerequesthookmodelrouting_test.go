@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1247,6 +1248,121 @@ func TestClassifierRouterPassesARequestOnWhenToldTo(t *testing.T) {
 	})
 }
 
+// TestRoutersWithTheSameClassifierSettingsClassifyARequestOnce pins what a
+// request costs when it passes through several classifier routers. Routers
+// whose classifier settings are the same share one classification, as every
+// routing rule shared the Complexity Router's one answer, and a classification
+// that failed is not tried again by the next of them. Routers that classify
+// differently, and a router with a suggestions block, classify for themselves.
+// Session memory is not shared: each router applies its own to the answer.
+func TestRoutersWithTheSameClassifierSettingsClassifyARequestOnce(t *testing.T) {
+	// A router with a model for one tier only, which passes every other
+	// request on: what a routing rule on one complexity_tier becomes.
+	tierRouter := func(id, tier string, priority int) configstore.ModelRouter {
+		router := decisionModelRouter(id, id, tierTarget(tier, "", id+"-model"))
+		router.Routing = passingOn(globalRouting(priority, ""))
+		return router
+	}
+	const classified = "Decision model complexity: tier="
+
+	t.Run("one classification for every router the request passes through", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, nil, []configstore.ModelRouter{
+			tierRouter("simple", complexity.TierSimple, 0), tierRouter("medium", complexity.TierMedium, 1), tierRouter("complex", complexity.TierComplex, 2),
+		})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		assert.Equal(t, "complex-model", routedModel(req))
+		assert.Equal(t, "complex", ctx.Value(schemas.BifrostContextKeyModelRouterID))
+		assert.Equal(t, 1, decision.calls(), "the three routers classify alike, so the request is classified once")
+		logs := routingLogs(ctx)
+		assert.Equal(t, 1, strings.Count(logs, classified), "the log shows one classification")
+		assert.Contains(t, logs, "Model router 'simple' has no model for tier=COMPLEX; trying the next router")
+		assert.Contains(t, logs, "Model router 'medium' has no model for tier=COMPLEX; trying the next router", "then what each router did with it")
+
+		ctx = newRequestContext()
+		req = runPreRequest(t, plugin, ctx, mediumText)
+		assert.Equal(t, "medium-model", routedModel(req))
+		assert.Equal(t, 2, decision.calls(), "an answer is reused within one request, never across requests")
+		assert.Equal(t, 1, strings.Count(routingLogs(ctx), classified))
+	})
+
+	t.Run("a classification that failed is not tried again", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		decision.err = &schemas.BifrostError{Error: &schemas.ErrorField{Message: "decision model unavailable"}}
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, nil, []configstore.ModelRouter{
+			tierRouter("simple", complexity.TierSimple, 0), tierRouter("medium", complexity.TierMedium, 1), tierRouter("complex", complexity.TierComplex, 2),
+		})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, complexText)
+		assert.Equal(t, "gpt-4o", routedModel(req))
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyModelRouterID))
+		assert.Equal(t, 1, decision.calls(), "the next routers would only fail the same way")
+		assert.Contains(t, routingLogs(ctx), "Model router 'complex' produced no tier; trying the next router")
+	})
+
+	t.Run("routers that classify differently each classify", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		other := tierRouter("medium", complexity.TierMedium, 1)
+		other.Keywords.MediumKeywords = []string{"walnut indigo"}
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, nil, []configstore.ModelRouter{
+			tierRouter("simple", complexity.TierSimple, 0), other,
+		})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, mediumText)
+		assert.Equal(t, "medium-model", routedModel(req))
+		assert.Equal(t, 2, decision.calls(), "one phrase apart is a different classifier")
+	})
+
+	t.Run("a router with a suggestions block classifies for itself", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		suggesting := tierRouter("medium", complexity.TierMedium, 1)
+		suggesting.Suggestions = &configstore.ComplexitySuggestionsConfig{}
+		plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), decision, nil, []configstore.ModelRouter{
+			tierRouter("simple", complexity.TierSimple, 0), suggesting,
+		})
+
+		ctx := newRequestContext()
+		req := runPreRequest(t, plugin, ctx, mediumText)
+		assert.Equal(t, "medium-model", routedModel(req))
+		assert.Equal(t, 2, decision.calls(), "what it classifies is kept under its own name, so it shares with no one")
+	})
+
+	t.Run("each router applies its own session memory to the answer", func(t *testing.T) {
+		decision := modelRoutingDecision()
+		remembering := configstore.ModelRouter{
+			ID: "remembering", Name: "Remembering", ComplexityAnalyzerConfig: sessionRouterConfig(),
+			Targets: []configstoreTables.TableModelRouterTarget{tierTarget(complexity.TierSimple, "", "remembering-simple")},
+		}
+		remembering.Routing = passingOn(globalRouting(0, ""))
+		plain := decisionModelRouter("plain", "Plain", everyTierTargets("plain")...)
+		plain.Routing = globalRouting(1, "")
+		plugin := modelRoutingTestPluginWithConfig(t, newTestKVStore(t), routing.NewMockGovernance(), decision.execute, nil,
+			[]configstore.ModelRouter{remembering, plain})
+		const heldAtMedium = "Model router 'Remembering' has no model for tier=MEDIUM; trying the next router"
+
+		// The session starts at MEDIUM for the router that remembers.
+		ctx := complexitySessionContext("s1")
+		req := runPreRequest(t, plugin, ctx, mediumText)
+		assert.Equal(t, "plain-medium", routedModel(req))
+		assert.Contains(t, routingLogs(ctx), heldAtMedium)
+		assert.Equal(t, 1, decision.calls(), "the session setting is not part of how a router classifies")
+
+		// A simpler turn is classified once, as SIMPLE. The router that
+		// remembers holds the session at MEDIUM, so its SIMPLE model is not
+		// used; the router that does not takes the answer as it is.
+		ctx = complexitySessionContext("s1")
+		req = runPreRequest(t, plugin, ctx, simpleText)
+		assert.Equal(t, "plain-simple", routedModel(req))
+		assert.Contains(t, routingLogs(ctx), heldAtMedium)
+		assert.Contains(t, routingLogs(ctx), "Session complexity held: effective=MEDIUM proposed=SIMPLE")
+		assert.Equal(t, 2, decision.calls())
+	})
+}
+
 // TestConditionalRouterRoutesWithoutClassifying pins a conditional router: it
 // sends the requests its routing takes to its target, classifying nothing,
 // and is recorded on the request as a classifier router is. With no target it
@@ -2103,6 +2219,20 @@ func BenchmarkPreRequestHookModelRouters(b *testing.B) {
 		thousand = append(thousand, conditional(fmt.Sprintf("router-%04d", i), i, fmt.Sprintf(`model == "model-%d"`, i)))
 	}
 	thousand = append(thousand, conditional("last", 999, `model == "gpt-4o"`))
+	// Routing rules on complexity_tier that could not be merged: classifier
+	// routers with the same settings, where every one but the last has no
+	// model for the request's tier and passes it on.
+	tierLadder := func(n int) []configstore.ModelRouter {
+		ladder := make([]configstore.ModelRouter, 0, n)
+		for i := range n - 1 {
+			r := decisionModelRouter(fmt.Sprintf("tier-%03d", i), fmt.Sprintf("tier-%03d", i), tierTarget(complexity.TierSimple, "anthropic", "claude-haiku"))
+			r.Routing = passingOn(globalRouting(i, ""))
+			ladder = append(ladder, r)
+		}
+		last := decisionModelRouter("tier-last", "tier-last", tierTarget(complexity.TierComplex, "anthropic", "claude-opus"))
+		last.Routing = globalRouting(n, "")
+		return append(ladder, last)
+	}
 	cases := []struct {
 		name    string
 		routers []configstore.ModelRouter
@@ -2123,6 +2253,8 @@ func BenchmarkPreRequestHookModelRouters(b *testing.B) {
 			conditional("second", 1, `model == "gpt-4o-large"`),
 		}},
 		{name: "a thousand conditional routers, the last takes the request", routers: thousand},
+		{name: "three classifier routers with the same settings, the last takes the request", routers: tierLadder(3)},
+		{name: "a hundred classifier routers with the same settings, the last takes the request", routers: tierLadder(100)},
 	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {

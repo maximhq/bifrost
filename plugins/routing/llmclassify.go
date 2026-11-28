@@ -65,14 +65,14 @@ func (p *RoutingPlugin) SetChatRequestExecutor(executor ChatRequestExecutor) {
 		if p.llmClassifier != nil {
 			p.llmClassifier.SetChatFunc(nil)
 		}
-		p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.llm.SetChatFunc(nil) })
+		p.forEachRouterClassifiers(func(rt *modelRouterRuntime) { rt.llm.SetChatFunc(nil) })
 		return
 	}
 	p.chatRequestExecutor.Store(&executor)
 	if p.llmClassifier != nil {
 		p.llmClassifier.SetChatFunc(p.classifyComplexityTextViaLLM)
 	}
-	p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.llm.SetChatFunc(p.classifyComplexityTextViaLLM) })
+	p.forEachRouterClassifiers(func(rt *modelRouterRuntime) { rt.llm.SetChatFunc(p.classifyComplexityTextViaLLM) })
 }
 
 // chatExecutor returns the currently wired executor, or nil.

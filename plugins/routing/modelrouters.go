@@ -2,6 +2,9 @@ package routing
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync/atomic"
@@ -26,6 +29,13 @@ import (
 // them as a runtime with no id, so one classification path serves both.
 // Request capture and phrase suggestions are a model router's only: each
 // captures its own classified requests (see complexitycapture.go).
+//
+// Routers whose classifier settings are the same (classifierShareKey) classify
+// with the same classifiers: the first one builds them and the others join it,
+// so a hundred routers made from one configuration embed their phrases once
+// and hold one phrase bank. Each still has a runtime of its own, with its own
+// settings and session toggle. The classifiers are closed when the last router
+// using them leaves (classifiersUsed).
 type modelRouterRuntime struct {
 	id string // "" for the Complexity Router page's config
 	// record reads the router as saved: its name, targets and routing come from the live store,
@@ -34,9 +44,11 @@ type modelRouterRuntime struct {
 	record         func() (*registry.ModelRouter, bool)
 	config         *atomic.Pointer[complexity.AnalyzerConfig]
 	sessionEnabled *atomic.Bool
+	shareKey       *atomic.Pointer[string] // see classifierKey; nil for the Complexity Router page's config
 	semantic       *complexity.SemanticClassifier
 	llm            *complexity.LLMClassifier
-	capture        *complexity.RequestCapture // nil for the Complexity Router page's config, or when capture is not started
+	capture        *complexity.RequestCapture // nil for the Complexity Router page's config, when capture is not started, or for a router that joined another's classifiers
+	built          bool                       // the router built the classifiers it uses, so what they capture is keyed by it
 	shared         bool                       // a view over the plugin's own fields, closed by Cleanup
 }
 
@@ -44,6 +56,73 @@ type modelRouterRuntime struct {
 type modelRouterState struct {
 	config         atomic.Pointer[complexity.AnalyzerConfig]
 	sessionEnabled atomic.Bool
+	shareKey       atomic.Pointer[string]
+}
+
+// classifierKey names the classifier settings the router classifies with, as
+// classifierShareKey made it. Routers with the same key use the same
+// classifiers and reuse one classification within a request. Empty for a
+// router that shares neither, and for the Complexity Router page's config.
+func (rt *modelRouterRuntime) classifierKey() string {
+	if rt.shareKey == nil {
+		return ""
+	}
+	if key := rt.shareKey.Load(); key != nil {
+		return *key
+	}
+	return ""
+}
+
+// classifierShareKey names a router's classifier settings, so routers that
+// classify alike can be told apart from ones that do not. Everything that can
+// change a classification or what it costs is part of it: the classifier, its
+// semantic, decision and llm blocks, the phrases and the tier boundaries. The
+// session block is left out, because each router applies its own session
+// memory to the answer afterwards.
+//
+// A router with a suggestions block gets no key, enabled or not: what its
+// classifier captures, and what a suggestion run reads back, is keyed by the
+// router, so it keeps classifiers of its own.
+func classifierShareKey(resolved *complexity.AnalyzerConfig) string {
+	if resolved == nil || resolved.Suggestions != nil {
+		return ""
+	}
+	settings := *resolved
+	settings.Session = nil
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// classifiersUsed reports whether a router other than rt classifies with rt's
+// classifiers.
+func classifiersUsed(routers map[string]*modelRouterRuntime, rt *modelRouterRuntime) bool {
+	if rt.semantic == nil {
+		return false
+	}
+	for _, other := range routers {
+		if other != rt && other.semantic == rt.semantic {
+			return true
+		}
+	}
+	return false
+}
+
+// routerWithClassifierKey returns a router other than id that classifies with
+// the given settings, for a router with the same settings to join.
+func routerWithClassifierKey(routers map[string]*modelRouterRuntime, id, key string) *modelRouterRuntime {
+	if key == "" {
+		return nil
+	}
+	for otherID, other := range routers {
+		if otherID != id && other.classifierKey() == key {
+			return other
+		}
+	}
+	return nil
 }
 
 // logEngine is the engine a runtime's classification logs are tagged with:
@@ -57,10 +136,11 @@ func (rt *modelRouterRuntime) logEngine() string {
 }
 
 // publishProposal publishes a classifier result and its routing log, as
-// publishComplexityProposal does, tagged with the runtime's engine.
+// publishComplexityProposal does, tagged with the runtime's engine. A reused
+// answer's log line was written by the router that classified.
 func (rt *modelRouterRuntime) publishProposal(ctx *schemas.BifrostContext, proposal complexityProposal) {
 	publishComplexityDecision(ctx, proposal.Result, proposal.Mechanism, proposal.Score)
-	if proposal.LogMessage != "" {
+	if proposal.LogMessage != "" && !proposal.Reused {
 		ctx.AppendRoutingEngineLog(rt.logEngine(), proposal.LogLevel, proposal.LogMessage)
 	}
 }
@@ -119,7 +199,8 @@ func (p *RoutingPlugin) modelRouter(id string) (*modelRouterRuntime, bool) {
 }
 
 // allClassifiers returns every classifier the plugin runs: the Complexity
-// Router page's first, then the model routers by id.
+// Router page's first, then the model routers' by id. Routers that share
+// classifiers are listed once, through the first of them.
 func (p *RoutingPlugin) allClassifiers() []*modelRouterRuntime {
 	routers := p.modelRouters()
 	ids := make([]string, 0, len(routers))
@@ -129,8 +210,16 @@ func (p *RoutingPlugin) allClassifiers() []*modelRouterRuntime {
 	sort.Strings(ids)
 	all := make([]*modelRouterRuntime, 0, len(routers)+1)
 	all = append(all, p.complexityRuntime())
+	listed := make(map[*complexity.SemanticClassifier]struct{}, len(routers))
 	for _, id := range ids {
-		all = append(all, routers[id])
+		rt := routers[id]
+		if rt.semantic != nil {
+			if _, done := listed[rt.semantic]; done {
+				continue
+			}
+			listed[rt.semantic] = struct{}{}
+		}
+		all = append(all, rt)
 	}
 	return all
 }
@@ -175,6 +264,15 @@ func applyRouterConfig(rt *modelRouterRuntime, resolved *complexity.AnalyzerConf
 	}
 }
 
+// applyRouterSettings installs what is the router's own in a resolved config,
+// for a router whose classifiers stay as they are: its settings as requests
+// read them, its session toggle and how its capture samples.
+func applyRouterSettings(rt *modelRouterRuntime, resolved *complexity.AnalyzerConfig) {
+	rt.config.Store(resolved)
+	rt.sessionEnabled.Store(resolved.SessionRoutingEnabled())
+	configureRouterCapture(rt, resolved)
+}
+
 // newModelRouterRuntime builds a router's classifiers with the collaborators
 // the plugin's own classifier was given: the warm coordinator, the embedding
 // width store, the generation registry, and whatever embedding and chat
@@ -210,31 +308,57 @@ func (p *RoutingPlugin) newModelRouterRuntime(id string) *modelRouterRuntime {
 	if p.chatExecutor() != nil {
 		llm.SetChatFunc(p.classifyComplexityTextViaLLM)
 	}
-	records := p.routerRecords
 	return &modelRouterRuntime{
-		id: id,
-		record: func() (*registry.ModelRouter, bool) {
-			if records == nil {
-				return nil, false
-			}
-			return records.Get(id)
-		},
+		id:             id,
+		record:         p.routerRecordReader(id),
 		config:         &state.config,
 		sessionEnabled: &state.sessionEnabled,
+		shareKey:       &state.shareKey,
 		semantic:       semantic,
 		llm:            llm,
 		capture:        capture,
+		built:          true,
 	}
 }
 
-// close stops a router's classifiers and lets its capture finish writing what
-// it queued. The Complexity Router page's are the plugin's and are closed by
+// joinModelRouterRuntime serves a router on the classifiers a router with the
+// same classifier settings already uses. Nothing is built or warmed: the new
+// runtime holds only the router's own settings. It has no capture, which stays
+// with the router the classifiers were built for.
+func (p *RoutingPlugin) joinModelRouterRuntime(id string, with *modelRouterRuntime) *modelRouterRuntime {
+	state := &modelRouterState{}
+	return &modelRouterRuntime{
+		id:             id,
+		record:         p.routerRecordReader(id),
+		config:         &state.config,
+		sessionEnabled: &state.sessionEnabled,
+		shareKey:       &state.shareKey,
+		semantic:       with.semantic,
+		llm:            with.llm,
+	}
+}
+
+// routerRecordReader reads one router as the live store holds it now.
+func (p *RoutingPlugin) routerRecordReader(id string) func() (*registry.ModelRouter, bool) {
+	records := p.routerRecords
+	return func() (*registry.ModelRouter, bool) {
+		if records == nil {
+			return nil, false
+		}
+		return records.Get(id)
+	}
+}
+
+// close stops what a runtime holds once its router has left it: its capture,
+// which finishes writing what it queued, and its classifiers unless other
+// routers still classify with them (stillUsed, read while the routers were
+// locked). The Complexity Router page's are the plugin's and are closed by
 // Cleanup.
-func (rt *modelRouterRuntime) close(logger schemas.Logger) {
-	if rt.shared {
+func (rt *modelRouterRuntime) close(logger schemas.Logger, stillUsed bool) {
+	if rt == nil || rt.shared {
 		return
 	}
-	if rt.semantic != nil {
+	if rt.semantic != nil && !stillUsed {
 		if err := rt.semantic.Close(); err != nil && logger != nil {
 			logger.Warn("[Routing] failed to close model router %q semantic classifier: %v", rt.id, err)
 		}
@@ -261,31 +385,67 @@ func (p *RoutingPlugin) ReloadModelRouter(router *configstore.ModelRouter) error
 		return err
 	}
 	p.routersMu.Lock()
-	defer p.routersMu.Unlock()
 	if err := p.setModelRouterRoutingLocked(router.ID, router.Name, router.Routing); err != nil {
+		p.routersMu.Unlock()
 		return err
 	}
-	p.serveModelRouterLocked(router, resolved)
+	left, stillUsed := p.serveModelRouterLocked(router, resolved)
+	p.routersMu.Unlock()
+	left.close(p.logger, stillUsed)
 	return nil
 }
 
-// serveModelRouterLocked serves a router on a runtime of its own. routersMu
+// serveModelRouterLocked serves a router with its resolved config. routersMu
 // must be held.
-func (p *RoutingPlugin) serveModelRouterLocked(router *configstore.ModelRouter, resolved *complexity.AnalyzerConfig) {
+//
+// A router keeps the classifiers it has, reconfigured as a reload always did,
+// while no other router uses them and no other router already classifies with
+// its new settings. So a router that shares with no one behaves as it did
+// before routers shared: an edit keeps its previous phrase bank serving while
+// the new one warms. Otherwise it moves: onto the classifiers of a router with
+// the same settings, which are warm already, or onto new ones of its own, which
+// warm as a new router's do. The routers it leaves behind are not touched.
+//
+// When the router moved, the runtime it left is returned for the caller to
+// close once routersMu is released, with whether other routers still use its
+// classifiers.
+func (p *RoutingPlugin) serveModelRouterLocked(router *configstore.ModelRouter, resolved *complexity.AnalyzerConfig) (left *modelRouterRuntime, stillUsed bool) {
+	key := classifierShareKey(resolved)
 	current := p.modelRouters()
 	rt, exists := current[router.ID]
-	if !exists {
-		rt = p.newModelRouterRuntime(router.ID)
-	}
-	applyRouterConfig(rt, resolved)
-	if !exists {
-		next := make(map[string]*modelRouterRuntime, len(current)+1)
-		for id, existing := range current {
-			next[id] = existing
+	peer := routerWithClassifierKey(current, router.ID, key)
+	if exists {
+		alone := !classifiersUsed(current, rt)
+		switch {
+		case !alone && key == rt.classifierKey():
+			// The classifier settings are the ones the others still use: only
+			// what is the router's own changed.
+			applyRouterSettings(rt, resolved)
+			return nil, false
+		case alone && peer == nil && (key != "" || rt.built):
+			// A router with no key needs classifiers built for it, since what
+			// they capture is keyed by the router.
+			applyRouterConfig(rt, resolved)
+			rt.shareKey.Store(&key)
+			return nil, false
 		}
-		next[router.ID] = rt
-		p.routers.Store(&next)
+		left, stillUsed = rt, !alone
 	}
+	if peer != nil {
+		rt = p.joinModelRouterRuntime(router.ID, peer)
+		applyRouterSettings(rt, resolved)
+	} else {
+		rt = p.newModelRouterRuntime(router.ID)
+		applyRouterConfig(rt, resolved)
+	}
+	rt.shareKey.Store(&key)
+	next := make(map[string]*modelRouterRuntime, len(current)+1)
+	for id, existing := range current {
+		next[id] = existing
+	}
+	next[router.ID] = rt
+	p.routers.Store(&next)
+	return left, stillUsed
 }
 
 // setModelRouterRoutingLocked records which requests a router takes. A router
@@ -343,6 +503,7 @@ func (p *RoutingPlugin) RemoveModelRouter(id string) error {
 	}
 	current := p.modelRouters()
 	rt, exists := current[id]
+	stillUsed := false
 	if exists {
 		next := make(map[string]*modelRouterRuntime, len(current))
 		for routerID, existing := range current {
@@ -351,10 +512,11 @@ func (p *RoutingPlugin) RemoveModelRouter(id string) error {
 			}
 		}
 		p.routers.Store(&next)
+		stillUsed = classifiersUsed(next, rt)
 	}
 	p.routersMu.Unlock()
 	if exists {
-		rt.close(p.logger)
+		rt.close(p.logger, stillUsed)
 	}
 	p.dropRouterCaptures(id)
 	return nil
@@ -383,6 +545,7 @@ func (p *RoutingPlugin) loadModelRouters() {
 				}
 				continue
 			}
+			// Each id is served once here, so no router leaves a runtime behind.
 			p.serveModelRouterLocked(router, resolved)
 		}
 		if err := p.setModelRouterRoutingLocked(router.ID, router.Name, router.Routing); err != nil && p.logger != nil {
@@ -398,15 +561,39 @@ func (p *RoutingPlugin) closeModelRouters() {
 	empty := map[string]*modelRouterRuntime{}
 	p.routers.Store(&empty)
 	p.routersMu.Unlock()
+	closed := make(map[*complexity.SemanticClassifier]struct{}, len(current))
 	for _, rt := range current {
-		rt.close(p.logger)
+		_, done := closed[rt.semantic]
+		rt.close(p.logger, done)
+		closed[rt.semantic] = struct{}{}
 	}
 }
 
-// forEachModelRouter applies a collaborator change to every model router; the
-// caller has already updated the plugin's own classifiers.
+// forEachModelRouter visits every model router, for what is each router's
+// own: its settings and its capture.
 func (p *RoutingPlugin) forEachModelRouter(fn func(rt *modelRouterRuntime)) {
 	for _, rt := range p.modelRouters() {
+		fn(rt)
+	}
+}
+
+// forEachRouterClassifiers applies a collaborator change to the model routers'
+// classifiers, once for each set: routers that share classifiers are visited
+// through one of them, so a change that restarts a warmup restarts it once.
+// The caller has already updated the plugin's own classifiers.
+func (p *RoutingPlugin) forEachRouterClassifiers(fn func(rt *modelRouterRuntime)) {
+	routers := p.modelRouters()
+	if len(routers) == 0 {
+		return
+	}
+	visited := make(map[*complexity.SemanticClassifier]struct{}, len(routers))
+	for _, rt := range routers {
+		if rt.semantic != nil {
+			if _, done := visited[rt.semantic]; done {
+				continue
+			}
+			visited[rt.semantic] = struct{}{}
+		}
 		fn(rt)
 	}
 }

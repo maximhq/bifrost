@@ -336,7 +336,7 @@ func (p *RoutingPlugin) RearmComplexitySemanticClassifier(provider schemas.Model
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.RearmForProvider(provider)
 	}
-	p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.semantic.RearmForProvider(provider) })
+	p.forEachRouterClassifiers(func(rt *modelRouterRuntime) { rt.semantic.RearmForProvider(provider) })
 }
 
 // ValidateComplexityAnalyzerConfig runs the semantic classifier's own
@@ -404,16 +404,16 @@ func (p *RoutingPlugin) ListComplexityGenerations(ctx context.Context) ([]comple
 	if err != nil {
 		return nil, err
 	}
-	routers := p.modelRouters()
-	if len(routers) == 0 {
+	if len(p.modelRouters()) == 0 {
 		return generations, nil
 	}
 	index := make(map[string]int, len(generations))
 	for i, generation := range generations {
 		index[generation.Namespace] = i
 	}
-	for _, rt := range routers {
-		if rt.semantic == nil {
+	for _, rt := range p.allClassifiers() {
+		// The Complexity Router page's are listed above.
+		if rt.shared || rt.semantic == nil {
 			continue
 		}
 		listed, err := rt.semantic.ListGenerations(ctx)

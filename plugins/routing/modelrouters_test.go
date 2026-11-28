@@ -2,7 +2,11 @@ package routing
 
 import (
 	"context"
+	"fmt"
+	"runtime"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -386,4 +390,273 @@ func newTestRouterMatcher(t *testing.T) *rules.ModelRouterMatcher {
 	matcher, err := rules.NewModelRouterMatcher(live)
 	require.NoError(t, err)
 	return matcher
+}
+
+// embeddedTexts counts how often each text was embedded.
+type embeddedTexts struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+// embed is classifyTestEmbeddings, counting every text it is given.
+func (e *embeddedTexts) embed(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	e.mu.Lock()
+	for _, text := range embeddingRequestTexts(req.Input) {
+		e.counts[text]++
+	}
+	e.mu.Unlock()
+	return classifyTestEmbeddings(ctx, req)
+}
+
+// count returns how often text was embedded.
+func (e *embeddedTexts) count(text string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.counts[text]
+}
+
+// sharedClassifierTestPlugin is a routing plugin with a session table whose
+// routers embed with classifyTestEmbeddings, and the count of what they
+// embedded.
+func sharedClassifierTestPlugin(t testing.TB) (*RoutingPlugin, *embeddedTexts) {
+	t.Helper()
+	logger := rules.NewMockLogger()
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
+	require.NoError(t, err)
+	t.Cleanup(ruleStore.Close)
+	p, err := InitFromStore(context.Background(), &Config{Sessions: stringTableForTest(t)}, logger, nil, ruleStore.Store, NewMockGovernance())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, p.Cleanup()) })
+	embedded := &embeddedTexts{counts: map[string]int{}}
+	p.SetEmbeddingRequestExecutor(embedded.embed)
+	return p, embedded
+}
+
+// semanticRouterConfig is a router config that classifies semantically against
+// one phrase a tier, with the given SIMPLE phrase.
+func semanticRouterConfig(simplePhrase string) complexity.AnalyzerConfig {
+	return complexity.AnalyzerConfig{
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			SimpleKeywords:  []string{simplePhrase},
+			MediumKeywords:  []string{"an implementation detail question"},
+			ComplexKeywords: []string{"a deep architectural tradeoff analysis"},
+		},
+		Semantic: &configstore.ComplexitySemanticConfig{Provider: "openai", EmbeddingModel: "test-embedding-model", MinSimilarity: 0.9},
+	}
+}
+
+// serveReadyRouter serves a router with the config and waits for its phrase
+// bank to be ready, returning its runtime.
+func serveReadyRouter(t testing.TB, p *RoutingPlugin, id string, config complexity.AnalyzerConfig) *modelRouterRuntime {
+	t.Helper()
+	require.NoError(t, p.ReloadModelRouter(&configstore.ModelRouter{ID: id, Name: id, ComplexityAnalyzerConfig: config}))
+	require.Eventually(t, func() bool {
+		status, ok := p.ModelRouterSemanticStatus(id)
+		return ok && status.State == complexity.SemanticStatusReady
+	}, 5*time.Second, 10*time.Millisecond, "router %s should become ready", id)
+	rt, ok := p.modelRouter(id)
+	require.True(t, ok)
+	return rt
+}
+
+// TestModelRoutersWithTheSameClassifierSettingsShareClassifiers pins what the
+// plugin builds for routers that classify alike: one set of classifiers, built
+// and warmed for the first and joined by the rest, so their phrases are
+// embedded once however many routers there are. A router whose settings differ
+// by one phrase, and a router with a suggestions block, get classifiers of
+// their own. A change made to every classifier reaches a shared set once.
+func TestModelRoutersWithTheSameClassifierSettingsShareClassifiers(t *testing.T) {
+	p, embedded := sharedClassifierTestPlugin(t)
+	const phrase = "a casual greeting"
+
+	first := serveReadyRouter(t, p, "first", semanticRouterConfig(phrase))
+	second := serveReadyRouter(t, p, "second", semanticRouterConfig(phrase))
+	third := serveReadyRouter(t, p, "third", semanticRouterConfig(phrase))
+
+	require.Same(t, first.semantic, second.semantic)
+	require.Same(t, first.semantic, third.semantic)
+	require.Same(t, first.llm, second.llm)
+	require.NotSame(t, first, second, "each router still has a runtime of its own")
+	require.Equal(t, 1, embedded.count(phrase), "the phrases are embedded once for the three routers")
+	require.True(t, first.built)
+	require.False(t, second.built)
+	require.Equal(t, p.capture != nil, first.capture != nil, "the capture stays with the router the classifiers were built for")
+	require.Nil(t, second.capture)
+	require.Nil(t, third.capture)
+	require.NotEmpty(t, first.classifierKey())
+	require.Equal(t, first.classifierKey(), third.classifierKey())
+
+	const otherPhrase = "a casual greeting between friends"
+	different := serveReadyRouter(t, p, "different", semanticRouterConfig(otherPhrase))
+	require.NotSame(t, first.semantic, different.semantic, "one phrase apart is a different phrase bank")
+	require.NotEqual(t, first.classifierKey(), different.classifierKey())
+
+	withSuggestions := semanticRouterConfig(phrase)
+	withSuggestions.Suggestions = &configstore.ComplexitySuggestionsConfig{}
+	suggesting := serveReadyRouter(t, p, "suggesting", withSuggestions)
+	require.NotSame(t, first.semantic, suggesting.semantic, "what a router with a suggestions block captures is keyed by the router")
+	require.Empty(t, suggesting.classifierKey())
+	require.True(t, suggesting.built)
+
+	withSession := semanticRouterConfig(phrase)
+	withSession.Session = &configstore.ComplexitySessionConfig{Enabled: true}
+	remembering := serveReadyRouter(t, p, "remembering", withSession)
+	require.Same(t, first.semantic, remembering.semantic, "session memory is each router's own, not part of how it classifies")
+	require.True(t, remembering.sessionEnabled.Load())
+	require.False(t, first.sessionEnabled.Load())
+
+	visited := 0
+	p.forEachRouterClassifiers(func(*modelRouterRuntime) { visited++ })
+	require.Equal(t, 3, visited, "the shared set, the different one and the suggesting one")
+	require.Len(t, p.allClassifiers(), 4, "the Complexity Router page's, then one for each set")
+}
+
+// TestModelRouterMovesToOtherClassifiersOnlyWhenItMust walks the edits that
+// change which classifiers a router uses. A router that shares with no one
+// keeps its classifiers through every edit, as it did before routers shared,
+// so its previous phrase bank serves while the new one warms. A router in a
+// group moves when its classifier settings change, the routers it leaves keep
+// theirs untouched, and an edit to what is the router's own moves nothing.
+func TestModelRouterMovesToOtherClassifiersOnlyWhenItMust(t *testing.T) {
+	const phrase, otherPhrase = "a casual greeting", "a casual greeting between friends"
+
+	t.Run("a router that shares with no one keeps its classifiers", func(t *testing.T) {
+		p, _ := sharedClassifierTestPlugin(t)
+		solo := serveReadyRouter(t, p, "solo", semanticRouterConfig(phrase))
+		classifier, key := solo.semantic, solo.classifierKey()
+
+		edited := serveReadyRouter(t, p, "solo", semanticRouterConfig(otherPhrase))
+		require.Same(t, solo, edited)
+		require.Same(t, classifier, edited.semantic)
+		require.NotEqual(t, key, edited.classifierKey(), "the key follows the settings")
+
+		withSuggestions := semanticRouterConfig(otherPhrase)
+		withSuggestions.Suggestions = &configstore.ComplexitySuggestionsConfig{}
+		suggesting := serveReadyRouter(t, p, "solo", withSuggestions)
+		require.Same(t, classifier, suggesting.semantic, "the classifiers were built for this router, so they can capture for it")
+		require.Empty(t, suggesting.classifierKey())
+
+		plain := serveReadyRouter(t, p, "solo", semanticRouterConfig(otherPhrase))
+		require.Same(t, classifier, plain.semantic)
+		require.NotEmpty(t, plain.classifierKey())
+	})
+
+	t.Run("a classifier edit moves one router and leaves the rest", func(t *testing.T) {
+		p, embedded := sharedClassifierTestPlugin(t)
+		first := serveReadyRouter(t, p, "first", semanticRouterConfig(phrase))
+		serveReadyRouter(t, p, "second", semanticRouterConfig(phrase))
+		shared := first.semantic
+
+		moved := serveReadyRouter(t, p, "second", semanticRouterConfig(otherPhrase))
+		require.NotSame(t, shared, moved.semantic)
+		require.True(t, moved.built)
+		kept, _ := p.modelRouter("first")
+		require.Same(t, first, kept)
+		require.True(t, shared.Serving(), "the router left behind keeps a serving phrase bank")
+		require.Equal(t, 1, embedded.count(phrase), "and its phrases are not embedded again")
+
+		own := moved.semantic
+		back := serveReadyRouter(t, p, "second", semanticRouterConfig(phrase))
+		require.Same(t, shared, back.semantic, "the same settings again join the classifiers that have them")
+		require.False(t, own.Serving(), "the classifiers no router uses any more are closed")
+		require.Equal(t, 1, embedded.count(phrase), "joining warms nothing")
+	})
+
+	t.Run("an edit to what is the router's own moves nothing", func(t *testing.T) {
+		p, embedded := sharedClassifierTestPlugin(t)
+		first := serveReadyRouter(t, p, "first", semanticRouterConfig(phrase))
+		second := serveReadyRouter(t, p, "second", semanticRouterConfig(phrase))
+
+		withSession := semanticRouterConfig(phrase)
+		withSession.Session = &configstore.ComplexitySessionConfig{Enabled: true}
+		edited := serveReadyRouter(t, p, "second", withSession)
+		require.Same(t, second, edited)
+		require.Same(t, first.semantic, edited.semantic)
+		require.True(t, edited.sessionEnabled.Load())
+		require.False(t, first.sessionEnabled.Load())
+		require.Equal(t, 1, embedded.count(phrase), "the shared phrase bank is not warmed again for one router's session setting")
+	})
+
+	t.Run("a suggestions block gives a router in a group classifiers of its own", func(t *testing.T) {
+		p, _ := sharedClassifierTestPlugin(t)
+		first := serveReadyRouter(t, p, "first", semanticRouterConfig(phrase))
+		second := serveReadyRouter(t, p, "second", semanticRouterConfig(phrase))
+		shared := first.semantic
+		withSuggestions := semanticRouterConfig(phrase)
+		withSuggestions.Suggestions = &configstore.ComplexitySuggestionsConfig{}
+
+		// The router that joined: the shared classifiers capture under the first router's name.
+		suggesting := serveReadyRouter(t, p, "second", withSuggestions)
+		require.NotSame(t, second, suggesting)
+		require.NotSame(t, shared, suggesting.semantic)
+		require.True(t, suggesting.built)
+		require.True(t, shared.Serving())
+
+		// The router they were built for, while a third still uses them.
+		third := serveReadyRouter(t, p, "third", semanticRouterConfig(phrase))
+		require.Same(t, shared, third.semantic)
+		builder := serveReadyRouter(t, p, "first", withSuggestions)
+		require.NotSame(t, shared, builder.semantic, "the router that changed is the one that moves")
+		require.True(t, shared.Serving(), "the third router keeps the classifiers it joined")
+		still, _ := p.modelRouter("third")
+		require.Same(t, third, still)
+	})
+}
+
+// TestSharedClassifiersCloseWithTheirLastRouter pins that removing a router
+// closes its classifiers only when no other router classifies with them, the
+// router they were built for included.
+func TestSharedClassifiersCloseWithTheirLastRouter(t *testing.T) {
+	p, _ := sharedClassifierTestPlugin(t)
+	const phrase = "a casual greeting"
+	first := serveReadyRouter(t, p, "first", semanticRouterConfig(phrase))
+	serveReadyRouter(t, p, "second", semanticRouterConfig(phrase))
+	shared := first.semantic
+
+	require.NoError(t, p.RemoveModelRouter("first"))
+	require.True(t, shared.Serving(), "the second router still classifies with them")
+	status, ok := p.ModelRouterSemanticStatus("second")
+	require.True(t, ok)
+	require.Equal(t, complexity.SemanticStatusReady, status.State)
+
+	require.NoError(t, p.RemoveModelRouter("second"))
+	require.False(t, shared.Serving(), "no router is left to use them")
+}
+
+// BenchmarkServeModelRoutersWithTheSameSettings measures what a gateway holds
+// for classifier routers made from one configuration, which is what routing
+// rules on complexity_tier become: the heap each router adds once every one is
+// ready, the goroutines the gateway runs for them, and how often their phrases
+// were embedded. Run it with -benchtime=1x: one iteration serves every router.
+func BenchmarkServeModelRoutersWithTheSameSettings(b *testing.B) {
+	const phrase = "a casual greeting"
+	for _, n := range []int{1, 100, 1000} {
+		b.Run(fmt.Sprintf("%d routers", n), func(b *testing.B) {
+			for b.Loop() {
+				p, embedded := sharedClassifierTestPlugin(b)
+				runtime.GC()
+				var before, after runtime.MemStats
+				runtime.ReadMemStats(&before)
+				goroutines := runtime.NumGoroutine()
+				for i := range n {
+					require.NoError(b, p.ReloadModelRouter(&configstore.ModelRouter{
+						ID: fmt.Sprintf("router-%04d", i), Name: fmt.Sprintf("router-%04d", i), ComplexityAnalyzerConfig: semanticRouterConfig(phrase),
+					}))
+				}
+				require.Eventually(b, func() bool {
+					for id := range p.modelRouters() {
+						if status, _ := p.ModelRouterSemanticStatus(id); status.State != complexity.SemanticStatusReady {
+							return false
+						}
+					}
+					return true
+				}, time.Minute, 20*time.Millisecond, "every router should become ready")
+				runtime.GC()
+				runtime.ReadMemStats(&after)
+				b.ReportMetric(float64(int64(after.HeapAlloc)-int64(before.HeapAlloc))/float64(n), "heap-bytes/router")
+				b.ReportMetric(float64(runtime.NumGoroutine()-goroutines), "goroutines")
+				b.ReportMetric(float64(embedded.count(phrase)), "phrase-embeddings")
+			}
+		})
+	}
 }

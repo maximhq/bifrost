@@ -15,7 +15,9 @@ import (
 // of its own, sampling at the router's suggestions rate into namespaces keyed
 // by the router (complexity.CaptureNamespace), so a router's suggestion runs
 // read only the requests it classified. The Complexity Router page's config
-// captures nothing.
+// captures nothing, and neither does a router that joined another router's
+// classifiers (see modelRouterRuntime): only a router without a suggestions
+// block joins, so it has nothing to sample.
 //
 // The plugin keeps what was stored bounded with an hourly upkeep: each router's
 // vectors are swept past its lookback (or the logs' retention, if that is
