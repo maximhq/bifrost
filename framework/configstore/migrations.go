@@ -614,6 +614,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
+	{IDs: []string{"add_rapidmlx_key_config_column"}, run: migrationAddRapidMLXKeyConfigColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17938,4 +17939,35 @@ func migrationAddGovernanceUsageResetEpochs(ctx context.Context, db *gorm.DB, lo
 		},
 	}})
 	return migration.Migrate()
+}
+
+// migrationAddRapidMLXKeyConfigColumn adds the rapidmlx_url column to the key table
+func migrationAddRapidMLXKeyConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_rapidmlx_key_config_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "rapidmlx_url"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "rapidmlx_url"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running rapidmlx key config column migration: %s", err.Error())
+	}
+	return nil
 }

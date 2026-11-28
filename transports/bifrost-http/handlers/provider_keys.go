@@ -592,6 +592,7 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"vllm_key_config":           func() { updateKey.VLLMKeyConfig = oldRawKey.VLLMKeyConfig },
 		"replicate_key_config":      func() { updateKey.ReplicateKeyConfig = oldRawKey.ReplicateKeyConfig },
 		"ollama_key_config":         func() { updateKey.OllamaKeyConfig = oldRawKey.OllamaKeyConfig },
+		"rapidmlx_key_config":       func() { updateKey.RapidMLXKeyConfig = oldRawKey.RapidMLXKeyConfig },
 		"sgl_key_config":            func() { updateKey.SGLKeyConfig = oldRawKey.SGLKeyConfig },
 		"databricks_key_config":     func() { updateKey.DatabricksKeyConfig = oldRawKey.DatabricksKeyConfig },
 		"cloudflare_key_config":     func() { updateKey.CloudflareKeyConfig = oldRawKey.CloudflareKeyConfig },
@@ -807,6 +808,16 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 		}
 	}
 
+	if mergedKey.RapidMLXKeyConfig != nil {
+		var stored *schemas.SecretVar
+		if oldRawKey.RapidMLXKeyConfig != nil {
+			stored = &oldRawKey.RapidMLXKeyConfig.URL
+		}
+		if err := preserve(&mergedKey.RapidMLXKeyConfig.URL, stored, "rapidmlx_key_config.url"); err != nil {
+			return schemas.Key{}, err
+		}
+	}
+
 	if mergedKey.SGLKeyConfig != nil {
 		var stored *schemas.SecretVar
 		if oldRawKey.SGLKeyConfig != nil {
@@ -970,7 +981,7 @@ func validateWeight(weight float64) error {
 	return nil
 }
 
-// validateProviderKeyServerURLs holds the key-level server URLs (Ollama/SGL/VLLM) to the
+// validateProviderKeyServerURLs holds the key-level server URLs (Ollama/SGL/VLLM/Rapid-MLX) to the
 // same destination rule as a provider base URL: link-local (cloud metadata) and unspecified
 // addresses are refused; private and loopback hosts stay allowed because a self-hosted
 // server on the local network is the documented setup. Unresolved references are skipped -
@@ -983,6 +994,16 @@ func validateProviderKeyServerURLs(key schemas.Key) error {
 	var urls []serverURL
 	if c := key.OllamaKeyConfig; c != nil {
 		urls = append(urls, serverURL{"ollama_key_config.url", &c.URL})
+	}
+	if c := key.RapidMLXKeyConfig; c != nil {
+		parsedURL, err := url.Parse(c.URL.GetValue())
+		if err != nil {
+			return fmt.Errorf("invalid rapidmlx_key_config.url")
+		}
+		if parsedURL.User != nil || parsedURL.ForceQuery || parsedURL.RawQuery != "" || strings.Contains(c.URL.GetValue(), "#") {
+			return fmt.Errorf("rapidmlx_key_config.url must not contain userinfo, query, or fragment components; put credentials in the key value")
+		}
+		urls = append(urls, serverURL{"rapidmlx_key_config.url", &c.URL})
 	}
 	if c := key.SGLKeyConfig; c != nil {
 		urls = append(urls, serverURL{"sgl_key_config.url", &c.URL})
@@ -1057,6 +1078,10 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 	case schemas.Ollama:
 		if key.OllamaKeyConfig == nil || !key.OllamaKeyConfig.URL.IsSet() {
 			return fmt.Errorf("ollama_key_config.url is required for Ollama keys")
+		}
+	case schemas.RapidMLX:
+		if key.RapidMLXKeyConfig == nil || !key.RapidMLXKeyConfig.URL.IsSet() {
+			return fmt.Errorf("rapidmlx_key_config.url is required for Rapid-MLX keys")
 		}
 	case schemas.SGL:
 		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
@@ -1267,6 +1292,9 @@ func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	}
 	if c := key.OllamaKeyConfig; c != nil {
 		add("ollama_key_config.url", &c.URL)
+	}
+	if c := key.RapidMLXKeyConfig; c != nil {
+		add("rapidmlx_key_config.url", &c.URL)
 	}
 	if c := key.SGLKeyConfig; c != nil {
 		add("sgl_key_config.url", &c.URL)

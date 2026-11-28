@@ -1006,6 +1006,8 @@ func RedactedKey(key schemas.Key) schemas.Key {
 		redacted.OllamaKeyConfig = ollamaConfig
 	}
 
+	redacted.RapidMLXKeyConfig = key.RapidMLXKeyConfig.Redacted()
+
 	if key.SGLKeyConfig != nil {
 		sglConfig := &schemas.SGLKeyConfig{}
 		// The URL is a service address, not a credential: surface it in plaintext.
@@ -1549,6 +1551,20 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 			return "", err
 		}
 		hash.Write(data)
+	}
+	// Hash RapidMLXKeyConfig
+	if key.RapidMLXKeyConfig != nil {
+		if key.RapidMLXKeyConfig.URL.IsFromSecret() {
+			// Secret rotation is not a config edit. Keep the source, not its resolved URL.
+			hash.Write([]byte("ref:" + key.RapidMLXKeyConfig.URL.GetRawRef()))
+		} else {
+			// Preserve the existing hash input for literal URLs.
+			data, err := providerUtils.MarshalSorted(key.RapidMLXKeyConfig)
+			if err != nil {
+				return "", err
+			}
+			hash.Write(data)
+		}
 	}
 	// Hash SGLKeyConfig
 	if key.SGLKeyConfig != nil {

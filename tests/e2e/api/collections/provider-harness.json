@@ -352427,6 +352427,291 @@
           ]
         }
       ]
+    },
+    {
+      "name": "393. Rapid-MLX local provider (rapidmlx local provider) (#10032 / PR #10033)",
+      "description": "Requires a configured rapidmlx key pointing at a running local Rapid-MLX server serving mlx-community/Qwen3.5-4B-MLX-4bit. Pins chat and native Responses routing, with and without SSE. No external API credentials are required. Opt in with INCLUDE_PREVIEW=1 (Newman environment variable include_preview=1) after configuring the server; all seven requests are skipped by default.",
+      "item": [
+        {
+          "name": "[PREVIEW] Rapid-MLX rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit chat/completions unary - #10032",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('Rapid-MLX returns generated output', function () { var body = pm.response.json(); pm.expect(body.choices[0].message.content).to.be.a('string').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"max_tokens\": 128\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Rapid-MLX rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit chat/completions streaming - #10032",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('Rapid-MLX stream contains answer text and completes', function () {",
+                  "  var payloads = [];",
+                  "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    payloads.push(line.slice(5).trim());",
+                  "  });",
+                  "  pm.expect(payloads.indexOf('[DONE]'), pm.response.text()).to.be.above(-1);",
+                  "  var chunks = payloads.filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  pm.expect(chunks.some(function (chunk) {",
+                  "    return (chunk.choices || []).some(function (choice) { return choice.delta && typeof choice.delta.content === 'string' && choice.delta.content.length > 0; });",
+                  "  }), pm.response.text()).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"max_tokens\": 128,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Rapid-MLX rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit responses unary - #10032",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('Rapid-MLX returns generated output', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.output).to.be.an('array');",
+                  "  var hasAnswer = body.output.some(function (item) {",
+                  "    return item.type === 'message' && Array.isArray(item.content) && item.content.some(function (part) {",
+                  "      return part.type === 'output_text' && typeof part.text === 'string' && part.text.length > 0;",
+                  "    });",
+                  "  });",
+                  "  pm.expect(hasAnswer, pm.response.text()).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit\",\n  \"input\": \"Say hello in one short sentence.\",\n  \"max_output_tokens\": 128\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Rapid-MLX rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit responses streaming - #10032",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('Rapid-MLX stream contains answer text and completes', function () {",
+                  "  var events = [];",
+                  "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    events.push(JSON.parse(data));",
+                  "  });",
+                  "  pm.expect(events.some(function (event) {",
+                  "    return event.type === 'response.output_text.delta' && typeof event.delta === 'string' && event.delta.length > 0;",
+                  "  }), pm.response.text()).to.eql(true);",
+                  "  pm.expect(events.some(function (event) { return event.type === 'response.completed'; }), pm.response.text()).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit\",\n  \"input\": \"Say hello in one short sentence.\",\n  \"max_output_tokens\": 128,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-400] rapidmlx management rejects URL userinfo before mlx-community/Qwen3.5-4B-MLX-4bit inference - #10033",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX refuses URL userinfo', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('userinfo');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"rapidmlx-userinfo-rejected\",\"value\":\"\",\"weight\":1,\"rapidmlx_key_config\":{\"url\":\"http://user:password@localhost:8000/v1\"}}"
+            },
+            "url": "{{baseUrl}}/api/providers/rapidmlx/keys"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-400] rapidmlx management rejects URL query credentials - #10033",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX refuses URL query', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('query');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"rapidmlx-query-rejected\",\"value\":\"\",\"weight\":1,\"rapidmlx_key_config\":{\"url\":\"http://localhost:8000/v1?api_key=rapidmlx-query-secret\"}}"
+            },
+            "url": "{{baseUrl}}/api/providers/rapidmlx/keys"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-400] rapidmlx management rejects URL fragment credentials - #10033",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX refuses URL fragment', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('fragment');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"rapidmlx-fragment-rejected\",\"value\":\"\",\"weight\":1,\"rapidmlx_key_config\":{\"url\":\"http://localhost:8000/v1#rapidmlx-fragment-secret\"}}"
+            },
+            "url": "{{baseUrl}}/api/providers/rapidmlx/keys"
+          }
+        }
+      ]
     }
   ]
 }

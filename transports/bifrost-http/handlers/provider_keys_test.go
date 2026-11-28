@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -538,6 +539,7 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 			RoleARN:   secretPtr("arn:aws:iam::123456789012:role/sagemaker-current"),
 		},
 		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
+		RapidMLXKeyConfig:   &schemas.RapidMLXKeyConfig{URL: secret("http://localhost:8000/v1")},
 		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
 		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
 		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: secret("0123456789abcdef0123456789abcdef")},
@@ -563,6 +565,7 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 			RoleARN:   secretPtr(staleMaskValue("arn:", "rent")),
 		},
 		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
+		RapidMLXKeyConfig:   &schemas.RapidMLXKeyConfig{URL: staleMask("http", "0/v1")},
 		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
 		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
 		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: staleMask("0123", "cdef")},
@@ -584,6 +587,7 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		{"sagemaker secret key", merged.SageMakerKeyConfig.SecretKey.GetValue(), oldRaw.SageMakerKeyConfig.SecretKey.GetValue()},
 		{"sagemaker role arn", merged.SageMakerKeyConfig.RoleARN.GetValue(), oldRaw.SageMakerKeyConfig.RoleARN.GetValue()},
 		{"vllm url", merged.VLLMKeyConfig.URL.GetValue(), oldRaw.VLLMKeyConfig.URL.GetValue()},
+		{"rapidmlx url", merged.RapidMLXKeyConfig.URL.GetValue(), oldRaw.RapidMLXKeyConfig.URL.GetValue()},
 		{"ollama url", merged.OllamaKeyConfig.URL.GetValue(), oldRaw.OllamaKeyConfig.URL.GetValue()},
 		{"sgl url", merged.SGLKeyConfig.URL.GetValue(), oldRaw.SGLKeyConfig.URL.GetValue()},
 		{"cloudflare account id", merged.CloudflareKeyConfig.AccountID.GetValue(), oldRaw.CloudflareKeyConfig.AccountID.GetValue()},
@@ -2212,4 +2216,106 @@ func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
 			t.Fatalf("the stored key must be untouched, got %+v", stored.OAuthKeyConfig)
 		}
 	})
+}
+
+func TestRapidMLXKeyURLs(t *testing.T) {
+	t.Setenv("RAPID_MLX_USERINFO_URL", "http://user:password@localhost:8000/v1")
+	t.Setenv("RAPID_MLX_QUERY_URL", "http://localhost:8000/v1?api_key=query-secret")
+	for _, tc := range []struct {
+		url      string
+		rejected bool
+	}{
+		{"http://localhost:8000/v1", false},
+		{"http://localhost:8000/v1/user@example", false},
+		{"http:user:password@localhost:8000/v1", true},
+		{"http:localhost:8000/v1", true},
+		{"http://user:password@localhost:8000/v1", true},
+		{"http://user@localhost:8000/v1", true},
+		{"http://@localhost:8000/v1", true},
+		{"env.RAPID_MLX_USERINFO_URL", true},
+		{"http://localhost:8000/v1?api_key=query-secret", true},
+		{"http://localhost:8000/v1?", true},
+		{"http://localhost:8000/v1#fragment-secret", true},
+		{"http://localhost:8000/v1#", true},
+		{"env.RAPID_MLX_QUERY_URL", true},
+		{"http://169.254.169.254/v1", true},
+		{"http://0.0.0.0:8000/v1", true},
+	} {
+		key := schemas.Key{RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(tc.url)}}
+		err := validateProviderKeyServerURLs(key)
+		if (err != nil) != tc.rejected {
+			t.Errorf("URL %s: rejection = %v", tc.url, err)
+		}
+		if _, ok := keyDialTargets(key)["rapidmlx_key_config.url"]; !ok {
+			t.Fatal("missing Rapid-MLX dial target")
+		}
+	}
+	if err := validateProviderKeyURL(schemas.RapidMLX, schemas.Key{}); err == nil {
+		t.Fatal("missing URL accepted")
+	}
+}
+
+func TestRapidMLXProviderResponsesRedactURLCredentials(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	for _, raw := range []string{
+		"http://user:password@localhost:8000/v1?api_key=qx9",
+		"http:user:password@localhost:8000/v1",
+		"http://localhost:8000/v1#qx9",
+		"http://localhost:badport/v1?api_key=qx9",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			original := &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(raw)}
+			store := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.RapidMLX: {},
+			}, map[schemas.ModelProvider][]schemas.Key{
+				schemas.RapidMLX: {{ID: "rapidmlx-key", Name: "rapidmlx-key", RapidMLXKeyConfig: original}},
+			})
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: lib.NewBaseAccount(store), Logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(client.Shutdown)
+			store.SetBifrostClient(client)
+			h := &ProviderHandler{client: client, config: store, modelsManager: &mockModelsManager{}}
+			// Delete runs last so every read sees the legacy/file-loaded key.
+			for _, route := range []struct {
+				name    string
+				handler func(*fasthttp.RequestCtx)
+			}{
+				{"providers", h.listProviders}, {"provider", h.getProvider},
+				{"keys", h.listProviderKeys}, {"key", h.getProviderKey}, {"delete", h.deleteProviderKey},
+			} {
+				t.Run(route.name, func(t *testing.T) {
+					ctx := newTestRequestCtx("")
+					ctx.SetUserValue("provider", "rapidmlx")
+					ctx.SetUserValue("key_id", "rapidmlx-key")
+					route.handler(ctx)
+					body := string(ctx.Response.Body())
+					if ctx.Response.StatusCode() != fasthttp.StatusOK {
+						t.Fatalf("status %d: %s", ctx.Response.StatusCode(), body)
+					}
+					if !strings.Contains(body, "rapidmlx") {
+						t.Fatalf("missing provider or key: %s", body)
+					}
+					for _, secret := range []string{"qx9", "user:password", "badport"} {
+						if strings.Contains(body, secret) {
+							t.Errorf("response leaks %q: %s", secret, body)
+						}
+						if route.name == "delete" {
+							requireNoSecret(t, requireSingleAuditChange(t, ctx, "provider_key.deleted"), secret)
+						}
+					}
+					if original.URL.GetValue() != raw {
+						t.Fatal("live URL was modified")
+					}
+				})
+			}
+			if len(store.GetProviderKeys(schemas.RapidMLX)) != 0 {
+				t.Fatal("key was not deleted")
+			}
+		})
+	}
 }

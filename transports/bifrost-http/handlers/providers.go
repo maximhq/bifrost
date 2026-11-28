@@ -965,6 +965,7 @@ func redactedKeys(keysByProvider map[schemas.ModelProvider][]schemas.Key) []tabl
 				VLLMKeyConfig:          redacted.VLLMKeyConfig,
 				ReplicateKeyConfig:     redacted.ReplicateKeyConfig,
 				OllamaKeyConfig:        redacted.OllamaKeyConfig,
+				RapidMLXKeyConfig:      redacted.RapidMLXKeyConfig,
 				SGLKeyConfig:           redacted.SGLKeyConfig,
 				DatabricksKeyConfig:    redacted.DatabricksKeyConfig,
 				CloudflareKeyConfig:    redacted.CloudflareKeyConfig,

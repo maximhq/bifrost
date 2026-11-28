@@ -209,7 +209,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	const enforceHTTP2 = form.watch("network_config.enforce_http2");
 
 	const baseURLRequired = isCustomProvider;
-	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl";
+	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl" || provider.name === "rapidmlx";
 
 	return (
 		<Form {...form}>

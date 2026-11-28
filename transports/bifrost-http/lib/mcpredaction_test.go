@@ -129,6 +129,16 @@ func TestRedactMCPClientConfig_OpenAPIConfig(t *testing.T) {
 	assert.NotSame(t, config.OpenAPIConfig, redacted.OpenAPIConfig)
 }
 
+func TestRedactURLCredentials(t *testing.T) {
+	for _, tc := range []struct{ name, raw, want string }{
+		{"bare query", "http://localhost:8000/v1?token", "http://localhost:8000/v1?token=redacted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, RedactURLCredentials(tc.raw))
+		})
+	}
+}
+
 // TestRedactMCPClientConfig_OpenAPISpecURLCredentials: a spec_url can carry a
 // signed query or embedded password; a client read masks those parts and
 // keeps the rest of the address, and the masked form is stable so an update

@@ -152,6 +152,7 @@ type Key struct {
 	VLLMKeyConfig          *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`           // vLLM-specific key configuration
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
+	RapidMLXKeyConfig      *RapidMLXKeyConfig      `json:"rapidmlx_key_config,omitempty"`       // Rapid-MLX-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
 	CloudflareKeyConfig    *CloudflareKeyConfig    `json:"cloudflare_key_config,omitempty"`     // Cloudflare Workers AI-specific key configuration
@@ -1294,6 +1295,55 @@ type ReplicateKeyConfig struct {
 // enabling per-key routing and round-robin load balancing across multiple Ollama instances.
 type OllamaKeyConfig struct {
 	URL SecretVar `json:"url"` // Ollama server base URL (required, supports env. prefix)
+}
+
+// RapidMLXKeyConfig represents the Rapid-MLX-specific key configuration.
+// It allows each key to target a different Rapid-MLX server URL,
+// enabling per-key routing and round-robin load balancing across multiple Rapid-MLX instances.
+type RapidMLXKeyConfig struct {
+	URL SecretVar `json:"url"` // Rapid-MLX server base URL (required, supports env. prefix)
+}
+
+// Redacted returns a copy with URL credentials masked, including legacy/file-loaded URLs.
+// Secret references are preserved; malformed URLs are fully masked.
+func (c *RapidMLXKeyConfig) Redacted() *RapidMLXKeyConfig {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	raw := c.URL.GetValue()
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque != "" {
+		// Rootless URLs keep credentials in Opaque instead of User.
+		out.URL.Val = "redacted"
+	} else if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		if u.User != nil {
+			if _, hasPassword := u.User.Password(); hasPassword {
+				u.User = url.UserPassword("redacted", "redacted")
+			} else {
+				u.User = url.User("redacted")
+			}
+		}
+		query, err := url.ParseQuery(u.RawQuery)
+		if err != nil {
+			out.URL.Val = "redacted"
+		} else {
+			for key, values := range query {
+				for i := range values {
+					values[i] = "redacted"
+				}
+				query[key] = values
+			}
+			u.RawQuery = query.Encode()
+			if u.Fragment != "" {
+				u.Fragment = "redacted"
+				u.RawFragment = ""
+			}
+			out.URL.Val = u.String()
+		}
+	}
+	out.URL = *out.URL.RedactedIfSecret()
+	return &out
 }
 
 // SGLKeyConfig represents the SGLang-specific key configuration.

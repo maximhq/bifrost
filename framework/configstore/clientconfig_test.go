@@ -199,3 +199,64 @@ func TestGenerateClientConfigHashCoversEntityAccessProfileMode(t *testing.T) {
 	require.Equal(t, unset, hash(tables.EntityAccessProfileModeUnion), "union is the default and hashes as unset")
 	require.NotEqual(t, unset, hash(tables.EntityAccessProfileModeIntersect), "intersect is a change")
 }
+
+func TestRapidMLXKeyHashIncludesURL(t *testing.T) {
+	key := schemas.Key{RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar("http://localhost:8000/v1")}}
+	first, err := generateKeyHash(key, nil)
+	require.NoError(t, err)
+	require.Equal(t, "0418969df57a0e8d1b77d96d4837017417422b24dd1d2621ba852d1cbb33f85b", first, "literal URL hash must stay compatible")
+	key.RapidMLXKeyConfig.URL = *schemas.NewSecretVar("http://localhost:8001/v1")
+	second, err := generateKeyHash(key, nil)
+	require.NoError(t, err)
+	require.NotEqual(t, first, second)
+}
+
+func TestRapidMLXKeyHashUsesURLSource(t *testing.T) {
+	hash := func(v schemas.SecretVar) string {
+		t.Helper()
+		h, err := generateKeyHash(schemas.Key{RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: v}}, nil)
+		require.NoError(t, err)
+		return h
+	}
+	t.Setenv("RAPID_MLX_HASH_URL", "http://localhost:8000/v1")
+	original := *schemas.NewSecretVar("env.RAPID_MLX_HASH_URL")
+	first := hash(original)
+	t.Setenv("RAPID_MLX_HASH_URL", "http://localhost:8001/v1")
+	require.Equal(t, first, hash(*schemas.NewSecretVar("env.RAPID_MLX_HASH_URL")), "rotating a secret must not change the config hash")
+	t.Setenv("RAPID_MLX_HASH_OTHER_URL", "http://localhost:8000/v1")
+	require.NotEqual(t, first, hash(*schemas.NewSecretVar("env.RAPID_MLX_HASH_OTHER_URL")), "different references must hash differently even with the same value")
+	require.NotEqual(t, first, hash(*schemas.NewSecretVar("http://localhost:8000/v1")), "a reference and a literal must hash differently")
+	require.Equal(t, "http://localhost:8000/v1", original.GetValue(), "hashing must not mutate the key")
+}
+
+func TestRedactedKeyRapidMLXURL(t *testing.T) {
+	for _, tc := range []struct{ name, raw, want string }{
+		{"plain", "http://localhost:8000/v1", "http://localhost:8000/v1"},
+		{"opaque credentials", "http:user:password@localhost:8000/v1", "redacted"},
+		{"opaque credentials with query", "http:user:password@localhost:8000/v1?token=secret", "redacted"},
+		{"bare query", "http://localhost:8000/v1?token", "http://localhost:8000/v1?token=redacted"},
+		{"credentials", "http://user:password@localhost:8000/v1?api_key=qx9", "http://redacted:redacted@localhost:8000/v1?api_key=redacted"},
+		{"fragment", "http://localhost:8000/v1#qx9", "http://localhost:8000/v1#redacted"},
+		{"encoded fragment", "http://localhost:8000/v1#qx%39", "http://localhost:8000/v1#redacted"},
+		{"malformed", "http://localhost:badport/v1?api_key=qx9", "redacted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, fromEnv := range []bool{false, true} {
+				raw := tc.raw
+				if fromEnv {
+					t.Setenv("RAPIDMLX_REDACTION_TEST_URL", raw)
+					raw = "env.RAPIDMLX_REDACTION_TEST_URL"
+				}
+				keyConfig := &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(raw)}
+				original := keyConfig.URL
+				key := schemas.Key{RapidMLXKeyConfig: keyConfig}
+				got := RedactedKey(key).RapidMLXKeyConfig
+				want := *schemas.NewSecretVar(raw)
+				want.Val = tc.want
+				require.Equal(t, *want.RedactedIfSecret(), got.URL)
+				require.Equal(t, original, keyConfig.URL, "live config must not change")
+				require.NotSame(t, keyConfig, got)
+			}
+		})
+	}
+}

@@ -486,6 +486,7 @@ func TestRedactedKeys_SurfacesLiteralIdentifiers(t *testing.T) {
 		OllamaKeyConfig: &schemas.OllamaKeyConfig{
 			URL: *schemas.NewSecretVar("http://ollama.internal.example.com:11434"),
 		},
+		RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar("http://localhost:8000/v1")},
 		SGLKeyConfig: &schemas.SGLKeyConfig{
 			URL: *schemas.NewSecretVar("http://sgl.internal.example.com:30000"),
 		},
@@ -505,6 +506,8 @@ func TestRedactedKeys_SurfacesLiteralIdentifiers(t *testing.T) {
 	assert.Equal(t, "us-west-2", key.SageMakerKeyConfig.Region.GetValue())
 	assert.Equal(t, "http://vllm.internal.example.com:8000", key.VLLMKeyConfig.URL.GetValue())
 	assert.Equal(t, "http://ollama.internal.example.com:11434", key.OllamaKeyConfig.URL.GetValue())
+	assert.Equal(t, "http://localhost:8000/v1", key.RapidMLXKeyConfig.URL.GetValue())
+	assert.NotSame(t, keys[0].RapidMLXKeyConfig, key.RapidMLXKeyConfig)
 	assert.Equal(t, "http://sgl.internal.example.com:30000", key.SGLKeyConfig.URL.GetValue())
 	assert.Equal(t, "0123456789abcdef0123456789abcdef", key.CloudflareKeyConfig.AccountID.GetValue())
 
@@ -709,4 +712,50 @@ func TestRedactedKey_MasksValueKeepsIdentifiers(t *testing.T) {
 	assert.Nil(t, key.Models)
 	assert.Nil(t, key.BlacklistedModels)
 	assert.Equal(t, []schemas.Key{redacted}, RedactedKeys([]schemas.Key{key}), "RedactedKeys redacts each key the same way")
+}
+
+// Legacy/file-loaded URLs can bypass the key API's validation.
+func TestRedactedKeys_RedactsRapidMLXURLCredentials(t *testing.T) {
+	const credential = "qx9"
+	const rawURL = "http://user:password@localhost:8000/v1?api_key=" + credential
+	t.Setenv("RAPID_MLX_REDACTION_URL", rawURL)
+	for _, raw := range []string{"http://localhost:8000/v1", rawURL, "env.RAPID_MLX_REDACTION_URL", "http://localhost:8000/v1#qx9", "http://localhost:badport/v1?api_key=qx9"} {
+		t.Run(raw, func(t *testing.T) {
+			original := &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(raw)}
+			stored := original.URL.GetValue()
+			originalKeys := []schemas.Key{{ID: "rapidmlx-key", RapidMLXKeyConfig: original}}
+			keys := RedactedKeys(originalKeys)
+			require.Len(t, keys, 1)
+			require.NotNil(t, keys[0].RapidMLXKeyConfig)
+			body, err := json.Marshal(keys)
+			require.NoError(t, err)
+			assert.NotContains(t, string(body), credential)
+			assert.NotContains(t, string(body), "user:password")
+			assert.Equal(t, stored, original.URL.GetValue(), "live config must not change")
+			if raw == "http://localhost:8000/v1" {
+				assert.Equal(t, raw, keys[0].RapidMLXKeyConfig.URL.GetValue())
+			} else if strings.HasPrefix(raw, "env.") {
+				assert.Equal(t, raw, keys[0].RapidMLXKeyConfig.URL.GetRawRef())
+			} else if strings.Contains(raw, "badport") {
+				assert.Equal(t, "redacted", keys[0].RapidMLXKeyConfig.URL.GetValue())
+			} else if strings.Contains(raw, "#") {
+				assert.Equal(t, "http://localhost:8000/v1#redacted", keys[0].RapidMLXKeyConfig.URL.GetValue())
+			} else {
+				assert.Equal(t, "http://redacted:redacted@localhost:8000/v1?api_key=redacted", keys[0].RapidMLXKeyConfig.URL.GetValue())
+			}
+		})
+	}
+}
+
+func BenchmarkRedactedKeysRapidMLX(b *testing.B) {
+	for _, serverURL := range []string{"http://localhost:8000/v1", "http://localhost:8000/v1?api_key=secret"} {
+		b.Run(serverURL, func(b *testing.B) {
+			originalKeys := []schemas.Key{{ID: "rapidmlx-key", RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(serverURL)}}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_ = RedactedKeys(originalKeys)
+			}
+		})
+	}
 }

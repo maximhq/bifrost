@@ -93,6 +93,29 @@ func TestTableKey_EncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "sk-secret-api-key", found.Value.GetValue())
 }
 
+func TestTableKey_RapidMLXFieldsEncryptDecrypt(t *testing.T) {
+	require.True(t, encrypt.IsEnabled())
+	require.False(t, schemas.VaultStoreWriteEnabled())
+	db := setupTestDB(t)
+	const url = "http://localhost:8000/v1"
+	key := &TableKey{
+		Name: "rapidmlx-key", ProviderID: 1, Provider: "rapidmlx", KeyID: "rapidmlx-uuid-1",
+		RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(url)},
+	}
+	require.NoError(t, db.Create(key).Error)
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	require.NotEmpty(t, raw["rapidmlx_url"])
+	assert.NotEqual(t, url, raw["rapidmlx_url"])
+	plaintext, err := encrypt.Decrypt(raw["rapidmlx_url"].(string))
+	require.NoError(t, err)
+	assert.Equal(t, url, plaintext)
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.RapidMLXKeyConfig)
+	assert.Equal(t, url, found.RapidMLXKeyConfig.URL.GetValue())
+}
+
 func TestTableKey_AzureFieldsEncryptDecrypt(t *testing.T) {
 	db := setupTestDB(t)
 

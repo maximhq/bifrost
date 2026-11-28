@@ -5186,3 +5186,18 @@ func TestConfigSchemaSuggestionsScheduleMatchesParser(t *testing.T) {
 		}
 	}
 }
+
+// Use a named provider to exercise the provider definition; arbitrary provider names
+// are allowed by additionalProperties and bypass its nested schema validation.
+func TestValidateConfigSchema_RapidMLXBaseProvider(t *testing.T) {
+	schema := loadLocalSchema(t)
+	for _, base := range []string{"openai", "rapidmlx"} {
+		t.Run(base, func(t *testing.T) {
+			config := fmt.Sprintf(`{"providers":{"openai":{"keys":[{"name":"local","value":"key","weight":1}],"custom_provider_config":{"base_provider_type":%q}}}}`, base)
+			err := ValidateConfigSchema([]byte(config), schema)
+			if (err != nil) != (base == "rapidmlx") {
+				t.Fatalf("base_provider_type %s: %v", base, err)
+			}
+		})
+	}
+}
