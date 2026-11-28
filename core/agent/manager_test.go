@@ -503,6 +503,27 @@ func TestAgentOAuthTokensAreScopedByAgentAndPhase(t *testing.T) {
 	require.Equal(t, int64(4), calls.Load())
 }
 
+func TestAgentOAuthTokenAccepts2xxStatusCodes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		require.Equal(t, "client_credentials", r.Form.Get("grant_type"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "created-token", "expires_in": 3600})
+	}))
+	defer server.Close()
+
+	m := &Manager{privateAllowlistFn: func() []string { return []string{"127.0.0.1"} }, httpClient: server.Client(), oauthTokens: make(map[string]oauthToken)}
+	auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+		TokenURL: server.URL, ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+	}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	headers, err := m.resolveAuthHeaders(ctx, auth, upstreamCredentialID("agent-201", "runtime"))
+	require.NoError(t, err)
+	require.Equal(t, "Bearer created-token", headers.Get("Authorization"))
+}
+
 func TestAgentOAuthFetchesAreScopedAndCancellable(t *testing.T) {
 	var slowCalls, sharedCalls atomic.Int64
 	slowStarted := make(chan struct{})
