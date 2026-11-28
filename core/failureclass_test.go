@@ -3,6 +3,7 @@ package bifrost
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -27,6 +28,7 @@ func TestClassifyFailure(t *testing.T) {
 		{"do request error", &schemas.BifrostError{Error: &schemas.ErrorField{Message: schemas.ErrProviderDoRequest}}, schemas.FailureClassTransient},
 		{"503 overloaded", providerError(503, "overloaded_error", "", "Overloaded"), schemas.FailureClassTransient},
 		{"529 anthropic overloaded", providerError(529, "overloaded_error", "", "The API is temporarily overloaded"), schemas.FailureClassTransient},
+		{"520 cloudflare origin error", providerError(520, "", "", "provider API error: error code: 520"), schemas.FailureClassTransient},
 		{"500 empty body", providerError(500, "", "", "provider server error (500)"), schemas.FailureClassTransient},
 		{"503 with rate limit text rotates as before", providerError(503, "", "", "Service unavailable: rate limit reached"), schemas.FailureClassRateLimit},
 		{"503 with quota text stays transient as before", providerError(503, "", "", "Your credit balance service is unavailable"), schemas.FailureClassTransient},
@@ -157,7 +159,8 @@ func TestClassifyFailure(t *testing.T) {
 		{"404 html", &schemas.BifrostError{StatusCode: Ptr(404), Error: &schemas.ErrorField{Message: schemas.ErrProviderResponseHTML, Error: errors.New("<html>")}}, schemas.FailureClassUnknown},
 		{"404 wrong path parsed", providerError(404, "invalid_request_error", "", "Invalid URL (POST /v1/chat/completion)"), schemas.FailureClassUnknown},
 		{"405 method not allowed", providerError(405, "", "", "provider API error: method not allowed"), schemas.FailureClassUnknown},
-		{"520 unlisted 5xx", providerError(520, "", "", "provider API error"), schemas.FailureClassUnknown},
+		{"501 unlisted 5xx", providerError(501, "", "", "provider API error"), schemas.FailureClassUnknown},
+		{"524 cloudflare origin timeout is not retried", providerError(524, "", "", "provider API error: error code: 524"), schemas.FailureClassUnknown},
 		{"internal bifrost error", &schemas.BifrostError{IsBifrostError: true, Error: &schemas.ErrorField{Message: "tracer not found"}}, schemas.FailureClassUnknown},
 		{"bedrock in-stream validation", &schemas.BifrostError{IsBifrostError: true, Type: Ptr("ValidationException"), Error: &schemas.ErrorField{Type: Ptr("ValidationException"), Message: "This model version has reached the end of its life"}}, schemas.FailureClassUnknown},
 
@@ -191,11 +194,16 @@ func TestClassifyFailure_StatusOnly(t *testing.T) {
 		502: schemas.FailureClassTransient,
 		503: schemas.FailureClassTransient,
 		504: schemas.FailureClassTransient,
+		520: schemas.FailureClassTransient,
+		521: schemas.FailureClassTransient,
+		522: schemas.FailureClassTransient,
+		523: schemas.FailureClassTransient,
 		529: schemas.FailureClassTransient,
 		400: schemas.FailureClassUnknown,
 		404: schemas.FailureClassUnknown,
 		422: schemas.FailureClassUnknown,
-		520: schemas.FailureClassUnknown,
+		501: schemas.FailureClassUnknown,
+		524: schemas.FailureClassUnknown,
 	}
 	for status, class := range want {
 		err := &schemas.BifrostError{StatusCode: Ptr(status), Error: &schemas.ErrorField{Message: schemas.ErrProviderResponseEmpty + " (HTTP 0)"}}
@@ -467,6 +475,21 @@ func TestScenarioTimedOutAttemptCarriesItsClass(t *testing.T) {
 				t.Fatalf("the attempt should carry no fail_reason, got %q", *got.FailReason)
 			case tc.failReason != "" && (got.FailReason == nil || *got.FailReason != tc.failReason):
 				t.Fatalf("the attempt should carry fail_reason %q, got %v", tc.failReason, got.FailReason)
+			}
+		})
+	}
+}
+
+// BenchmarkClassifyFailure measures the classifier a failed attempt runs once: the status
+// lookup in transientServerStatusCodes and the phrase scan over the lower-cased message. A
+// successful request never reaches it.
+func BenchmarkClassifyFailure(b *testing.B) {
+	for _, status := range []int{500, 520, 529, 400, 429} {
+		b.Run(fmt.Sprintf("status=%d", status), func(b *testing.B) {
+			err := providerError(status, "", "", fmt.Sprintf("provider API error: error code: %d", status))
+			b.ReportAllocs()
+			for b.Loop() {
+				ClassifyFailure(err)
 			}
 		})
 	}

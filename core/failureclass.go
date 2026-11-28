@@ -20,8 +20,12 @@ import (
 // docs.claude.com/en/api/errors), also surfaced by Bedrock Mantle's Claude endpoint. It
 // reflects capacity across all callers rather than anything about this credential, so it
 // retries on the same key instead of rotating: rotating would burn every key on a
-// condition none of them can avoid.
-var transientServerStatusCodes = []int{500, 502, 503, 504, 529}
+// condition none of them can avoid. 520-523 are Cloudflare's origin errors (unknown error,
+// web server down, connection timed out, origin unreachable), returned by providers behind
+// Cloudflare such as OpenAI when the edge cannot get a response from the origin. 524 is left
+// out: the origin accepted the request and did not answer within Cloudflare's timeout, so the
+// provider has most likely run and billed the generation, and a retry would repeat it.
+var transientServerStatusCodes = []int{500, 502, 503, 504, 520, 521, 522, 523, 529}
 
 // rateLimitPatterns are the phrases a rate limit is reported with by providers that do
 // not always answer 429 (case-insensitive substrings).

@@ -96,6 +96,15 @@ const PROVIDERS = {
       bedrock_key_config: { access_key: "env.AWS_ACCESS_KEY_ID", secret_key: "env.AWS_SECRET_ACCESS_KEY", region: "env.AWS_REGION" },
     },
   },
+  // The scripted upstream: runners/provider-error-fixture.mjs, which the runner starts and names in
+  // {{fixture_url}}. It answers in the OpenAI shape by model name, so a key reaches one of its
+  // behaviours through an alias, and it accepts only the key "test-key". The provider retries twice
+  // with a short backoff, so a scenario can script each attempt of one request.
+  fixture: {
+    base: "openai",
+    keyValue: "test-key",
+    networkConfig: { base_url: "{{fixture_url}}", max_retries: 2, retry_backoff_initial: 100, retry_backoff_max: 200, default_request_timeout_in_seconds: 30 },
+  },
 };
 const DEFAULT_PROVIDER = "openai";
 
@@ -123,7 +132,7 @@ function keyBody(k, name, prov) {
     // and capable of the model — only the credential is broken.
     out.value = "sk-deadbeef-invalid-000";
   } else if (prov.keyConfig) Object.assign(out, prov.keyConfig);
-  else out.value = `env.${prov.env}`;
+  else out.value = prov.keyValue || `env.${prov.env}`;
   if (k.blacklisted.length) out.blacklisted_models = [...k.blacklisted];
   // prov.aliasFor lets a provider expose a common model name (e.g. Bedrock maps
   // claude-sonnet-4-5 → its inference-profile id). Scenario aliases win on conflict.
@@ -188,7 +197,9 @@ function routeAssertLines(sid, step, jsNameOf) {
     const lines = [
       "if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
       "var body = pm.response.json();",
-      "if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
+      step.endpoint === "responses"
+        ? "if (!Array.isArray(body.output) || body.output.length === 0) { throw new Error('no output: ' + pm.response.text()); }"
+        : "if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
       "var ri = (body.extra_fields || {}).routing_info || {};",
       ...routeHeaderLines(step, jsNameOf),
     ];
@@ -464,6 +475,7 @@ function expandScenario(sc) {
         if (!isStandard) {
           body.custom_provider_config = { base_provider_type: prov.base, is_key_less: false };
         }
+        if (prov.networkConfig) body.network_config = prov.networkConfig;
         const name = uniq("add provider" + plabel);
         items.push(item(nextId("add-provider"), name, request("POST", url(["api", "providers"]), body),
           events(null, mutationTest(name, [200, 201], cleanupTarget))));
@@ -511,8 +523,10 @@ function expandScenario(sc) {
           // layer (governance LB) resolves the provider. routeRef targets a
           // specific provider in a multi-provider scenario (default: self).
           model: step.bareModel ? step.model : `${nameOf(step.routeRef)}/${step.model}`,
-          messages: [{ role: "user", content: "Reply with the single word: ok." }],
-          max_tokens: 5,
+          // /v1/responses takes the Responses shape; every other route takes the chat shape.
+          ...(step.endpoint === "responses"
+            ? { input: "Reply with the single word: ok.", max_output_tokens: 16 }
+            : { messages: [{ role: "user", content: "Reply with the single word: ok." }], max_tokens: 5 }),
         };
         // Request-level fallbacks. The /v1 OpenAI-compatible endpoint takes the
         // string "provider/model" form (not the {provider,model} object form).
@@ -520,8 +534,9 @@ function expandScenario(sc) {
           body.fallbacks = step.fallbacks.map((f) => `${nameOf(f.providerRef)}/${f.model}`);
         }
         // endpoint: "v1" (default) is /v1/chat/completions, "openai" the OpenAI drop-in route and
-        // "anthropic" the Anthropic Messages route (same body: model, messages, max_tokens).
-        const path = { v1: ["v1", "chat", "completions"], openai: ["openai", "v1", "chat", "completions"], anthropic: ["anthropic", "v1", "messages"] }[step.endpoint || "v1"];
+        // "anthropic" the Anthropic Messages route (same body: model, messages, max_tokens);
+        // "responses" is /v1/responses.
+        const path = { v1: ["v1", "chat", "completions"], openai: ["openai", "v1", "chat", "completions"], anthropic: ["anthropic", "v1", "messages"], responses: ["v1", "responses"] }[step.endpoint || "v1"];
         // requestId sends a known x-request-id, kept as reqid_<sid>, so later steps can read this
         // request's own log row (its id) and its fallback attempts' rows (their parent_request_id).
         const pre = step.requestId ? [
@@ -742,6 +757,21 @@ function expandScenario(sc) {
         items.push(item(nextId("assert-trail"), trailName,
           request("GET", url(["api", "logs", `{{${logIdVar}}}`]), null),
           events(step.fromRequest ? pollPrerequest(step.waitSeconds) : null, pollTest(trailName, trailAssert, cleanupTarget))));
+        break;
+      }
+      case "assertUpstreamHits": {
+        // How many requests the scripted upstream received for one model, read from its hit counter:
+        // the attempts Bifrost made, which the answer to the client does not show.
+        const name = uniq(step.label);
+        const lines = [
+          "if (pm.response.code !== 200) { throw new Error('upstream hits status ' + pm.response.code + ' body ' + pm.response.text()); }",
+          `var model = pm.variables.replaceIn(${JSON.stringify(step.model)});`,
+          "var hits = ((((pm.response.json() || {}).data || [])[0] || {}).hits || {})[model] || 0;",
+          `if (hits !== ${JSON.stringify(step.expectHits)}) { throw new Error('the upstream received ' + hits + ' requests for ' + model + ', expected ${step.expectHits}'); }`,
+        ];
+        items.push(item(nextId("upstream-hits"), name,
+          request("GET", { raw: "{{fixture_url}}/__hits", host: ["{{fixture_url}}"], path: ["__hits"] }, null),
+          events(null, singleTest(name, lines, cleanupTarget))));
         break;
       }
       case "cleanup":
@@ -1334,6 +1364,19 @@ const SCENARIOS = [
       { type: "cleanup" },
     ],
   },
+  {
+    id: "retry-cloudflare-520",
+    title: "A Cloudflare 520 from the upstream is retried on the same key",
+    description: "Cloudflare answers 520-523 when its edge gets no usable response from the origin, and a provider behind it passes that on as a plain-text body such as \"error code: 520\". The provider is on the scripted upstream with one key, whose aliases send upstream-520-once: a model's first attempt gets a plain-text 520 and its next an answer. On /v1/chat/completions and on /v1/responses, each with a model of its own, the request succeeds on that key and the upstream counts two attempts.",
+    steps: [
+      { type: "addProvider", providerType: "fixture", keys: [key({ id: "k1", models: ["catwiring-cf520-{{run_id}}", "catwiring-cf520-resp-{{run_id}}"], aliases: { "catwiring-cf520-{{run_id}}": "upstream-520-once~cf520-{{run_id}}", "catwiring-cf520-resp-{{run_id}}": "upstream-520-once~cf520-resp-{{run_id}}" } })] },
+      { type: "route", model: "catwiring-cf520-{{run_id}}", useVk: false, expectStatus: 200, expectKeyId: "k1", label: "/v1/chat/completions is answered after the 520 (routing_info.key=k1)" },
+      { type: "assertUpstreamHits", model: "upstream-520-once~cf520-{{run_id}}", expectHits: 2, label: "the upstream received two chat attempts" },
+      { type: "route", model: "catwiring-cf520-resp-{{run_id}}", endpoint: "responses", useVk: false, expectStatus: 200, expectKeyId: "k1", label: "/v1/responses is answered after the 520 (routing_info.key=k1)" },
+      { type: "assertUpstreamHits", model: "upstream-520-once~cf520-resp-{{run_id}}", expectHits: 2, label: "the upstream received two Responses attempts" },
+      { type: "cleanup" },
+    ],
+  },
 ];
 
 const collection = buildCollection({
@@ -1345,6 +1388,8 @@ const collection = buildCollection({
     "and asserts the route via extra_fields.routing_info (success), the error message (rejection), and " +
     "the stored log. Machine-generated by runners/build-routing-wiring.mjs — do not hand-edit.",
   expandedScenarios: SCENARIOS.map(expandScenario),
+  // Where the scripted upstream listens; the runner starts it and sets this.
+  extraVariables: [{ key: "fixture_url", value: "http://127.0.0.1:8791", type: "string" }],
   // OSS locks /api behind the setup token until an admin exists; the e2e profile sets one.
   setupToken: true,
 });
