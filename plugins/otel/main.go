@@ -456,6 +456,7 @@ type otelTarget struct {
 	breakerOpenUntil    atomic.Int64 // UnixNano; exports are skipped until this instant
 	suppressedExports   atomic.Int64
 	failedExports       atomic.Int64
+	unreadableAcks      atomic.Int64
 	partialReplies      atomic.Int64
 	partialExports      atomic.Int64
 	rejectedSpans       atomic.Int64
@@ -1003,7 +1004,12 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 				return
 			}
 			t.resetBreaker()
-			if result.partialSuccess != nil {
+			if result.ackWarning != "" {
+				if n := t.unreadableAcks.Add(1); n == 1 || n%exportLogThrottle == 0 {
+					logger.Warn("[otel] trace collector for profile %d returned 2xx with unreadable acknowledgement (%s); export counted as succeeded (%d unreadable acknowledgements so far)",
+						t.profileIndex, result.ackWarning, n)
+				}
+			} else if result.partialSuccess != nil {
 				t.recordPartialSuccess(ctx, result)
 			}
 		}(t)
@@ -1030,27 +1036,17 @@ func (t *otelTarget) recordPartialSuccess(ctx context.Context, result traceExpor
 	}
 }
 
-// ExportRejectionStats reports partial trace rejections by zero-based profile index.
-func (p *OtelPlugin) ExportRejectionStats() map[int]struct{ RejectedSpans, PartialExports int64 } {
-	stats := make(map[int]struct{ RejectedSpans, PartialExports int64 }, len(p.targets))
+// ExportStats reports per-target export health: how many exports failed or were
+// suppressed by an open circuit breaker, and how many spans or exports the
+// collector acknowledged as partially rejected.
+func (p *OtelPlugin) ExportStats() map[string]struct{ Failed, Suppressed, RejectedSpans, PartialExports int64 } {
+	stats := make(map[string]struct{ Failed, Suppressed, RejectedSpans, PartialExports int64 }, len(p.targets))
 	for _, t := range p.targets {
-		stats[t.profileIndex] = struct{ RejectedSpans, PartialExports int64 }{
+		stats[t.url] = struct{ Failed, Suppressed, RejectedSpans, PartialExports int64 }{
+			Failed:         t.failedExports.Load(),
+			Suppressed:     t.suppressedExports.Load(),
 			RejectedSpans:  t.rejectedSpans.Load(),
 			PartialExports: t.partialExports.Load(),
-		}
-	}
-	return stats
-}
-
-// ExportStats reports per-target export health: how many exports failed and how many
-// were suppressed by an open circuit breaker. A rising suppressed count means the
-// target's endpoint is being treated as dead — usually a misconfigured collector URL.
-func (p *OtelPlugin) ExportStats() map[string]struct{ Failed, Suppressed int64 } {
-	stats := make(map[string]struct{ Failed, Suppressed int64 }, len(p.targets))
-	for _, t := range p.targets {
-		stats[t.url] = struct{ Failed, Suppressed int64 }{
-			Failed:     t.failedExports.Load(),
-			Suppressed: t.suppressedExports.Load(),
 		}
 	}
 	return stats

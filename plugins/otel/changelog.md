@@ -1,4 +1,3 @@
-- fix: redact authorization credentials separated by multiple spaces [@wsj040303](https://github.com/wsj040303)
 - fix: report partial OTLP trace rejections over HTTP and gRPC [@wsj040303](https://github.com/wsj040303)
 - feat: optional `apply_trace_dimensions_to_child_spans` profile flag merges `x-bf-dim-*` dimensions onto every exported span; span attributes win on conflict, reserved keys are skipped (thanks [@devin-williams](https://github.com/devin-williams)!)
 - chore: upgraded core to v1.16.0 and framework to v1.13.0

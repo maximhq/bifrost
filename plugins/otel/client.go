@@ -23,18 +23,57 @@ type traceExporter interface {
 type traceExportResult struct {
 	partialSuccess *collectorpb.ExportTracePartialSuccess
 	headers        map[string]string
+	ackWarning     string
 }
 
 const maxCollectorDiagnosticBytes = 256
 
 func (r traceExportResult) diagnostic() string {
 	message := r.partialSuccess.GetErrorMessage()
+	var secrets []string
+	totalSecretBytes := 0
+	maxSecretLen := 0
+	recordSecret := func(v string) {
+		if v == "" {
+			return
+		}
+		secrets = append(secrets, v)
+		totalSecretBytes += len(v)
+		if len(v) > maxSecretLen {
+			maxSecretLen = len(v)
+		}
+	}
+	for name, value := range r.headers {
+		recordSecret(value)
+		if strings.EqualFold(name, "Authorization") {
+			if _, credential, ok := strings.Cut(value, " "); ok {
+				recordSecret(strings.TrimSpace(credential))
+			}
+		}
+	}
+
+	// Bound the scan window before matching so multi-megabyte collector messages
+	// cannot cause O(headers * len(message)) work or allocations. Keeping
+	// maxCollectorDiagnosticBytes plus bounded header-length headroom ensures
+	// any secret straddling the 256-byte boundary is still matched and redacted.
+	headroom := maxSecretLen
+	if cappedTotal := min(totalSecretBytes, 4096); cappedTotal > headroom {
+		headroom = cappedTotal
+	}
+	scanLimit := maxCollectorDiagnosticBytes + headroom
+	preTruncated := false
+	if len(message) > scanLimit {
+		end := scanLimit
+		for end > 0 && !utf8.RuneStart(message[end]) {
+			end--
+		}
+		message = message[:end]
+		preTruncated = true
+	}
+
 	type match struct{ start, end int }
 	var matches []match
 	addMatches := func(value string) {
-		if value == "" {
-			return
-		}
 		for offset := 0; offset < len(message); {
 			index := strings.Index(message[offset:], value)
 			if index < 0 {
@@ -45,13 +84,8 @@ func (r traceExportResult) diagnostic() string {
 			offset = start + 1
 		}
 	}
-	for name, value := range r.headers {
-		addMatches(value)
-		if strings.EqualFold(name, "Authorization") {
-			if _, credential, ok := strings.Cut(value, " "); ok {
-				addMatches(strings.TrimSpace(credential))
-			}
-		}
+	for _, secret := range secrets {
+		addMatches(secret)
 	}
 	// Match the original diagnostic, then redact the union of overlapping values.
 	// Replacing one header first can otherwise expose the suffix of another.
@@ -74,10 +108,13 @@ func (r traceExportResult) diagnostic() string {
 		message = redacted.String()
 	}
 	if len(message) <= maxCollectorDiagnosticBytes {
+		if preTruncated {
+			return message + "..."
+		}
 		return message
 	}
 	end := maxCollectorDiagnosticBytes
-	for !utf8.RuneStart(message[end]) {
+	for end > 0 && !utf8.RuneStart(message[end]) {
 		end--
 	}
 	return message[:end] + "..."

@@ -1207,7 +1207,7 @@ Before Bifrost 2.2.2, a failure Bifrost raised itself — a request-conversion e
 
 ### Collector trace rejections
 
-An OTLP collector can accept a trace export while rejecting some spans. Bifrost records the reported span count and one partial export for each such acknowledgement, over both HTTP and gRPC. Partial acknowledgements leave the collector reachable for circuit breaker purposes. Bifrost skips retries of acknowledged exports.
+An OTLP collector can accept a trace export while rejecting some spans. Bifrost records the reported span count and one partial export for each such acknowledgement, over both HTTP and gRPC. Partial acknowledgements leave the collector reachable for circuit breaker purposes.
 
 Profiles with metrics enabled emit `bifrost_otel_trace_rejected_spans_total` and `bifrost_otel_trace_partial_exports_total`, with the zero-based `bifrost.otel.profile_index` attribute. These counters start when the collector first rejects spans. The first partial acknowledgement and every 500th one produce a warning with a bounded collector diagnostic. An acknowledgement that only carries a warning leaves both counters unchanged.
 

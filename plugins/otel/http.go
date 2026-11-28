@@ -15,8 +15,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Match the default gRPC receive limit for both compressed and decoded HTTP bodies.
-const maxTraceResponseBytes = 4 << 20
+// Bound both compressed and decoded OTLP/HTTP 2xx acknowledgement bodies.
+const maxTraceResponseBytes = 64 << 10
 
 // OtelClientHTTP is the implementation of the OpenTelemetry client for HTTP
 type OtelClientHTTP struct {
@@ -97,31 +97,40 @@ func (c *OtelClientHTTP) emit(ctx context.Context, rs []*ResourceSpan) (traceExp
 		return traceExportResult{}, nil
 	}
 	if resp.ContentLength > maxTraceResponseBytes {
-		return traceExportResult{}, fmt.Errorf("OTLP trace acknowledgement exceeds %d bytes", maxTraceResponseBytes)
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxTraceResponseBytes))
+		return traceExportResult{ackWarning: fmt.Sprintf("OTLP trace acknowledgement exceeds %d bytes", maxTraceResponseBytes)}, nil
+	}
+	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
+	if contentEncoding != "" && !strings.EqualFold(contentEncoding, "identity") && !strings.EqualFold(contentEncoding, "gzip") {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxTraceResponseBytes))
+		return traceExportResult{ackWarning: fmt.Sprintf("unsupported OTLP trace acknowledgement encoding %q", contentEncoding)}, nil
 	}
 	compressed := &io.LimitedReader{R: resp.Body, N: maxTraceResponseBytes + 1}
 	var responseBody io.Reader = compressed
-	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+	if strings.EqualFold(contentEncoding, "gzip") {
 		decompressed, err := gzip.NewReader(compressed)
 		if err != nil {
-			return traceExportResult{}, fmt.Errorf("read gzip OTLP trace acknowledgement: %w", err)
+			return traceExportResult{ackWarning: fmt.Sprintf("read gzip OTLP trace acknowledgement: %v", err)}, nil
 		}
 		defer decompressed.Close()
 		responseBody = decompressed
 	}
 	bodyBytes, err := io.ReadAll(io.LimitReader(responseBody, maxTraceResponseBytes+1))
 	if compressed.N == 0 {
-		return traceExportResult{}, fmt.Errorf("compressed OTLP trace acknowledgement exceeds %d bytes", maxTraceResponseBytes)
+		return traceExportResult{ackWarning: fmt.Sprintf("compressed OTLP trace acknowledgement exceeds %d bytes", maxTraceResponseBytes)}, nil
 	}
 	if err != nil {
-		return traceExportResult{}, fmt.Errorf("read OTLP trace acknowledgement: %w", err)
+		return traceExportResult{ackWarning: fmt.Sprintf("read OTLP trace acknowledgement: %v", err)}, nil
+	}
+	if len(bodyBytes) == 0 {
+		return traceExportResult{}, nil
 	}
 	if len(bodyBytes) > maxTraceResponseBytes {
-		return traceExportResult{}, fmt.Errorf("OTLP trace acknowledgement exceeds %d bytes", maxTraceResponseBytes)
+		return traceExportResult{ackWarning: fmt.Sprintf("OTLP trace acknowledgement exceeds %d bytes", maxTraceResponseBytes)}, nil
 	}
 	var reply collectorpb.ExportTraceServiceResponse
 	if err := proto.Unmarshal(bodyBytes, &reply); err != nil {
-		return traceExportResult{}, fmt.Errorf("invalid OTLP trace acknowledgement")
+		return traceExportResult{ackWarning: "non-protobuf OTLP trace acknowledgement"}, nil
 	}
 	return traceExportResult{partialSuccess: reply.GetPartialSuccess(), headers: c.headers}, nil
 }
