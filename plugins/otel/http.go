@@ -103,7 +103,7 @@ func (c *OtelClientHTTP) emit(ctx context.Context, rs []*ResourceSpan) (traceExp
 	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
 	if contentEncoding != "" && !strings.EqualFold(contentEncoding, "identity") && !strings.EqualFold(contentEncoding, "gzip") {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxTraceResponseBytes))
-		return traceExportResult{ackWarning: fmt.Sprintf("unsupported OTLP trace acknowledgement encoding %q", contentEncoding)}, nil
+		return traceExportResult{ackWarning: "unsupported OTLP trace acknowledgement encoding"}, nil
 	}
 	compressed := &io.LimitedReader{R: resp.Body, N: maxTraceResponseBytes + 1}
 	var responseBody io.Reader = compressed

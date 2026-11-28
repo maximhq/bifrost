@@ -69,6 +69,7 @@ func TestTraceAcknowledgementHTTP(t *testing.T) {
 		{name: "plain OK 200 succeeds", body: []byte("OK"), wantAckWarning: "non-protobuf"},
 		{name: "html 200 succeeds", body: []byte("<html><body>ok</body></html>"), wantAckWarning: "non-protobuf"},
 		{name: "unsupported encoding 200 succeeds", contentEncoding: "br", body: []byte("compressed"), wantAckWarning: "unsupported OTLP trace acknowledgement encoding"},
+		{name: "oversized unsupported encoding is not reflected", contentEncoding: "br-" + strings.Repeat("s", 8192), body: []byte("compressed"), wantAckWarning: "unsupported OTLP trace acknowledgement encoding"},
 		{name: "over 64KiB 200 succeeds without failing export", body: make([]byte, maxTraceResponseBytes+1), gzip: true, wantAckWarning: "exceeds"},
 		{name: "non-2xx fails export", status: http.StatusBadGateway, body: []byte("bad gateway"), wantError: "502"},
 	} {
@@ -107,6 +108,7 @@ func TestTraceAcknowledgementHTTP(t *testing.T) {
 				require.Equal(t, tc.wantRejected, result.partialSuccess.GetRejectedSpans())
 				if tc.wantAckWarning != "" {
 					require.Contains(t, result.ackWarning, tc.wantAckWarning)
+				require.LessOrEqual(t, len(result.ackWarning), maxCollectorDiagnosticBytes)
 				} else {
 					require.Empty(t, result.ackWarning)
 				}

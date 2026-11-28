@@ -497,3 +497,24 @@ func TestDiagnosticBoundsLargeMessageBeforeMatching(t *testing.T) {
 	require.NotContains(t, gotStraddle, "boundary-token")
 	require.True(t, strings.HasSuffix(gotStraddle, "..."))
 }
+
+func TestDiagnosticRedactsRepeatedSecretsAcrossScanBoundary(t *testing.T) {
+	secret := "K" + strings.Repeat("x", 98) + "Z"
+	for _, message := range []string{
+		strings.Repeat(secret, 4),
+		strings.Repeat(secret, 40),
+		strings.Repeat(secret+" ", 40),
+	} {
+		got := (traceExportResult{
+			partialSuccess: &collectorpb.ExportTracePartialSuccess{
+				RejectedSpans: 1,
+				ErrorMessage:  message,
+			},
+			headers: map[string]string{"X-API-Key": secret},
+		}).diagnostic()
+		require.NotContains(t, got, "K")
+		require.NotContains(t, got, "xx")
+		require.NotContains(t, got, "Z")
+		require.LessOrEqual(t, len(got), maxCollectorDiagnosticBytes+len("..."))
+	}
+}
