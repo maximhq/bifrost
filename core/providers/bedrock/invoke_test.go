@@ -3855,6 +3855,23 @@ func TestInvokeIngressCarriesToolStrict(t *testing.T) {
 	}
 }
 
+// TestToBedrockInvokeAI21Response_FinishReasonTranslation: AI21 speaks stop/length, so the
+// internal max_output_tokens reason must not leak through the AI21 invoke builder.
+func TestToBedrockInvokeAI21Response_FinishReasonTranslation(t *testing.T) {
+	for reason, want := range map[string]string{
+		schemas.ResponsesResponseIncompleteReasonMaxOutputTokens: "length",
+		// AI21 has no content filter value; passed through on purpose.
+		schemas.ResponsesResponseIncompleteReasonContentFilter: "content_filter",
+	} {
+		resp := &schemas.BifrostResponsesResponse{
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: reason},
+		}
+		result := toBedrockInvokeAI21Response(resp)
+		require.Len(t, result.Choices, 1)
+		assert.Equal(t, want, result.Choices[0].FinishReason, reason)
+	}
+}
+
 // The InvokeModel body must send a tail system reminder in the same form at turn N and at N+1,
 // after Claude's tool_use reply is appended behind it, with the datasheet row held false as it
 // is for released gateways. Before the placement pass, the role-less function_call item made
