@@ -1345,13 +1345,21 @@ func TestToolMetadata_HasParamHeaders(t *testing.T) {
 	plain := mcp.NewTool("plain")
 	assert.Nil(t, toolMetadata(&plain))
 
+	withTitle := mcp.NewTool("with_title")
+	withTitle.Title = "Plain Tool"
+	withTitleMeta := toolMetadata(&withTitle)
+	require.NotNil(t, withTitleMeta)
+	require.NotNil(t, withTitleMeta.HasParamHeaders)
+	assert.False(t, *withTitleMeta.HasParamHeaders)
+
 	top := mcp.NewTool("top")
 	top.InputSchema.Properties = map[string]any{
 		"action": map[string]any{"type": "string", "x-mcp-header": "Action"},
 	}
 	topMeta := toolMetadata(&top)
 	require.NotNil(t, topMeta)
-	assert.True(t, topMeta.HasParamHeaders)
+	require.NotNil(t, topMeta.HasParamHeaders)
+	assert.True(t, *topMeta.HasParamHeaders)
 
 	nested := mcp.NewTool("nested")
 	nested.InputSchema.Properties = map[string]any{
@@ -1364,14 +1372,57 @@ func TestToolMetadata_HasParamHeaders(t *testing.T) {
 	}
 	nestedMeta := toolMetadata(&nested)
 	require.NotNil(t, nestedMeta)
-	assert.True(t, nestedMeta.HasParamHeaders)
+	require.NotNil(t, nestedMeta.HasParamHeaders)
+	assert.True(t, *nestedMeta.HasParamHeaders)
 
 	converted := convertMCPToolToBifrostSchema(&top, defaultLogger)
 	require.NotNil(t, converted.MCP)
-	assert.True(t, converted.MCP.HasParamHeaders)
+	require.NotNil(t, converted.MCP.HasParamHeaders)
+	assert.True(t, *converted.MCP.HasParamHeaders)
 	copied := schemas.DeepCopyChatTool(converted)
 	require.NotNil(t, copied.MCP)
-	assert.True(t, copied.MCP.HasParamHeaders)
+	require.NotNil(t, copied.MCP.HasParamHeaders)
+	assert.True(t, *copied.MCP.HasParamHeaders)
+
+	// Upgrade regression: a legacy persisted record with metadata (e.g. Title)
+	// and nil HasParamHeaders still mirrors Mcp-Param-* headers on 2026-07-28,
+	// both when restored via ApplyToolDetails and directly in ApplyParamHeaders.
+	var legacyDetails map[string]schemas.MCPToolDetails
+	require.NoError(t, json.Unmarshal([]byte(`{"srv-top":{"metadata":{"title":"Legacy"}}}`), &legacyDetails))
+	restoredTools := map[string]schemas.ChatTool{
+		"srv-top": {
+			Type:     schemas.ChatToolTypeFunction,
+			Function: converted.Function,
+		},
+	}
+	schemas.ApplyToolDetails(restoredTools, legacyDetails)
+	restored := restoredTools["srv-top"]
+	require.NotNil(t, restored.MCP)
+	require.NotNil(t, restored.MCP.HasParamHeaders)
+	assert.True(t, *restored.MCP.HasParamHeaders)
+
+	srv := server.NewMCPServer("legacy-restore", "1.0.0")
+	cl, err := client.NewInProcessClient(srv)
+	require.NoError(t, err)
+	require.NoError(t, cl.Start(context.Background()))
+	t.Cleanup(func() { _ = cl.Close() })
+	_, err = cl.Initialize(context.Background(), mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcp.Implementation{Name: "test", Version: "1.0.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	req := mcp.CallToolRequest{
+		Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+		Params:  mcp.CallToolParams{Name: "top", Arguments: map[string]any{"action": "list"}},
+	}
+	// Simulate direct legacy ChatTool where ApplyToolDetails has not backfilled nil.
+	restoredDirect := restored
+	restoredDirect.MCP = &schemas.MCPToolMetadata{Title: "Legacy"}
+	ApplyParamHeaders(cl, &req, &restoredDirect)
+	assert.Equal(t, "list", req.Header.Get("Mcp-Param-Action"))
 }
 
 func BenchmarkApplyParamHeaders(b *testing.B) {
@@ -1405,7 +1456,7 @@ func BenchmarkApplyParamHeaders(b *testing.B) {
 				}),
 			},
 		},
-		MCP: &schemas.MCPToolMetadata{Title: "Echo"},
+		MCP: &schemas.MCPToolMetadata{Title: "Echo", HasParamHeaders: schemas.Ptr(false)},
 	}
 	unannotatedPlain := &schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
@@ -1431,7 +1482,7 @@ func BenchmarkApplyParamHeaders(b *testing.B) {
 				}),
 			},
 		},
-		MCP: &schemas.MCPToolMetadata{HasParamHeaders: true},
+		MCP: &schemas.MCPToolMetadata{HasParamHeaders: schemas.Ptr(true)},
 	}
 
 	b.Run("unannotated_cached_metadata", func(b *testing.B) {

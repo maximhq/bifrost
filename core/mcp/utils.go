@@ -1026,11 +1026,11 @@ func ApplyParamHeaders(conn *client.Client, req *mcp.CallToolRequest, tool *sche
 	if conn == nil || req == nil || tool == nil || tool.Function == nil || tool.Function.Parameters == nil {
 		return
 	}
-	if tool.MCP != nil {
-		if !tool.MCP.HasParamHeaders {
+	if tool.MCP != nil && tool.MCP.HasParamHeaders != nil {
+		if !*tool.MCP.HasParamHeaders {
 			return
 		}
-	} else if !orderedMapHasMCPHeader(tool.Function.Parameters.Properties) {
+	} else if !schemas.OrderedMapHasMCPHeader(tool.Function.Parameters.Properties) {
 		return
 	}
 	if !mcp.IsModernProtocol(conn.ProtocolVersion()) {
@@ -1073,27 +1073,6 @@ func schemaHasMCPHeader(props map[string]any) bool {
 	return false
 }
 
-func orderedMapHasMCPHeader(om *schemas.OrderedMap) bool {
-	if om == nil || om.Len() == 0 {
-		return false
-	}
-	found := false
-	om.Range(func(k string, v interface{}) bool {
-		if k == "x-mcp-header" {
-			if headerName, ok := v.(string); ok && strings.TrimSpace(headerName) != "" {
-				found = true
-				return false
-			}
-		}
-		if valueHasMCPHeader(v) {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
-}
-
 func valueHasMCPHeader(v any) bool {
 	switch typed := v.(type) {
 	case map[string]any:
@@ -1106,9 +1085,9 @@ func valueHasMCPHeader(v any) bool {
 			}
 		}
 	case *schemas.OrderedMap:
-		return orderedMapHasMCPHeader(typed)
+		return schemas.OrderedMapHasMCPHeader(typed)
 	case schemas.OrderedMap:
-		return orderedMapHasMCPHeader(&typed)
+		return schemas.OrderedMapHasMCPHeader(&typed)
 	case []any:
 		for _, item := range typed {
 			if valueHasMCPHeader(item) {
@@ -1117,7 +1096,7 @@ func valueHasMCPHeader(v any) bool {
 		}
 	case []schemas.OrderedMap:
 		for i := range typed {
-			if orderedMapHasMCPHeader(&typed[i]) {
+			if schemas.OrderedMapHasMCPHeader(&typed[i]) {
 				return true
 			}
 		}
@@ -1866,7 +1845,7 @@ func toolMetadata(mcpTool *mcp.Tool) *schemas.MCPToolMetadata {
 		Icons:           mcpTool.Icons,
 		OutputSchema:    outputSchema,
 		Meta:            meta,
-		HasParamHeaders: hasParamHeaders,
+		HasParamHeaders: schemas.Ptr(hasParamHeaders),
 	}
 	if meta != nil {
 		metadata.UIResourceURI, metadata.Visibility = appsUIMeta(meta)

@@ -8203,11 +8203,11 @@ const EP85 = folder("EP-85 Annotated parameter headers (Mcp-Param-*)", "Setup: f
   createClient("EP-85", httpClient("ep85-b", "ep85_b", "ep85b", { tools_to_execute: ["*"] }), "setup: client ep85_b, per call on ep85b"),
   createClient("EP-85", httpClient("ep85-c", "ep85_c", "ep85a", { tools_to_execute: ["*"], is_code_mode_client: true }), "setup: client ep85_c, code mode on ep85a"),
   modernRpc("EP-85", "modern upstream call mirrors Mcp-Param-Action", "tools/call", { name: "ep85_a-param_tool", arguments: { action: "project.list" } },
-    [A.status(200), ep85HasHeader("project.list")], { name: "ep85_a-param_tool" }),
+    [A.status(200), ep85HasHeader("project.list")], { name: "ep85_a-param_tool", headers: [{ key: "Mcp-Param-Action", value: "project.list" }] }),
   modernRpc("EP-85", "legacy upstream call omits Mcp-Param-Action", "tools/call", { name: "ep85_b-param_tool", arguments: { action: "project.list" } },
-    [A.status(200), ep85LacksHeader], { name: "ep85_b-param_tool" }),
-  code("EP-85", "code-mode modern call mirrors Mcp-Param-Action", 'result = ep85_c.param_tool(action="project.code")',
-    [A.status(200), noIsError(), contentHas('"Mcp-Param-Action":"project.code"')]),
+    [A.status(200), ep85LacksHeader], { name: "ep85_b-param_tool", headers: [{ key: "Mcp-Param-Action", value: "project.list" }] }),
+  code("EP-85", "code-mode modern call mirrors Mcp-Param-Action", 'r = ep85_c.param_tool(action="project.code")\nresult = r["headers"]["Mcp-Param-Action"]',
+    [A.status(200), noIsError(), contentHas("Return value: project.code")]),
   deleteClient("EP-85", "ep85-a"), deleteClient("EP-85", "ep85-b"), deleteClient("EP-85", "ep85-c"),
 ]);
 

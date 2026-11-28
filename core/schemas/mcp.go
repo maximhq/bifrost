@@ -2061,7 +2061,7 @@ type MCPToolMetadata struct {
 	Meta            json.RawMessage `json:"meta,omitempty"`              // the tool's _meta, as sent
 	UIResourceURI   string          `json:"ui_resource_uri,omitempty"`   // MCP Apps: ui:// resource rendering the tool
 	Visibility      []string        `json:"visibility,omitempty"`        // MCP Apps: empty means model and app
-	HasParamHeaders bool            `json:"has_param_headers,omitempty"` // true when input schema declares x-mcp-header bindings
+	HasParamHeaders *bool           `json:"has_param_headers,omitempty"` // true when input schema declares x-mcp-header bindings; nil when unchecked (e.g. legacy persisted record)
 }
 
 // MCP Apps (SEP-1865) extension id, resource mime type and _meta.ui.visibility values.
@@ -2111,8 +2111,81 @@ func ToolDetails(tools map[string]ChatTool) map[string]MCPToolDetails {
 func ApplyToolDetails(tools map[string]ChatTool, details map[string]MCPToolDetails) {
 	for name, detail := range details {
 		if tool, ok := tools[name]; ok {
-			tool.Annotations, tool.MCP = detail.Annotations, detail.Metadata
+			meta := detail.Metadata
+			if meta != nil && meta.HasParamHeaders == nil {
+				metaCopy := *meta
+				metaCopy.HasParamHeaders = Ptr(toolHasMCPHeader(&tool))
+				meta = &metaCopy
+			}
+			tool.Annotations, tool.MCP = detail.Annotations, meta
 			tools[name] = tool
 		}
 	}
+}
+
+func toolHasMCPHeader(tool *ChatTool) bool {
+	if tool == nil || tool.Function == nil || tool.Function.Parameters == nil {
+		return false
+	}
+	return OrderedMapHasMCPHeader(tool.Function.Parameters.Properties)
+}
+
+// OrderedMapHasMCPHeader reports whether om or any nested schema object inside it
+// declares a non-empty x-mcp-header binding without copying maps or marshaling JSON.
+func OrderedMapHasMCPHeader(om *OrderedMap) bool {
+	if om == nil || om.Len() == 0 {
+		return false
+	}
+	found := false
+	om.Range(func(k string, v interface{}) bool {
+		if k == "x-mcp-header" {
+			if headerName, ok := v.(string); ok && strings.TrimSpace(headerName) != "" {
+				found = true
+				return false
+			}
+		}
+		if valueHasMCPHeader(v) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func valueHasMCPHeader(v any) bool {
+	switch typed := v.(type) {
+	case map[string]any:
+		if headerName, ok := typed["x-mcp-header"].(string); ok && strings.TrimSpace(headerName) != "" {
+			return true
+		}
+		for _, nested := range typed {
+			if valueHasMCPHeader(nested) {
+				return true
+			}
+		}
+	case *OrderedMap:
+		return OrderedMapHasMCPHeader(typed)
+	case OrderedMap:
+		return OrderedMapHasMCPHeader(&typed)
+	case []any:
+		for _, item := range typed {
+			if valueHasMCPHeader(item) {
+				return true
+			}
+		}
+	case []OrderedMap:
+		for i := range typed {
+			if OrderedMapHasMCPHeader(&typed[i]) {
+				return true
+			}
+		}
+	case []map[string]any:
+		for _, item := range typed {
+			if valueHasMCPHeader(item) {
+				return true
+			}
+		}
+	}
+	return false
 }

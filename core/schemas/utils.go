@@ -1049,6 +1049,11 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 	}
 
 	if original.MCP != nil {
+		var hasParamHeaders *bool
+		if original.MCP.HasParamHeaders != nil {
+			v := *original.MCP.HasParamHeaders
+			hasParamHeaders = &v
+		}
 		copyTool.MCP = &MCPToolMetadata{
 			Title:           original.MCP.Title,
 			Icons:           slices.Clone(original.MCP.Icons),
@@ -1056,7 +1061,7 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 			Meta:            slices.Clone(original.MCP.Meta),
 			UIResourceURI:   original.MCP.UIResourceURI,
 			Visibility:      slices.Clone(original.MCP.Visibility),
-			HasParamHeaders: original.MCP.HasParamHeaders,
+			HasParamHeaders: hasParamHeaders,
 		}
 	}
 
