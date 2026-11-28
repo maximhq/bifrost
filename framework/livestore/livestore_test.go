@@ -51,7 +51,7 @@ func (ownerRow) TableName() string { return "owners" }
 // group, item and owner are the compact records built from the rows; tagSet is interned.
 type group struct {
 	ID, Name, Tag string
-	Set           Hash
+	Set           *tagSet // interned: the loader fills its own copy, the collection shares it
 }
 
 type item struct {
@@ -81,12 +81,13 @@ type fixture struct {
 	childHook atomic.Pointer[func()]
 	// readErr runs before the groups ByID query; an error it returns fails the read.
 	readErr atomic.Pointer[func() error]
-	// pageHook runs inside the groups Page read, after the page's tag sets are interned.
+	// pageHook runs inside the groups Page read, after the page's records are built.
 	pageHook atomic.Pointer[func()]
 	// nameHook runs each time the groups name index reads a record's key, with that record.
 	nameHook atomic.Pointer[func(*group)]
-	// usesHook runs each time the groups Uses link reads a record's tag set, with that record. A
-	// publish reads it once a record's index keys are written, before it writes the next record.
+	// usesHook runs each time the groups collection reads a record's interned tag set, with that
+	// record. A publish reads it before a record's index keys are written and, for a record it
+	// replaces, again after, before it writes the next record.
 	usesHook atomic.Pointer[func(*group)]
 }
 
@@ -130,11 +131,11 @@ func newFixture(t *testing.T) *fixture {
 			return g.Name
 		}),
 		MultiIndex("tag", func(g *group) []string { return []string{g.Tag} }),
-		Uses(f.tags, func(g *group) Hash {
+		Interns(f.tags, func(g *group) **tagSet {
 			if h := f.usesHook.Load(); h != nil {
 				(*h)(g)
 			}
-			return g.Set
+			return &g.Set
 		}),
 	); err != nil {
 		t.Fatal(err)
@@ -195,14 +196,14 @@ func (f *fixture) refresh(t *testing.T, refs ...Ref) {
 	}
 }
 
-// groupLoader reads groups and interns their tag sets.
+// groupLoader reads groups, each with its own copy of its tag set, which the collection interns.
 func (f *fixture) groupLoader() Loader[group] {
 	build := func(rows []groupRow) []*group {
 		out := make([]*group, 0, len(rows))
 		for _, r := range rows {
 			g := &group{ID: r.ID, Name: r.Name, Tag: r.Tag}
 			if r.Tag != "" {
-				g.Set = f.tags.Intern(&tagSet{Tag: r.Tag})
+				g.Set = &tagSet{Tag: r.Tag}
 			}
 			out = append(out, g)
 		}
@@ -335,6 +336,34 @@ func setClock(t *testing.T, at time.Time) *time.Time {
 	return &cur
 }
 
+// held reports whether the fixture's pool holds a shared copy of ts's value.
+func (f *fixture) held(ts *tagSet) bool {
+	_, ok := sharedCopy(f.tags, f.tags.hash(ts))
+	return ok
+}
+
+// sharedCopy returns the copy in holds under h.
+func sharedCopy[T any](in *Interned[T], h Hash) (*T, bool) {
+	in.mu.RLock()
+	defer in.mu.RUnlock()
+	e, ok := in.vals[h]
+	if !ok {
+		return nil, false
+	}
+	return e.v, true
+}
+
+// usesOf reports how many records use the copy under h in in, and whether in holds one.
+func usesOf[T any](in *Interned[T], h Hash) (int, bool) {
+	in.mu.RLock()
+	defer in.mu.RUnlock()
+	e, ok := in.vals[h]
+	if !ok {
+		return 0, false
+	}
+	return e.uses, true
+}
+
 // putRecord publishes one record into c, as a publish of that record alone would.
 func putRecord[T any](c *Collection[T], id string, v *T) {
 	c.putAll([]string{id}, map[string]any{id: v})
@@ -372,11 +401,11 @@ func TestLoadAllIndexesAndInterned(t *testing.T) {
 	}
 	g1, _ := f.groups.Get("g1")
 	g2, _ := f.groups.Get("g2")
-	if g1.Set != g2.Set {
-		t.Fatal("equal tags must intern to one hash")
+	if g1.Set == nil || g1.Set != g2.Set {
+		t.Fatal("equal tags must share one copy")
 	}
-	if ts, ok := f.tags.Get(g1.Set); !ok || ts.Tag != "a" {
-		t.Fatalf("interned tag = %+v, %v", ts, ok)
+	if g1.Set.Tag != "a" || !f.held(g1.Set) {
+		t.Fatalf("interned tag = %+v, held %v", g1.Set, f.held(g1.Set))
 	}
 	if got := ids(f.items.List(ParentIndex(Kind("group")), "g1"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i1", "i2"}) {
 		t.Fatalf("children of g1 = %v", got)
@@ -928,6 +957,158 @@ func TestSubscribers(t *testing.T) {
 	}
 }
 
+// TestInternsGivesEveryRecordTheSharedCopy checks that records whose loader built equal values hold
+// one shared copy, counted once per record; that a refresh finding a record unchanged keeps its copy
+// and the count; that a record whose value changes moves its use to the new copy; and that a nil
+// field holds nothing.
+func TestInternsGivesEveryRecordTheSharedCopy(t *testing.T) {
+	f := newFixture(t)
+	f.seed(t)
+	f.load(t)
+	g1, _ := f.groups.Get("g1")
+	g2, _ := f.groups.Get("g2")
+	g3, _ := f.groups.Get("g3")
+	a := g1.Set
+	if a == nil || a != g2.Set {
+		t.Fatal("g1 and g2 must share one copy of tag a")
+	}
+	if g3.Set != nil {
+		t.Fatal("a group with no tag holds no copy")
+	}
+	ha := f.tags.hash(a)
+	if uses, _ := usesOf(f.tags, ha); uses != 2 {
+		t.Fatalf("tag a has %d uses, want 2", uses)
+	}
+
+	f.refresh(t, Ref{Kind: "group", ID: "g1"})
+	if g, _ := f.groups.Get("g1"); g.Set != a {
+		t.Fatal("a record a refresh finds unchanged keeps the shared copy")
+	}
+	if uses, _ := usesOf(f.tags, ha); uses != 2 {
+		t.Fatalf("an unchanged refresh moved tag a to %d uses, want 2", uses)
+	}
+
+	f.mustExec(t, f.db.Model(&groupRow{}).Where("id = ?", "g1").Update("tag", "b"))
+	f.refresh(t, Ref{Kind: "group", ID: "g1"})
+	g1, _ = f.groups.Get("g1")
+	if g1.Set == nil || g1.Set.Tag != "b" {
+		t.Fatalf("g1 holds %+v, want tag b", g1.Set)
+	}
+	if uses, _ := usesOf(f.tags, ha); uses != 1 {
+		t.Fatalf("tag a has %d uses after g1 moved off it, want 1", uses)
+	}
+	if uses, _ := usesOf(f.tags, f.tags.hash(g1.Set)); uses != 1 {
+		t.Fatalf("tag b has %d uses, want 1", uses)
+	}
+	f.refresh(t, Ref{Kind: "group", ID: "g2", Remove: true})
+	if uses, held := usesOf(f.tags, ha); uses != 0 || !held {
+		t.Fatalf("tag a: %d uses, held %v; want none, kept for the grace period", uses, held)
+	}
+}
+
+// pairRec is a record with two interned parts.
+type pairRec struct {
+	ID   string
+	A, B *tagSet
+}
+
+// TestInternsSeveralPartsOfOneRecord checks that a record can intern more than one part, each in its
+// own pool and counted there, through LoadRecords as well as a load.
+func TestInternsSeveralPartsOfOneRecord(t *testing.T) {
+	s := newStore()
+	t.Cleanup(s.Close)
+	hash := func(ts *tagSet) Hash { return md5.Sum([]byte(ts.Tag)) }
+	left, err := s.RegisterInterned(Kind("left"), hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := s.RegisterInterned(Kind("right"), hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	load := emptyLoader[pairRec]()
+	load.ID = func(p *pairRec) string { return p.ID }
+	pairs, err := s.Register(Kind("pair"), nil, load,
+		Interns(left, func(p *pairRec) **tagSet { return &p.A }),
+		Interns(right, func(p *pairRec) **tagSet { return &p.B }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LoadRecords(context.Background(), []Record{
+		Rec(pairs, &pairRec{ID: "p1", A: &tagSet{Tag: "x"}, B: &tagSet{Tag: "y"}}),
+		Rec(pairs, &pairRec{ID: "p2", A: &tagSet{Tag: "x"}, B: &tagSet{Tag: "z"}}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p1, _ := pairs.Get("p1")
+	p2, _ := pairs.Get("p2")
+	if p1.A != p2.A {
+		t.Fatal("equal first parts must share one copy")
+	}
+	if p1.B == p2.B {
+		t.Fatal("different second parts must not")
+	}
+	for _, c := range []struct {
+		in   *Interned[tagSet]
+		tag  string
+		want int
+	}{{left, "x", 2}, {right, "y", 1}, {right, "z", 1}, {right, "x", 0}} {
+		if uses, _ := usesOf(c.in, hash(&tagSet{Tag: c.tag})); uses != c.want {
+			t.Fatalf("%s in %s: %d uses, want %d", c.tag, c.in.kind, uses, c.want)
+		}
+	}
+}
+
+// nestRec is a record whose interned value sits in a nested struct that may be absent.
+type nestRec struct {
+	ID string
+	D  *nestPart
+}
+
+// nestPart holds the interned field of a nestRec.
+type nestPart struct{ F *tagSet }
+
+// TestInternsReachesANestedFieldAndSkipsANilParent checks that a part can address a field of a
+// nested struct, and that a part returning nil, as one does for an absent parent, interns nothing.
+func TestInternsReachesANestedFieldAndSkipsANilParent(t *testing.T) {
+	s := newStore()
+	t.Cleanup(s.Close)
+	hash := func(ts *tagSet) Hash { return md5.Sum([]byte(ts.Tag)) }
+	pool, err := s.RegisterInterned(Kind("nested"), hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	load := emptyLoader[nestRec]()
+	load.ID = func(r *nestRec) string { return r.ID }
+	recs, err := s.Register(Kind("nest"), nil, load, Interns(pool, func(r *nestRec) **tagSet {
+		if r.D == nil {
+			return nil
+		}
+		return &r.D.F
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LoadRecords(context.Background(), []Record{
+		Rec(recs, &nestRec{ID: "a", D: &nestPart{F: &tagSet{Tag: "x"}}}),
+		Rec(recs, &nestRec{ID: "b", D: &nestPart{F: &tagSet{Tag: "x"}}}),
+		Rec(recs, &nestRec{ID: "c"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := recs.Get("a")
+	b, _ := recs.Get("b")
+	if a.D.F != b.D.F {
+		t.Fatal("equal nested values must share one copy")
+	}
+	if uses, _ := usesOf(pool, hash(&tagSet{Tag: "x"})); uses != 2 {
+		t.Fatalf("the nested value has %d uses, want 2", uses)
+	}
+	if c, _ := recs.Get("c"); c.D != nil {
+		t.Fatal("a record with no parent is published as loaded")
+	}
+}
+
 // TestInternedLifetime checks that a value is shared while used and dropped a grace period
 // after the last record stops using it.
 func TestInternedLifetime(t *testing.T) {
@@ -940,25 +1121,26 @@ func TestInternedLifetime(t *testing.T) {
 
 	f.mustExec(t, f.db.Model(&groupRow{}).Where("id = ?", "g1").Update("tag", "b"))
 	f.refresh(t, Ref{Kind: "group", ID: "g1"})
-	if _, ok := f.tags.Get(shared); !ok {
+	if !f.held(shared) {
 		t.Fatal("g2 still uses tag a")
 	}
 
 	f.refresh(t, Ref{Kind: "group", ID: "g2", Remove: true})
-	if _, ok := f.tags.Get(shared); !ok {
-		t.Fatal("an unused value must survive the grace period")
+	*clock = clock.Add(internedGrace - time.Second)
+	f.s.sweep()
+	if !f.held(shared) {
+		t.Fatal("an unused value must survive a sweep within the grace period")
 	}
 	*clock = clock.Add(internedGrace + time.Second)
 	f.s.sweep() // what the background sweeper runs every sweepInterval
-	if _, ok := f.tags.Get(shared); ok {
+	if f.held(shared) {
 		t.Fatal("an unused value must be dropped after the grace period")
 	}
 }
 
-// TestInternedValueOutlivesASlowRefresh: a refresh whose read outlasts the grace period publishes
-// a record whose value it interned before the sweep ran. No record uses the value until the
-// publish, and the sweep must keep it all the same: a record published without its value resolves
-// to nothing until some later read interns the value again.
+// TestInternedValueOutlivesASlowRefresh: a refresh whose read outlasts the grace period, with the
+// sweep running meanwhile, publishes its record holding the shared copy, and the pool keeps it:
+// values are shared as records publish, so no sweep during a read can lose one.
 func TestInternedValueOutlivesASlowRefresh(t *testing.T) {
 	f := newFixture(t)
 	f.seed(t)
@@ -979,38 +1161,36 @@ func TestInternedValueOutlivesASlowRefresh(t *testing.T) {
 	if !ok || g.Tag != "c" {
 		t.Fatalf("g1 = %+v, %v, want it published with tag c", g, ok)
 	}
-	if _, ok := f.tags.Get(g.Set); !ok {
-		t.Fatal("the sweep dropped the value a refresh interned before it published the record that uses it")
+	if !f.held(g.Set) {
+		t.Fatal("the pool does not hold the value of a record a refresh published")
 	}
 	*clock = clock.Add(internedGrace + time.Minute)
 	f.s.sweep()
-	if _, ok := f.tags.Get(g.Set); !ok {
+	if !f.held(g.Set) {
 		t.Fatal("the sweep dropped a value g1 still uses")
 	}
 }
 
-// TestInternedValueOfAFailedSlowRefreshIsSwept: the sweep keeps what a refresh interned only while
-// that refresh runs. One that fails publishes nothing, so once it returns no record uses its value,
-// and the value is swept a grace period later like any other.
-func TestInternedValueOfAFailedSlowRefreshIsSwept(t *testing.T) {
+// TestAFailedRefreshInternsNothing: a refresh that fails publishes nothing, and since values are
+// shared only as records publish, the pool never holds a value only that refresh read.
+func TestAFailedRefreshInternsNothing(t *testing.T) {
 	f := newFixture(t)
 	f.seed(t)
 	clock := setClock(t, time.Unix(1_000_000, 0))
 	f.load(t)
 	f.mustExec(t, f.db.Model(&groupRow{}).Where("id = ?", "g1").Update("tag", "c"))
-	c := f.tags.hash(&tagSet{Tag: "c"})
+	c := &tagSet{Tag: "c"}
 	var reads atomic.Int32
 	var heldWhileReading atomic.Bool
-	// The first read finds g1 and interns its value. The retry for the missing row runs a grace
-	// period later, after a sweep, and fails the refresh.
+	// The first read finds g1 with tag c. The retry for the missing row runs a grace period later,
+	// after a sweep, and fails the refresh.
 	fail := func() error {
 		if reads.Add(1) == 1 {
 			return nil
 		}
 		*clock = clock.Add(internedGrace + time.Minute)
 		f.s.sweep()
-		_, ok := f.tags.Get(c)
-		heldWhileReading.Store(ok)
+		heldWhileReading.Store(f.held(c))
 		return errors.New("connection reset")
 	}
 	f.readErr.Store(&fail)
@@ -1019,16 +1199,14 @@ func TestInternedValueOfAFailedSlowRefreshIsSwept(t *testing.T) {
 	if err == nil {
 		t.Fatal("Refresh = nil, want the retry's error")
 	}
-	if !heldWhileReading.Load() {
-		t.Fatal("the sweep dropped a value a refresh still reading had interned")
+	if heldWhileReading.Load() {
+		t.Fatal("a value only a running read has seen must not be interned before its record publishes")
 	}
 	if g, _ := f.groups.Get("g1"); g.Tag != "a" {
 		t.Fatalf("g1 tag = %q, want a: a failed refresh publishes nothing", g.Tag)
 	}
-	*clock = clock.Add(internedGrace + time.Minute)
-	f.s.sweep()
-	if _, ok := f.tags.Get(c); ok {
-		t.Fatal("a value only a failed refresh interned must be swept once that refresh has returned")
+	if f.held(c) {
+		t.Fatal("a value only a failed refresh read must not be interned")
 	}
 }
 
@@ -1056,8 +1234,8 @@ func TestRefreshKindKeepsInternedValuesUntilItPublishes(t *testing.T) {
 	if !ok || g.Tag != "c" {
 		t.Fatalf("g1 = %+v, %v, want it published with tag c", g, ok)
 	}
-	if _, ok := f.tags.Get(g.Set); !ok {
-		t.Fatal("the sweep dropped the value RefreshKind interned before it published the record that uses it")
+	if !f.held(g.Set) {
+		t.Fatal("the pool does not hold the value of a record RefreshKind published")
 	}
 }
 

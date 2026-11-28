@@ -58,7 +58,7 @@ func TestKeysWithTheSameGrantsShareAPermitView(t *testing.T) {
 	}}, nil)
 	gs := h.mustGovernanceStore(NewMockLogger(), nil)
 	one, two := storedVirtualKey(t, gs, "vk-1"), storedVirtualKey(t, gs, "vk-2")
-	require.Equal(t, one.Grants, two.Grants)
+	require.Same(t, one.Grants, two.Grants, "the stored keys share one copy of their grant set")
 	require.Same(t, gs.permitViewOf(one.Grants), gs.permitViewOf(two.Grants), "one view serves both keys")
 
 	p1, p2 := permitOfKey(t, gs, emptyCtx(), "vk-1"), permitOfKey(t, gs, emptyCtx(), "vk-2")
@@ -145,11 +145,9 @@ func TestMissingGrantSetGrantsNothing(t *testing.T) {
 	require.NotEmpty(t, gs.permitForVirtualKey(emptyCtx(), held).MCPPermits(), "a held set is granted the client allowed by default")
 
 	missing := *held
-	missing.Grants = registry.GrantSetID{0xff}
-	_, ok := gs.live.Collections.GrantSet(missing.Grants)
-	require.False(t, ok, "the store holds no set under this ID")
+	missing.Grants = nil
 	permit := gs.permitForVirtualKey(emptyCtx(), &missing)
-	require.Empty(t, permit.MCPPermits(), "a missing set grants no MCP client, not even one allowed by default")
+	require.Empty(t, permit.MCPPermits(), "a key with no set grants no MCP client, not even one allowed by default")
 	require.Empty(t, permit.ProviderPermits())
 }
 
@@ -166,9 +164,9 @@ func TestPermitViewExpiresAfterItsTTL(t *testing.T) {
 	require.NotNil(t, gs.permitViewOf(set))
 	h.deleteVirtualKey("vk-1")
 
-	_, held := gs.permitViews.Get(livestore.Hash(set))
+	_, held := gs.permitViews.Get(livestore.Hash(set.ID))
 	require.True(t, held, "the view is still kept: no provider, MCP client or virtual MCP changed")
-	expires, ok := gs.permitViews.Expiry(livestore.Hash(set))
+	expires, ok := gs.permitViews.Expiry(livestore.Hash(set.ID))
 	require.True(t, ok, "the view of a set whose only key is gone expires")
 	require.WithinDuration(t, builtAt.Add(permitViewTTL), expires, time.Second, "after the TTL")
 }

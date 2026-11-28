@@ -139,9 +139,8 @@ func assignedVirtualMCPs(t *testing.T, server *BifrostHTTPServer, gs *governance
 	t.Helper()
 	vk, ok := gs.GetVirtualKeyByID(context.Background(), id)
 	require.True(t, ok)
-	set, ok := server.Config.LiveStore.Collections.GrantSet(vk.Grants)
-	require.True(t, ok, "the key's grant set is held")
-	return set.VirtualMCPIDs
+	require.NotNil(t, vk.Grants, "the key holds its grant set")
+	return vk.Grants.VirtualMCPIDs
 }
 
 // storeTestVirtualKey writes an active key with this ID, name and value to the server's config

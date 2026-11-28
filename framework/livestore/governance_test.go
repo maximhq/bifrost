@@ -252,25 +252,24 @@ func TestKeysShareTheirGrantSet(t *testing.T) {
 	clock := setClock(t, time.Unix(1_000_000, 0))
 	s := loadedGovernance(t, db)
 	cols := s.Collections
-	grantsOf := func(id string) registry.GrantSetID {
+	grantsOf := func(id string) *registry.GrantSet {
 		t.Helper()
 		k, ok := cols.VirtualKeys.Get(id)
 		require.True(t, ok, id)
-		_, held := cols.GrantSet(k.Grants)
-		require.True(t, held, "%s's grant set is held", id)
+		require.NotNil(t, k.Grants, id)
+		held, ok := sharedCopy(cols.grantSets, Hash(k.Grants.ID))
+		require.True(t, ok, "%s's grant set is held", id)
+		require.Same(t, held, k.Grants, "%s holds the shared copy", id)
 		return k.Grants
 	}
-	require.NotEqual(t, grantsOf("vk-1"), grantsOf("vk-2"), "vk-1 holds a provider config vk-2 does not")
+	require.NotSame(t, grantsOf("vk-1"), grantsOf("vk-2"), "vk-1 holds a provider config vk-2 does not")
 
 	require.NoError(t, db.Omit(clause.Associations).Create(&tables.TableVirtualKeyProviderConfig{
 		VirtualKeyID: "vk-2", Provider: "openai", AllowedModels: schemas.WhiteList{"*"},
 	}).Error)
 	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindVirtualKey, ID: "vk-2"}}))
 	shared := grantsOf("vk-1")
-	require.Equal(t, shared, grantsOf("vk-2"), "keys granted the same things share a set")
-	one, _ := cols.GrantSet(grantsOf("vk-1"))
-	two, _ := cols.GrantSet(grantsOf("vk-2"))
-	require.Same(t, one, two, "the set is stored once")
+	require.Same(t, shared, grantsOf("vk-2"), "keys granted the same things share one copy of their set")
 	k1, _ := cols.VirtualKeys.Get("vk-1")
 	k2, _ := cols.VirtualKeys.Get("vk-2")
 	require.NotEqual(t, k1.ProviderLimits[0].ConfigID, k2.ProviderLimits[0].ConfigID, "what funds each config stays with its key")
@@ -278,13 +277,13 @@ func TestKeysShareTheirGrantSet(t *testing.T) {
 	require.NoError(t, db.Model(&tables.TableVirtualKeyProviderConfig{}).Where("virtual_key_id = ?", "vk-2").
 		UpdateColumn("allowed_models", `["gpt-4o"]`).Error)
 	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindVirtualKey, ID: "vk-2"}}))
-	require.NotEqual(t, shared, grantsOf("vk-2"), "a key whose grants change moves to its own set")
-	require.Equal(t, shared, grantsOf("vk-1"))
+	require.NotSame(t, shared, grantsOf("vk-2"), "a key whose grants change moves to its own set")
+	require.Same(t, shared, grantsOf("vk-1"))
 
 	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindVirtualKey, ID: "vk-1", Remove: true}}))
 	*clock = clock.Add(internedGrace + time.Second)
 	s.sweep()
-	_, held := cols.GrantSet(shared)
+	_, held := sharedCopy(cols.grantSets, Hash(shared.ID))
 	require.False(t, held, "a set no key holds is dropped after the grace period")
 	grantsOf("vk-2")
 }
@@ -304,8 +303,11 @@ func TestFileRecordsHoldEachKeysGrantSet(t *testing.T) {
 	require.NoError(t, s.LoadRecords(context.Background(), s.Collections.FileRecords(fc)))
 	k, ok := s.Collections.VirtualKeys.Get("vk-1")
 	require.True(t, ok)
-	set, ok := s.Collections.GrantSet(k.Grants)
+	set := k.Grants
+	require.NotNil(t, set, "the key carries its grant set")
+	held, ok := sharedCopy(s.Collections.grantSets, Hash(set.ID))
 	require.True(t, ok, "the key's grant set is held")
+	require.Same(t, held, set, "the key holds the shared copy")
 	require.Len(t, set.Providers, 1)
 	require.Equal(t, "openai", set.Providers[0].Provider)
 }
