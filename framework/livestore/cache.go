@@ -52,6 +52,8 @@ type Cache[V any] struct {
 	ttl         func(V) time.Duration
 	negative    func(V) bool
 	negativeTTL time.Duration
+	// interns are the Interns declarations, which the entries table applies.
+	interns []tableIntern[cacheEntry[V]]
 
 	// fills runs loads, one per key at a time, never sharing a load that started before a caller.
 	fills readGroup
@@ -66,34 +68,41 @@ type cacheEntry[V any] struct {
 	version  uint64
 }
 
-// CacheOption configures a Cache.
-type CacheOption[V any] func(*Cache[V])
+// CacheOption configures a Cache: WithSharedFills, WithValidator, WithCacheTTL,
+// WithCacheNegativeTTL and Interns make one.
+type CacheOption[V any] interface{ applyCache(*Cache[V]) }
+
+// cacheOptionFunc is a CacheOption that sets fields of a cache.
+type cacheOptionFunc[V any] func(*Cache[V])
+
+// applyCache sets the option on c.
+func (f cacheOptionFunc[V]) applyCache(c *Cache[V]) { f(c) }
 
 // WithSharedFills makes callers of Fill that arrive while a load for the key is running share that
 // load's result or error, instead of waiting for a load that starts after their call. It is for
 // loads whose answer does not depend on when they started, such as a call to an upstream service,
 // where concurrent callers should cause one call. Errors are still never cached.
 func WithSharedFills[V any]() CacheOption[V] {
-	return func(c *Cache[V]) { c.fills.shareInFlight = true }
+	return cacheOptionFunc[V](func(c *Cache[V]) { c.fills.shareInFlight = true })
 }
 
 // WithValidator installs a hit-time validity check: entries for which valid returns false are
 // removed and reported as misses.
 func WithValidator[V any](valid func(V) bool) CacheOption[V] {
-	return func(c *Cache[V]) { c.validator = valid }
+	return cacheOptionFunc[V](func(c *Cache[V]) { c.validator = valid })
 }
 
 // WithCacheTTL gives each entry the TTL ttl reports for its value, so entries nobody reads again do
 // not stay. Zero keeps the entry until it is evicted; a negative TTL means the value has already
 // run out, and it is not installed.
 func WithCacheTTL[V any](ttl func(V) time.Duration) CacheOption[V] {
-	return func(c *Cache[V]) { c.ttl = ttl }
+	return cacheOptionFunc[V](func(c *Cache[V]) { c.ttl = ttl })
 }
 
 // WithCacheNegativeTTL keeps negative results, the ones negative matches, for ttl only. Zero keeps
 // them until they are evicted, as for any entry, and a negative ttl keeps no negative result.
 func WithCacheNegativeTTL[V any](negative func(V) bool, ttl time.Duration) CacheOption[V] {
-	return func(c *Cache[V]) { c.negative, c.negativeTTL = negative, ttl }
+	return cacheOptionFunc[V](func(c *Cache[V]) { c.negative, c.negativeTTL = negative, ttl })
 }
 
 // NewCache creates a cache under name. Its two tables are the store's own, internal:<name> and
@@ -107,7 +116,13 @@ func (s *Store) NewCache[V any](ctx context.Context, name string, opts ...CacheO
 	if name == "" {
 		return nil, errors.New("livestore: empty cache name")
 	}
+	c := &Cache[V]{store: s}
+	for _, opt := range opts {
+		opt.applyCache(c)
+	}
+	// The options are applied first, so the entries table has its Interns before it is shared.
 	entries := newTable[string, cacheEntry[V]](internalPrefix+name, tableOptions{})
+	entries.interns = c.interns
 	if err := s.addTable(entries.Name(), entries, ""); err != nil {
 		return nil, err
 	}
@@ -116,10 +131,7 @@ func (s *Store) NewCache[V any](ctx context.Context, name string, opts ...CacheO
 		s.dropTable(entries.Name())
 		return nil, err
 	}
-	c := &Cache[V]{store: s, entries: entries, byIndex: byIndex}
-	for _, opt := range opts {
-		opt(c)
-	}
+	c.entries, c.byIndex = entries, byIndex
 	return c, nil
 }
 

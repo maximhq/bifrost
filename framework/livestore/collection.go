@@ -47,9 +47,16 @@ const (
 	SetNull
 )
 
-// Option configures a collection at registration. An invalid option returns an error, and
-// Register stops there and returns it.
-type Option[T any] func(*Collection[T]) error
+// Option configures a collection at registration: UniqueIndex, MultiIndex, ChildOf, ChildIDsOf,
+// ReadInBatches, ShareIDs, WithNegativeTTL and Interns make one. An invalid option returns an
+// error, and Register stops there and returns it.
+type Option[T any] interface{ applyCollection(*Collection[T]) error }
+
+// optionFunc is an Option that sets up the collection itself.
+type optionFunc[T any] func(*Collection[T]) error
+
+// applyCollection applies the option to c.
+func (f optionFunc[T]) applyCollection(c *Collection[T]) error { return f(c) }
 
 // Collection holds every row of one config-database kind, keyed by primary key, with the
 // indexes declared at registration. It is loaded whole at boot and refreshed after every write,
@@ -92,7 +99,7 @@ func (s *Store) Register[T any](kind Kind, dependsOn []Kind, load Loader[T], opt
 		indexes: make(map[string]*keyIndex[T]),
 	}
 	for _, o := range opts {
-		if err := o(c); err != nil {
+		if err := o.applyCollection(c); err != nil {
 			return nil, err
 		}
 	}
@@ -125,47 +132,18 @@ func (s *Store) Register[T any](kind Kind, dependsOn []Kind, load Loader[T], opt
 // Refresh), so use it only where the database keeps the key unique too. A key one publish moves
 // from one record to another passes in one step, so a reader never finds both under it.
 func UniqueIndex[T any](name string, key func(*T) string) Option[T] {
-	return func(c *Collection[T]) error {
+	return optionFunc[T](func(c *Collection[T]) error {
 		return c.addIndex(&keyIndex[T]{name: name, unique: true, keys: singleKey(key)})
-	}
+	})
 }
 
 // MultiIndex adds an index where a key can name several records and a record can have several
 // keys. Empty keys are not indexed. GetBy returns the record with the lowest ID, the one SQL's
 // First would; List returns all of them in ID order.
 func MultiIndex[T any](name string, keys func(*T) []string) Option[T] {
-	return func(c *Collection[T]) error {
+	return optionFunc[T](func(c *Collection[T]) error {
 		return c.addIndex(&keyIndex[T]{name: name, keys: nonEmptyKeys(keys)})
-	}
-}
-
-// Interns declares that part of each record is interned in pool: part returns the address of the
-// record's interned field, which must be a pointer, and which the loader fills with the record's
-// own copy. As a record publishes, the collection puts the pool's shared copy of that value in the
-// field and counts the use, so records holding equal values share one copy and readers use the
-// field as it is, with no lookup; a replaced or removed record gives its use back, and a value no
-// record has used for the grace period is dropped. A record may intern several parts, with one
-// Interns each. A nil field holds nothing, and part returns nil when the record has no such field,
-// as when the struct holding it is absent:
-//
-//	type A struct {
-//		C *C  // interned
-//		D *D  // holds F, may be nil
-//	}
-//	type D struct{ F *F } // F interned
-//
-//	Interns(cPool, func(a *A) **C { return &a.C })
-//	Interns(fPool, func(a *A) **F {
-//		if a.D == nil {
-//			return nil
-//		}
-//		return &a.D.F
-//	})
-func Interns[T, P any](pool *Interned[P], part func(*T) **P) Option[T] {
-	return func(c *Collection[T]) error {
-		c.interns = append(c.interns, internPart[T, P]{pool: pool, part: part})
-		return nil
-	}
+	})
 }
 
 // ChildOf mirrors a foreign key from this kind to parent; a collection read in batches
@@ -179,14 +157,14 @@ func Interns[T, P any](pool *Interned[P], part func(*T) **P) Option[T] {
 // (SetNull). ChildOf does not order kinds; dependsOn does. It indexes the children by parent
 // under ParentIndex(parent).
 func ChildOf[T any](parent Kind, parentID func(*T) string, byParent func(ctx context.Context, db *gorm.DB, parentIDs []string) ([]*T, error), onDelete OnDelete) Option[T] {
-	return func(c *Collection[T]) error {
+	return optionFunc[T](func(c *Collection[T]) error {
 		name := ParentIndex(parent)
 		if err := c.addIndex(&keyIndex[T]{name: name, keys: singleKey(parentID)}); err != nil {
 			return err
 		}
 		c.parents = append(c.parents, parentLink[T]{parent: parent, index: name, parentID: parentID, byParent: byParent, onDelete: onDelete})
 		return nil
-	}
+	})
 }
 
 // ChildIDsOf is ChildOf for a collection read with ReadInBatches: childIDs returns only the IDs of
@@ -198,16 +176,16 @@ func ChildOf[T any](parent Kind, parentID func(*T) string, byParent func(ctx con
 // the records are two reads, so a row that changes between them is read as it is at the second.
 func ChildIDsOf[T any](parent Kind, parentID func(*T) string, childIDs func(ctx context.Context, db *gorm.DB, parentIDs []string) ([]string, error), onDelete OnDelete) Option[T] {
 	link := ChildOf(parent, parentID, nil, onDelete)
-	return func(c *Collection[T]) error {
+	return optionFunc[T](func(c *Collection[T]) error {
 		if childIDs == nil {
 			return fmt.Errorf("livestore: link of %q to %q has no read", c.kind, parent)
 		}
-		if err := link(c); err != nil {
+		if err := link.applyCollection(c); err != nil {
 			return err
 		}
 		c.parents[len(c.parents)-1].childIDs = childIDs
 		return nil
-	}
+	})
 }
 
 // DefaultReadBatch is the batch size for ReadInBatches. A loader that binds one statement parameter
@@ -225,13 +203,13 @@ const DefaultReadBatch = 1000
 // are declared with ChildIDsOf, whose records come through the batched ByID; Register refuses a
 // ChildOf link, since its read returns records outside the batches. size must be positive.
 func ReadInBatches[T any](size int) Option[T] {
-	return func(c *Collection[T]) error {
+	return optionFunc[T](func(c *Collection[T]) error {
 		if size <= 0 {
 			return fmt.Errorf("livestore: ReadInBatches on %q needs a positive size, got %d", c.kind, size)
 		}
 		c.batch = size
 		return nil
-	}
+	})
 }
 
 // ShareIDs gives the records a loader reads the copies of the IDs they name that the named records
@@ -240,10 +218,10 @@ func ReadInBatches[T any](size int) Option[T] {
 // ID holds, or the ID itself when the store holds no such record. Kinds load in dependency order,
 // so a record finds the records it depends on.
 func ShareIDs[T any](share func(rec *T, shared func(kind Kind, id string) string)) Option[T] {
-	return func(c *Collection[T]) error {
+	return optionFunc[T](func(c *Collection[T]) error {
 		c.share = share
 		return nil
-	}
+	})
 }
 
 // ParentIndex names the index ChildOf adds on a child collection, under which List finds the
@@ -254,10 +232,10 @@ func ParentIndex(parent Kind) string { return "parent_" + string(parent) }
 // per ttl. The misses are kept in a table the store owns, named internal:negative_<kind>, which
 // the background sweep clears of expired misses and no public call can create or drop.
 func WithNegativeTTL[T any](ttl time.Duration) Option[T] {
-	return func(c *Collection[T]) error {
+	return optionFunc[T](func(c *Collection[T]) error {
 		c.negTTL = ttl
 		return nil
-	}
+	})
 }
 
 // addIndex registers ix on c. It fails on an empty or duplicate name.
@@ -750,33 +728,6 @@ type parentLink[T any] struct {
 	byParent func(ctx context.Context, db *gorm.DB, parentIDs []string) ([]*T, error)
 	childIDs func(ctx context.Context, db *gorm.DB, parentIDs []string) ([]string, error)
 	onDelete OnDelete
-}
-
-// internLink is one Interns declaration, seen without the interned value's type.
-type internLink[T any] interface {
-	share(rec *T)   // put the shared copy in rec's part, counting a use
-	release(rec *T) // give back the use rec's part holds
-}
-
-// internPart is one Interns declaration: pool holds the shared copies of the field part addresses.
-type internPart[T, P any] struct {
-	pool *Interned[P]
-	part func(*T) **P
-}
-
-// share puts the pool's shared copy of rec's part in rec, counting one more use of it. A part that
-// is not there (a nil address) or holds nothing (a nil field) is skipped.
-func (l internPart[T, P]) share(rec *T) {
-	if f := l.part(rec); f != nil && *f != nil {
-		*f = l.pool.share(*f)
-	}
-}
-
-// release gives back the use rec's part holds, if it holds one.
-func (l internPart[T, P]) release(rec *T) {
-	if f := l.part(rec); f != nil && *f != nil {
-		l.pool.release(*f)
-	}
 }
 
 // keyIndex maps keys to the records under them. A key with one record holds just its pointer; in a
