@@ -3,6 +3,7 @@ package tracing
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -259,6 +260,41 @@ func TestGenerateSpanID_Format(t *testing.T) {
 	if !isHex(id) {
 		t.Errorf("generateSpanID() = %q, not valid hex", id)
 	}
+}
+
+// TestGeneratedIDsKeepTheirFormat pins the trace and span ID shapes: 32 and 16 lowercase hex
+// characters, the version 4 nibble where a v4 UUID puts it, and the RFC 4122 variant in a trace ID.
+func TestGeneratedIDsKeepTheirFormat(t *testing.T) {
+	traceRe := regexp.MustCompile(`^[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}$`)
+	spanRe := regexp.MustCompile(`^[0-9a-f]{12}4[0-9a-f]{3}$`)
+	for range 2000 {
+		if id := generateTraceID(); !traceRe.MatchString(id) {
+			t.Fatalf("trace ID %q does not have the version 4 UUID shape", id)
+		}
+		if id := generateSpanID(); !spanRe.MatchString(id) {
+			t.Fatalf("span ID %q does not have the shape of a version 4 UUID's first 64 bits", id)
+		}
+	}
+}
+
+// BenchmarkGenerateSpanID measures one span ID under concurrent callers, the request-path shape.
+func BenchmarkGenerateSpanID(b *testing.B) {
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = generateSpanID()
+		}
+	})
+}
+
+// BenchmarkGenerateTraceID measures one trace ID under concurrent callers.
+func BenchmarkGenerateTraceID(b *testing.B) {
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = generateTraceID()
+		}
+	})
 }
 
 func TestSetTraceAttribute(t *testing.T) {
