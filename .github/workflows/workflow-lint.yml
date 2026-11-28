@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/**"
+      - "Makefile"
       - "**/go.mod"
       - "**/version"
 
@@ -71,3 +72,6 @@ jobs:
 
       - name: Check apt HTTPS source rewriter
         run: bash ./.github/workflows/scripts/apt-sources-https.test.sh
+
+      - name: Check HTTP transport test failure propagation
+        run: python3 .github/workflows/scripts/test-http-transport-target.py
