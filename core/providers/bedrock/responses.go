@@ -2685,15 +2685,21 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					}
 
 					bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
-				} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
-					// Converse exposes no token budget for these models, so express the
-					// budget as the effort it corresponds to.
-					defaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
-					if inferenceConfig.MaxTokens != nil {
-						defaultMaxTokens = *inferenceConfig.MaxTokens
+				} else if config := resolveConverseReasoningEffort(ctx, caps); config.field != "" {
+					effort := bifrostReq.Params.Reasoning.Effort
+					if config.field == schemas.FieldReasoningEffort && effort != nil && *effort == schemas.ReasoningEffortNone {
+						// An explicit "none" must not be replaced by a budget-derived effort.
+						config.set(bedrockReq.AdditionalModelRequestFields, caps, effort)
+					} else {
+						// Converse exposes no token budget for these models, so express the
+						// budget as the effort it corresponds to.
+						defaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
+						if inferenceConfig.MaxTokens != nil {
+							defaultMaxTokens = *inferenceConfig.MaxTokens
+						}
+						effort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, MinimumReasoningMaxTokens, defaultMaxTokens)
+						config.set(bedrockReq.AdditionalModelRequestFields, caps, &effort)
 					}
-					effort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, MinimumReasoningMaxTokens, defaultMaxTokens)
-					setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, effort)
 				}
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
@@ -2761,8 +2767,8 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 								"budget_tokens": budgetTokens,
 							})
 						}
-					} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
-						setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, *bifrostReq.Params.Reasoning.Effort)
+					} else if config := resolveConverseReasoningEffort(ctx, caps); config.field != "" {
+						config.set(bedrockReq.AdditionalModelRequestFields, caps, bifrostReq.Params.Reasoning.Effort)
 					}
 				} else {
 					if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
@@ -2777,8 +2783,8 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 							"type": "disabled",
 						})
-					} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
-						setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, "none")
+					} else if config := resolveConverseReasoningEffort(ctx, caps); config.field != "" {
+						config.set(bedrockReq.AdditionalModelRequestFields, caps, bifrostReq.Params.Reasoning.Effort)
 					}
 				}
 			}

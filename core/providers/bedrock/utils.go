@@ -837,15 +837,21 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				}
 
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
-			} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
-				// Converse exposes no token budget for these models, so express the
-				// budget as the effort it corresponds to.
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
-				if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
-					maxTokens = *bedrockReq.InferenceConfig.MaxTokens
+			} else if config := resolveConverseReasoningEffort(ctx, caps); config.field != "" {
+				effort := bifrostReq.Params.Reasoning.Effort
+				if config.field == schemas.FieldReasoningEffort && effort != nil && *effort == schemas.ReasoningEffortNone {
+					// An explicit "none" must not be replaced by a budget-derived effort.
+					config.set(bedrockReq.AdditionalModelRequestFields, caps, effort)
+				} else {
+					// Converse exposes no token budget for these models, so express the
+					// budget as the effort it corresponds to.
+					maxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
+					if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
+						maxTokens = *bedrockReq.InferenceConfig.MaxTokens
+					}
+					effort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, MinimumReasoningMaxTokens, maxTokens)
+					config.set(bedrockReq.AdditionalModelRequestFields, caps, &effort)
 				}
-				effort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, MinimumReasoningMaxTokens, maxTokens)
-				setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, effort)
 			}
 		} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 			modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
@@ -918,8 +924,8 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 				}
-			} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
-				setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, *bifrostReq.Params.Reasoning.Effort)
+			} else if config := resolveConverseReasoningEffort(ctx, caps); config.field != "" {
+				config.set(bedrockReq.AdditionalModelRequestFields, caps, bifrostReq.Params.Reasoning.Effort)
 			}
 		} else {
 			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
@@ -932,8 +938,8 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 					"type": "disabled",
 				})
-			} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
-				setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, "none")
+			} else if config := resolveConverseReasoningEffort(ctx, caps); config.field != "" {
+				config.set(bedrockReq.AdditionalModelRequestFields, caps, bifrostReq.Params.Reasoning.Effort)
 			}
 		}
 	}
@@ -3540,8 +3546,13 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 	}, nil, nil
 }
 
-// Effort ladders Converse accepts, verified against bedrock-runtime: both
-// families reject "minimal", and Grok additionally rejects "max".
+type converseEffortConfig struct {
+	field  string
+	levels *schemas.EffortControl
+}
+
+// Default effort ladders for Converse. Datasheet levels and renames take
+// precedence. Kimi and GLM use "low" for "minimal" across the family.
 // NormalizeReasoningEffort snaps an unsupported label onto the nearest rung, so
 // "minimal" resolves to "low" and Grok's "max" to "xhigh" with no explicit renames.
 var (
@@ -3551,33 +3562,49 @@ var (
 	bedrockConverseGrokEffortLevels = &schemas.EffortControl{
 		Levels: []string{"none", "low", "medium", "high", "xhigh"},
 	}
+	bedrockConverseKimiEffortLevels = &schemas.EffortControl{
+		Levels: []string{"none", "low", "medium", "high", "xhigh", "max"},
+	}
+	// Omit "none" for GLM; always-on models such as GLM 5.3 reject it.
+	bedrockConverseGLMEffortLevels = &schemas.EffortControl{
+		Levels: []string{"low", "medium", "high", "xhigh", "max"},
+	}
 )
 
-// converseReasoningEffortLevels returns the effort ladder for models that take
-// the OpenAI-shaped `reasoning: {effort}` field on Converse, and false for the
-// models that take no reasoning field at all.
+// resolveConverseReasoningEffort resolves the field shape and effort policy for
+// Converse using the canonical model family. Datasheet effort levels and
+// renames override the family defaults when the value is normalized.
 //
-// Verified against bedrock-runtime: gpt-5.6 accepts only this shape and rejects
-// Nova's reasoningConfig outright, while Grok accepts every shape but honors
-// only this one — so the reasoningConfig sent today is silently ignored there
-// and a caller asking to disable reasoning still gets it. No other Converse
-// family surfaces reasoning at all: DeepSeek R1 fails on any
-// additionalModelRequestFields, and DeepSeek V3.2, Qwen, GLM and Gemma accept
-// the field and ignore it. Their reasoning is only reachable on the
-// OpenAI-compatible mantle surface, so on Converse they get nothing.
+// Verified against bedrock-runtime: gpt-5.6 accepts the nested reasoning.effort
+// field and rejects Nova's reasoningConfig outright. Grok accepts both shapes
+// but honors only the nested field, so Nova's shape cannot disable reasoning.
+// GLM ignores the nested field but honors flat reasoning_effort, as do Kimi
+// K3.1 and K2.5.
+// DeepSeek R1 fails on any additionalModelRequestFields, and DeepSeek V3.2,
+// Qwen and Gemma accept the nested field and ignore it.
 // Takes ModelCaps rather than the wire model: callers hold the raw request
 // value, which for an alias or an application inference profile is an opaque id
 // carrying no family. IsOpenAIModelFamily walks the alias chain on its own, but
 // IsGrokModel is a bare substring match, so a Grok alias would fall through and
 // silently lose reasoning entirely. caps.Model() is the canonical name.
-func converseReasoningEffortLevels(ctx *schemas.BifrostContext, caps schemas.ModelCaps) (*schemas.EffortControl, bool) {
+func resolveConverseReasoningEffort(ctx *schemas.BifrostContext, caps schemas.ModelCaps) converseEffortConfig {
 	switch {
 	case schemas.IsGrokModel(caps.Model()):
-		return bedrockConverseGrokEffortLevels, true
+		return converseEffortConfig{field: "reasoning", levels: bedrockConverseGrokEffortLevels}
+	case schemas.IsKimiModel(caps.Model()):
+		// K2 Thinking effort support is unverified; keep its Converse request unchanged.
+		if strings.Contains(caps.Model(), "kimi-k2-thinking") {
+			return converseEffortConfig{}
+		}
+		return converseEffortConfig{field: schemas.FieldReasoningEffort, levels: bedrockConverseKimiEffortLevels}
+	case schemas.IsGLMModel(caps.Model()):
+		return converseEffortConfig{field: schemas.FieldReasoningEffort, levels: bedrockConverseGLMEffortLevels}
+	// Match canonical families first: an OpenAI-looking alias key must not override its target.
 	case schemas.IsOpenAIModelFamily(ctx, caps.Model()):
-		return bedrockConverseOpenAIEffortLevels, true
+		return converseEffortConfig{field: "reasoning", levels: bedrockConverseOpenAIEffortLevels}
+	default:
+		return converseEffortConfig{}
 	}
-	return nil, false
 }
 
 // converseReasoningShape reports which reasoning content variant the model uses
@@ -3630,10 +3657,25 @@ func converseAcceptsStopSequences(model string) bool {
 	return false
 }
 
-// setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping
-// the requested effort onto a rung the model publishes.
-func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCaps, levels *schemas.EffortControl, effort string) {
-	fields.Set("reasoning", map[string]any{"effort": caps.NormalizeReasoningEffort(effort, levels)})
+// set writes the requested effort in the field shape the model reads. A reasoning
+// object alone (for example, with only summary) does not request disabling reasoning.
+// Omit effort when absent so the model applies its own default. GLM also omits
+// "none"; other families preserve it as a request to disable reasoning. Callers
+// convert an explicit token budget to an effort before calling set.
+func (config converseEffortConfig) set(fields *schemas.OrderedMap, caps schemas.ModelCaps, requested *string) {
+	if requested == nil {
+		return
+	}
+	if *requested == schemas.ReasoningEffortNone && schemas.IsGLMModel(caps.Model()) {
+		return
+	}
+	effort := caps.NormalizeReasoningEffort(*requested, config.levels)
+	switch config.field {
+	case schemas.FieldReasoningEffort:
+		fields.Set(config.field, effort)
+	case "reasoning":
+		fields.Set(config.field, map[string]any{"effort": effort})
+	}
 }
 
 // clampMaxTokens raises maxTokens to the floor the model enforces on

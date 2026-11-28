@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { crc32 } from "node:zlib";
 import { argValue, createTlsEndpoints } from "./lib/tls-intercept-proxy.mjs";
 
 // Local stand-in for the AWS Bedrock services, used to observe what the gateway sends for the
@@ -33,11 +34,31 @@ if (!appDir) {
 // control character; the fixture answers InvokeAgent with bytes shaped like that.
 const eventStream = Buffer.concat([Buffer.from([0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 0]), Buffer.from("fixture-event")]);
 
+// ConverseStream requires binary AWS frames, including both CRCs, rather than SSE text.
+function converseEvent(type, payload) {
+	const headers = Buffer.concat([
+		[":message-type", "event"], [":event-type", type], [":content-type", "application/json"],
+	].map(([name, value]) => {
+		const length = Buffer.alloc(2);
+		length.writeUInt16BE(Buffer.byteLength(value));
+		return Buffer.concat([Buffer.from([name.length]), Buffer.from(name), Buffer.from([7]), length, Buffer.from(value)]);
+	}));
+	const data = Buffer.from(JSON.stringify(payload));
+	const prelude = Buffer.alloc(12);
+	prelude.writeUInt32BE(16 + headers.length + data.length, 0);
+	prelude.writeUInt32BE(headers.length, 4);
+	prelude.writeUInt32BE(crc32(prelude.subarray(0, 8)), 8);
+	const message = Buffer.concat([prelude, headers, data]);
+	const checksum = Buffer.alloc(4);
+	checksum.writeUInt32BE(crc32(message));
+	return Buffer.concat([message, checksum]);
+}
+
 // The gateway needs a pricing datasheet on first start; serving an empty one from the control port keeps
 // the whole run offline, so the HTTPS_PROXY tripwire can stay armed.
 const endpoints = createTlsEndpoints({
 	staticJson: { "/pricing.json": {}, "/model-parameters.json": {} },
-	respond: (req) => {
+	respond: (req, body) => {
 		const url = req.url || "";
 		if (/\/agents\/AGENTMISSING1\//.test(url)) {
 			return { status: 404, headers: { "X-Amzn-Errortype": "ResourceNotFoundException:http://internal.amazon.com/coral/", "X-Amzn-Requestid": "req-missing" }, body: JSON.stringify({ message: "agent not found" }) };
@@ -62,9 +83,25 @@ const endpoints = createTlsEndpoints({
 		if (/\/guardrail\/[^/]+\/version\/[^/]+\/apply$/.test(url)) {
 			return { status: 200, headers: { "X-Amzn-Requestid": "req-guardrail" }, body: JSON.stringify({ action: "NONE", outputs: [], assessments: [] }) };
 		}
-		// Converse on an application inference profile (the alias below): a minimal valid answer, so a case can read
-		// the request body the gateway built for an opaque profile ID from /__connects.
-		if (/^\/model\/.*application-inference-profile.*\/converse$/.test(url)) {
+		// Converse on native models and application inference profiles: a minimal valid answer, so a case can
+		// read the request body the gateway built, including for an opaque profile ID, from /__connects.
+		// GLM 5.3 always reasons and rejects these values; a success-only mock would hide invalid conversions.
+		if (/^\/model\/(?:global|us)\.zai\.glm-5\.3\/converse(?:-stream)?$/.test(url)) {
+			const effort = JSON.parse(body).additionalModelRequestFields?.reasoning_effort;
+			if (effort === "none" || effort === "minimal") {
+				return { status: 400, headers: { "Content-Type": "application/json", "X-Amzn-Errortype": "ValidationException" }, body: JSON.stringify({ message: `reasoning_effort '${effort}' is not supported for GLM 5.3` }) };
+			}
+		}
+		if (/^\/model\/.+\/converse-stream$/.test(url)) {
+			return { status: 200, headers: { "Content-Type": "application/vnd.amazon.eventstream" }, body: Buffer.concat([
+				converseEvent("messageStart", { role: "assistant" }),
+				converseEvent("contentBlockDelta", { delta: { text: "OK" }, contentBlockIndex: 0 }),
+				converseEvent("contentBlockStop", { contentBlockIndex: 0 }),
+				converseEvent("messageStop", { stopReason: "end_turn" }),
+				converseEvent("metadata", { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, metrics: { latencyMs: 1 } }),
+			]) };
+		}
+		if (/^\/model\/.+\/converse$/.test(url)) {
 			return { status: 200, headers: { "Content-Type": "application/json", "X-Amzn-Requestid": "req-converse" }, body: JSON.stringify({ output: { message: { role: "assistant", content: [{ text: "OK" }] } }, stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, metrics: { latencyMs: 1 } }) };
 		}
 		return { status: 404, body: JSON.stringify({ message: "fixture does not serve " + url }) };
@@ -78,9 +115,11 @@ const runtimeHost = `localhost:${runtimePort}`;
 // names on the fixture certificate.
 const s3Host = `bucket.${runtimeHost}`;
 const config = {
+	client: { enforce_auth_on_inference: false },
 	framework: { pricing: { pricing_url: `http://127.0.0.1:${controlPort}/pricing.json`, model_parameters_url: `http://127.0.0.1:${controlPort}/model-parameters.json`, mcp_library_sync_interval: 0 } },
 	providers: {
 		bedrock: {
+			send_back_raw_request: true,
 			keys: [
 				{
 					name: "bedrock-fixture",
@@ -92,8 +131,10 @@ const config = {
 						region: "us-west-2",
 						endpoints: { runtime: runtimeHost, control_plane: runtimeHost, mantle: runtimeHost, s3: s3Host, agent_runtime: agentHost },
 					},
-					// An application inference profile: the wire model is an opaque ARN, and only model_name says it is Claude.
 					aliases: {
+						"gpt-4o-kimi": { model_id: "global.moonshotai.kimi-k3.1", model_name: "global.moonshotai.kimi-k3.1" },
+						"gpt-4o-glm": { model_id: "global.zai.glm-5.3", model_name: "global.zai.glm-5.3" },
+						// An application inference profile: the wire model is an opaque ARN, and only model_name says it is Claude.
 						"claude-app-profile": {
 							model_id: "arn:aws:bedrock:us-west-2:000000000000:application-inference-profile/fixtureprof01",
 							model_name: "anthropic.claude-sonnet-4-20250514-v1:0",
@@ -113,7 +154,7 @@ const config = {
 					},
 				},
 			],
-			network_config: { max_retries: 0, default_request_timeout_in_seconds: 3, ca_cert_pem: endpoints.caPem },
+			network_config: { max_retries: 0, default_request_timeout_in_seconds: 3, ca_cert_pem: endpoints.caPem, allow_private_network: true },
 			// Off by default so no other case changes; a case opts in per request with x-bf-prompt-cache-auto-inject.
 			prompt_cache: { auto_inject: false },
 		},

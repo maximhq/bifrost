@@ -352427,6 +352427,336 @@
           ]
         }
       ]
+    },
+    {
+      "name": "393. Bedrock Converse flat reasoning effort (bedrock effort mock) - #10414",
+      "description": "Real Bifrost -> local Bedrock TLS mock. Start bedrock-endpoint-fixture.mjs with a fresh app directory, then start Bifrost using that directory and set bedrockEndpointFixture=1. The fixture enables provider-level raw_request capture. Cases verify flat effort, omitted effort, explicit none with a budget, aliases named like OpenAI models, and streamed requests. Without the fixture flag these requests are skipped, so normal sweeps never send them to AWS. See the Bedrock fixture setup in tests/e2e/api/README.md; Node must provide node:zlib.crc32. GLM 5.3 validation is modeled for none/minimal. K2 Thinking effort is omitted until Bedrock support is verified.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') { pm.execution.skipRequest(); }",
+              "pm.request.headers.upsert({key: 'Content-Type', value: 'application/json'});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text();",
+              "var sent = JSON.parse(pm.request.body.raw);",
+              "var expected = sent.reasoning_effort || (sent.reasoning && sent.reasoning.effort) || (sent.output_config && sent.output_config.effort);",
+              "if (expected === 'minimal') { expected = 'low'; }",
+              "var outbound = pm.info.requestName.match(/outbound=(\\w+)/);",
+              "if (outbound) { expected = outbound[1] === 'omitted' ? undefined : outbound[1]; }",
+              "var events = [];",
+              "var response;",
+              "var rr;",
+              "if (sent.stream) {",
+              "  txt.split('\\n').forEach(function (line) {",
+              "    if (line.indexOf('data:') !== 0) { return; }",
+              "    var data = line.slice(5).trim();",
+              "    if (data && data !== '[DONE]') { events.push(JSON.parse(data)); }",
+              "  });",
+              "  events.forEach(function (event) {",
+              "    var extra = event.extra_fields || (event.response && event.response.extra_fields) || {};",
+              "    if (extra.raw_request) { rr = extra.raw_request; }",
+              "  });",
+              "} else {",
+              "  response = pm.response.json();",
+              "  rr = (response.extra_fields || {}).raw_request;",
+              "}",
+              "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+              "pm.test('Converse receives the flat effort or preserves omission', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200);",
+              "  pm.expect(rr, 'missing raw_request: ' + txt).to.be.an('object');",
+              "  var fields = rr.additionalModelRequestFields || {};",
+              "  pm.expect(fields, 'outbound request: ' + JSON.stringify(rr)).not.to.have.property('reasoning');",
+              "  if (expected === undefined) {",
+              "    pm.expect(fields, 'outbound request: ' + JSON.stringify(rr)).not.to.have.property('reasoning_effort');",
+              "  } else {",
+              "    pm.expect(fields.reasoning_effort, 'outbound request: ' + JSON.stringify(rr)).to.be.a('string').and.equal(expected);",
+              "  }",
+              "});",
+              "pm.test('mock completion returns through Bifrost', function () {",
+              "  var answered;",
+              "  if (sent.stream) {",
+              "    answered = events.some(function (event) {",
+              "      return event.delta === 'OK' || (event.choices || []).some(function (choice) { return choice.delta && choice.delta.content === 'OK'; });",
+              "    });",
+              "  } else {",
+              "    var content = response.content || [];",
+              "    (response.output || []).forEach(function (item) { if (Array.isArray(item.content)) { content = content.concat(item.content); } });",
+              "    answered = content.some(function (block) { return block.text === 'OK'; }) || (response.choices || []).some(function (choice) { return choice.message && choice.message.content === 'OK'; });",
+              "  }",
+              "  pm.expect(answered, 'missing mock completion: ' + txt).to.equal(true);",
+              "  if (sent.stream) {",
+              "    pm.expect(events.some(function (event) { return !!event.error || event.type === 'error' || event.type === 'response.failed' || !!(event.response && event.response.error); }), 'stream error: ' + txt).to.equal(false);",
+              "    if (pm.request.url.getPath().indexOf('/responses') !== -1) {",
+              "      pm.expect(events.some(function (event) { return event.type === 'response.completed'; }), 'missing terminal event: ' + txt).to.equal(true);",
+              "    } else {",
+              "      pm.expect(txt, 'missing terminal event: ' + txt).to.include('[DONE]');",
+              "    }",
+              "  }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "393.1 bedrock/global.moonshotai.kimi-k3.1 /v1/chat/completions effort=high - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.moonshotai.kimi-k3.1\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_completion_tokens\":4096,\"reasoning_effort\":\"high\"}"
+            }
+          }
+        },
+        {
+          "name": "393.2 bedrock/global.moonshotai.kimi-k3.1 /v1/chat/completions effort=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.moonshotai.kimi-k3.1\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_completion_tokens\":4096,\"reasoning\":{}}"
+            }
+          }
+        },
+        {
+          "name": "393.3 bedrock/global.zai.glm-5.3 /v1/responses effort=high - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"effort\":\"high\"}}"
+            }
+          }
+        },
+        {
+          "name": "393.4 bedrock/global.zai.glm-5.3 /v1/responses effort=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"summary\":\"auto\"}}"
+            }
+          }
+        },
+        {
+          "name": "393.5 bedrock/global.zai.glm-5.3 /v1/chat/completions effort=none with budget outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_completion_tokens\":4096,\"reasoning\":{\"effort\":\"none\",\"max_tokens\":2048}}"
+            }
+          }
+        },
+        {
+          "name": "393.6 bedrock/global.moonshotai.kimi-k3.1 /v1/responses effort=none with budget - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.moonshotai.kimi-k3.1\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"effort\":\"none\",\"max_tokens\":2048}}"
+            }
+          }
+        },
+        {
+          "name": "393.7 bedrock/gpt-4o-glm /v1/chat/completions effort=minimal - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/gpt-4o-glm\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_completion_tokens\":4096,\"reasoning_effort\":\"minimal\"}"
+            }
+          }
+        },
+        {
+          "name": "393.8 bedrock/gpt-4o-kimi /v1/responses effort=minimal - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/gpt-4o-kimi\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"effort\":\"minimal\"}}"
+            }
+          }
+        },
+        {
+          "name": "393.9 bedrock/global.zai.glm-5.3 /openai/v1/chat/completions stream effort=none with budget outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/openai/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_completion_tokens\":4096,\"reasoning\":{\"effort\":\"none\",\"max_tokens\":2048},\"stream\":true}"
+            }
+          }
+        },
+        {
+          "name": "393.10 bedrock/global.moonshotai.kimi-k3.1 /openai/v1/responses stream effort=none with budget - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/openai/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.moonshotai.kimi-k3.1\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"effort\":\"none\",\"max_tokens\":2048},\"stream\":true}"
+            }
+          }
+        },
+        {
+          "name": "393.11 bedrock/global.zai.glm-5.3 /anthropic/v1/messages effort=low - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/anthropic/v1/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_tokens\":4096,\"output_config\":{\"effort\":\"low\"}}"
+            },
+            "header": [
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ]
+          }
+        },
+        {
+          "name": "393.12 bedrock/moonshot.kimi-k2-thinking /v1/chat/completions effort=high outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/moonshot.kimi-k2-thinking\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_completion_tokens\":4096,\"reasoning\":{\"effort\":\"high\"}}"
+            }
+          }
+        },
+        {
+          "name": "393.13 bedrock/moonshot.kimi-k2-thinking /v1/responses effort=high outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/moonshot.kimi-k2-thinking\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"effort\":\"high\"}}"
+            }
+          }
+        },
+        {
+          "name": "393.14 bedrock/global.zai.glm-5.3 /v1/chat/completions zero budget outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_completion_tokens\":4096,\"reasoning\":{\"max_tokens\":0}}"
+            }
+          }
+        },
+        {
+          "name": "393.15 bedrock/global.zai.glm-5.3 /v1/responses zero budget outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"max_tokens\":0}}"
+            }
+          }
+        },
+        {
+          "name": "393.16 bedrock/global.zai.glm-5.3 /v1/chat/completions effort=none outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_completion_tokens\":4096,\"reasoning_effort\":\"none\"}"
+            }
+          }
+        },
+        {
+          "name": "393.17 bedrock/global.zai.glm-5.3 /v1/responses effort=none outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"effort\":\"none\"}}"
+            }
+          }
+        },
+        {
+          "name": "393.18 bedrock/global.zai.glm-5.3 /v1/responses effort=none with budget outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"effort\":\"none\",\"max_tokens\":2048}}"
+            }
+          }
+        },
+        {
+          "name": "393.19 bedrock/global.zai.glm-5.3 /v1/chat/completions budget only outbound=medium - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_completion_tokens\":4096,\"reasoning\":{\"max_tokens\":2048}}"
+            }
+          }
+        },
+        {
+          "name": "393.20 bedrock/global.zai.glm-5.3 /v1/responses budget only outbound=medium - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.zai.glm-5.3\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"max_tokens\":2048}}"
+            }
+          }
+        },
+        {
+          "name": "393.21 bedrock/moonshot.kimi-k2-thinking /v1/chat/completions budget only outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/moonshot.kimi-k2-thinking\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_completion_tokens\":4096,\"reasoning\":{\"max_tokens\":2048}}"
+            }
+          }
+        },
+        {
+          "name": "393.22 bedrock/moonshot.kimi-k2-thinking /openai/v1/responses none with budget stream outbound=omitted - #10414",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/openai/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/moonshot.kimi-k2-thinking\",\"input\":\"Say OK.\",\"max_output_tokens\":4096,\"reasoning\":{\"effort\":\"none\",\"max_tokens\":2048},\"stream\":true}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

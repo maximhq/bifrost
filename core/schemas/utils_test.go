@@ -39,6 +39,23 @@ func TestDocumentCitationsDeepCopyIsolation(t *testing.T) {
 	require.Equal(t, []string{"Budget: ", "$4.2M."}, output.Content.ContentBlocks[0].Annotations[0].SourceContent)
 }
 
+func TestIsKimiModel(t *testing.T) {
+	for _, tc := range []struct {
+		model string
+		kimi  bool
+	}{
+		{"global.moonshotai.kimi-next", true},
+		{"us-east-1/moonshotai.kimi-k2.5", true},
+		{"glm-5", false},
+		{"kimina-prover", false},
+		{"", false},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			assert.Equal(t, tc.kimi, IsKimiModel(tc.model))
+		})
+	}
+}
+
 func TestSanitizeImageURLDefaultRejectsNonHTTPSchemes(t *testing.T) {
 	// The no-args overload must keep the historical http/https-only policy. Providers
 	// that legitimately accept other schemes (gs://, file://, ...) must opt in via
