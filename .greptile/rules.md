@@ -55,7 +55,7 @@ Every piece of data a process keeps (configuration, runtime state, caches) lives
 - Delete: holders are read inside the delete's transaction; the record is removed with a `Remove` ref and no read; bound caches are evicted; holders are re-read with `lib.AdminRetry()`; a failed re-read answers 500.
 - Create or update: the written rows are re-read with `lib.AdminRetry()`; on failure memory keeps the previous record and the handler answers 500.
 - A partial update merges onto a database read, never onto the live record; a settings save never rewrites child rows.
-- Only an explicit delete removes a record without reading it; a reload or reconcile re-reads a held record its list does not name.
+- Only an explicit delete removes a record without reading it; a reload or reconcile that lists rows itself re-reads (plain ref) a held record its list does not name. `RefreshKind` lists and publishes under every record lock, so its removals stand.
 - A change another process made is applied with `lib.DBLookupRetry()`.
 - A write path that re-reads needs a test where the re-read fails; a delete needs a test that it removes without reading.
 

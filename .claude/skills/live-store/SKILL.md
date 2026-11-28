@@ -70,7 +70,7 @@ Write, then re-read the written rows with `lib.AdminRetry()` (bounded by the req
 - State the process owns (usage, last reset, reset epochs, discovery status) is exempt.
 
 ### Also
-- **Only an explicit delete removes a record without reading it.** A reload or reconcile that finds a held record missing from a list it read earlier re-reads that record with a plain ref; the list may be older than the record.
+- **Only an explicit delete removes a record without reading it.** A reload or reconcile that lists rows itself and finds a held record missing from that list re-reads it with a plain ref; the list may be older than the record. `RefreshKind` does the listing under every record lock, so its removals stand: use it for a small kind whose change message names no row, and `Refresh` with plain refs when you know which records changed.
 - **A change another process made** is applied with `lib.DBLookupRetry()` (waits for a row not readable yet, never removes a missing one): `AgentGatewayHandler.ReloadRegistration`.
 - **Audit:** record the change right after the write commits, before the reload that can still fail (AGENTS.md audit rule), and refine it after.
 - **Survey every caller** before shaping a new method or field, and change an existing method rather than adding a parallel one.

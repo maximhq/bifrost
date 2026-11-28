@@ -109,7 +109,9 @@ const internalPrefix = "internal:"
 var now = time.Now
 
 // Ref names one database row and the record built from it. Refresh re-reads the row; a Remove
-// ref drops the record without a read.
+// ref drops the record without a read, and is for an explicit delete only. A caller that lists
+// rows itself passes a held record its list leaves out as a plain ref, so the record is removed
+// only when its own read finds the row gone: the list may be older than the record.
 type Ref struct {
 	Kind   Kind
 	ID     string
@@ -821,11 +823,12 @@ func conflictHolders(conflicts []*UniqueConflictError, refs []Ref) []Ref {
 	return out
 }
 
-// RefreshKind re-reads every row of kind and publishes the difference: new and changed rows
-// replace their records, and records whose rows are gone are removed. It is meant for small
-// kinds whose change messages name no row. Children are not followed. If the rows would put two
-// records under one key of a unique index, nothing is published and it returns a
-// UniqueConflictError.
+// RefreshKind re-reads every row of kind and publishes the difference: new and changed rows replace
+// their records, and records whose rows are gone are removed. It lists and publishes under every
+// record lock, so its listing is never older than a record memory holds and a record it leaves out
+// is removed without a re-read; every other refresh waits meanwhile. It is meant for small kinds
+// whose change messages name no row. Children are not followed. If the rows would put two records
+// under one key of a unique index, nothing is published and it returns a UniqueConflictError.
 func (s *Store) RefreshKind(ctx context.Context, kind Kind) error {
 	if err := inSubscriber(ctx); err != nil {
 		return err

@@ -145,8 +145,10 @@ reviews:
         - Never write configuration from memory: a partial update merges onto a database read, never onto the live record,
           and a settings save never rewrites child rows. Node-owned state (usage, reset times and epochs, discovery status)
           is exempt.
-        - Only an explicit delete removes a record without reading it. A reload or reconcile that finds a held record
-          missing from a list it read earlier must re-read that record (a plain ref), not remove it.
+        - Only an explicit delete removes a record without reading it. A reload or reconcile that lists rows itself and
+          finds a held record missing from that list must re-read that record (a plain ref), not remove it. RefreshKind
+          lists and publishes under every record lock, so its listing is never older than a held record and its
+          removals stand; do not flag them.
         - A change another process made is applied with lib.DBLookupRetry().
         - The audit change is recorded right after the write commits, before the reload that can still fail.
         Tests: each new or changed write path that re-reads needs a test where that re-read fails, showing the retry and the
