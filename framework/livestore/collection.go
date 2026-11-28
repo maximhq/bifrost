@@ -562,29 +562,45 @@ func (c *Collection[T]) heldID(id string) (string, bool) {
 // idOf returns the primary key of a record held as any.
 func (c *Collection[T]) idOf(v any) string { return c.loader.ID(v.(*T)) }
 
-// put publishes v as the record for id, keeping the stored pointer when the two are equal. It
-// updates indexes and use counts. The store lock is held.
-func (c *Collection[T]) put(id string, v any) (any, bool) {
-	next := v.(*T)
-	old, had := c.records.get(id)
-	if had && reflect.DeepEqual(old, next) {
-		return old, false
+// putAll publishes the records in ups in the order of ids, keeping the stored pointer of a record
+// that did not change, and returns what changed. It writes every record and adds its index keys
+// before it drops any record's old keys, so a key passing from one record to another in the same
+// publish is never missing to a reader: until the publish drops it, a reader finds the record that
+// held the key before the publish. Use counts move with each record. The store lock is held.
+func (c *Collection[T]) putAll(ids []string, ups map[string]any) []anyChange {
+	var changes []anyChange
+	for _, id := range ids {
+		next := ups[id].(*T)
+		old, had := c.records.get(id)
+		if had && reflect.DeepEqual(old, next) {
+			continue
+		}
+		c.records.set(id, next)
+		var prev *T
+		if had {
+			prev = old
+		}
+		for _, ix := range c.indexes {
+			ix.add(id, next)
+		}
+		for _, u := range c.uses {
+			u.swap(prev, next)
+		}
+		ch := anyChange{id: id, new: next}
+		if had {
+			ch.old = old
+		}
+		changes = append(changes, ch)
 	}
-	c.records.set(id, next)
-	var prev *T
-	if had {
-		prev = old
+	for _, ch := range changes {
+		if ch.old == nil {
+			continue
+		}
+		for _, ix := range c.indexes {
+			ix.drop(ch.id, ch.old.(*T), ch.new.(*T))
+		}
 	}
-	for _, ix := range c.indexes {
-		ix.move(id, prev, next)
-	}
-	for _, u := range c.uses {
-		u.swap(prev, next)
-	}
-	if !had {
-		return nil, true
-	}
-	return old, true
+	return changes
 }
 
 // uniqueConflicts reports every key of a unique index that writing ups and dropping removes would
@@ -646,7 +662,7 @@ func (c *Collection[T]) remove(id string) any {
 	}
 	c.records.delete(id)
 	for _, ix := range c.indexes {
-		ix.move(id, old, nil)
+		ix.drop(id, old, nil)
 	}
 	for _, u := range c.uses {
 		u.swap(old, nil)
@@ -786,16 +802,14 @@ func (s keySlot[T]) each(idOf func(*T) string, fn func(id string, rec *T)) {
 	}
 }
 
-// move updates the index for a record changing from old to next; either may be nil.
-func (ix *keyIndex[T]) move(id string, old, next *T) {
-	var oldKeys, newKeys []string
-	if old != nil {
-		oldKeys = ix.keys(old)
-	}
+// drop takes the record id out from under each key old has and next does not; next is nil when the
+// record is removed. A unique key another record took in the same publish stays with that record.
+func (ix *keyIndex[T]) drop(id string, old, next *T) {
+	var newKeys []string
 	if next != nil {
 		newKeys = ix.keys(next)
 	}
-	for _, k := range oldKeys {
+	for _, k := range ix.keys(old) {
 		if slices.Contains(newKeys, k) {
 			continue
 		}
@@ -818,13 +832,18 @@ func (ix *keyIndex[T]) move(id string, old, next *T) {
 			return slot, len(slot.many) > 0
 		})
 	}
-	for _, k := range newKeys {
+}
+
+// add files next under each of its keys, replacing the record's previous version under a key it
+// keeps. The keys it no longer has are dropped separately (drop), after every record of the
+// publish is added.
+func (ix *keyIndex[T]) add(id string, next *T) {
+	for _, k := range ix.keys(next) {
 		ix.data.update(k, func(slot keySlot[T], ok bool) (keySlot[T], bool) {
 			if !ok || ix.unique {
 				// A unique key passes to its new record in one step. Every publish is refused when it
 				// would leave a unique key with two records, so a record still holding the key here
-				// gives it up later in the same publish, and its own move finds the key taken and
-				// leaves it.
+				// gives it up in the same publish, and its drop finds the key taken and leaves it.
 				return keySlot[T]{rec: next}, true
 			}
 			if slot.many == nil {

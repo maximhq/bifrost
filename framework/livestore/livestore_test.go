@@ -85,6 +85,9 @@ type fixture struct {
 	pageHook atomic.Pointer[func()]
 	// nameHook runs each time the groups name index reads a record's key, with that record.
 	nameHook atomic.Pointer[func(*group)]
+	// usesHook runs each time the groups Uses link reads a record's tag set, with that record. A
+	// publish reads it once a record's index keys are written, before it writes the next record.
+	usesHook atomic.Pointer[func(*group)]
 }
 
 // openDB opens an in-memory SQLite database with the test schema on one connection.
@@ -127,7 +130,12 @@ func newFixture(t *testing.T) *fixture {
 			return g.Name
 		}),
 		MultiIndex("tag", func(g *group) []string { return []string{g.Tag} }),
-		Uses(f.tags, func(g *group) Hash { return g.Set }),
+		Uses(f.tags, func(g *group) Hash {
+			if h := f.usesHook.Load(); h != nil {
+				(*h)(g)
+			}
+			return g.Set
+		}),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +333,11 @@ func setClock(t *testing.T, at time.Time) *time.Time {
 	now = func() time.Time { return cur }
 	t.Cleanup(func() { now = time.Now })
 	return &cur
+}
+
+// putRecord publishes one record into c, as a publish of that record alone would.
+func putRecord[T any](c *Collection[T], id string, v *T) {
+	c.putAll([]string{id}, map[string]any{id: v})
 }
 
 // ids returns the IDs of records, for comparison.
@@ -1323,13 +1336,13 @@ func TestIndexWriteDoesNotCopyTheKeysRecords(t *testing.T) {
 	f.load(t)
 	for i := range 20000 {
 		id := fmt.Sprintf("i%05d", i)
-		f.items.put(id, &item{ID: id, GroupID: "g"})
+		putRecord(f.items, id, &item{ID: id, GroupID: "g"})
 	}
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	for i := range 100 {
 		id := fmt.Sprintf("n%03d", i)
-		f.items.put(id, &item{ID: id, GroupID: "g"})
+		putRecord(f.items, id, &item{ID: id, GroupID: "g"})
 	}
 	runtime.ReadMemStats(&after)
 	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
@@ -1346,7 +1359,7 @@ func TestIndexWriteDoesNotCopyTheKeysRecords(t *testing.T) {
 func TestIndexReadsDuringWritesToTheSameKey(t *testing.T) {
 	f := newFixture(t)
 	f.load(t)
-	f.items.put("a-stays", &item{ID: "a-stays", GroupID: "g"})
+	putRecord(f.items, "a-stays", &item{ID: "a-stays", GroupID: "g"})
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	wg.Add(1)
@@ -1359,7 +1372,7 @@ func TestIndexReadsDuringWritesToTheSameKey(t *testing.T) {
 			default:
 			}
 			id := fmt.Sprintf("b%04d", i%500)
-			f.items.put(id, &item{ID: id, GroupID: "g"})
+			putRecord(f.items, id, &item{ID: id, GroupID: "g"})
 			f.items.remove(id)
 		}
 	}()
@@ -1540,10 +1553,10 @@ func TestUniqueIndexFollowsAChainOfRenames(t *testing.T) {
 }
 
 // TestUniqueIndexHandsAKeyOverInOneStep checks that while one publish moves a unique key from one
-// record to another, a reader finds one record under the key, never both. A publish writes the
-// record taking the key before the one giving it up when the taker's ID sorts first, and writes every
-// removal after the upserts and their subscribers, so a key that held both for that span would list
-// two records and GetBy would return whichever ID sorts first.
+// record to another, a reader finds exactly one record under the key: never both, and never none.
+// A publish adds every record's keys before it drops any, whichever of the two records sorts
+// first, and writes every removal after the upserts and their subscribers, so a key that held both
+// for that span would list two records, and one dropped before it was taken would list none.
 func TestUniqueIndexHandsAKeyOverInOneStep(t *testing.T) {
 	groupID := func(g *group) string { return g.ID }
 	t.Run("from a renamed record", func(t *testing.T) {
@@ -1576,6 +1589,31 @@ func TestUniqueIndexHandsAKeyOverInOneStep(t *testing.T) {
 			t.Fatalf("n9 = %+v, want the renamed g2", g)
 		}
 	})
+	t.Run("to a record that sorts after the giver", func(t *testing.T) {
+		f := newFixture(t)
+		f.seed(t)
+		f.load(t)
+		// g1 gives n1 up and g4 takes it. g4's refresh re-reads g1, the key's holder in memory, so one
+		// publish writes g1 and then g4; the hook reads the key each time the publish reads a name.
+		f.mustExec(t, f.db.Model(&groupRow{}).Where("id = ?", "g1").Update("name", "n9"))
+		f.mustExec(t, f.db.Create(&groupRow{ID: "g4", Name: "n1"}))
+		var seen [][]string
+		hook := func(*group) { seen = append(seen, ids(f.groups.List("name", "n1"), groupID)) }
+		f.nameHook.Store(&hook)
+		f.refresh(t, Ref{Kind: "group", ID: "g4"})
+		f.nameHook.Store(nil)
+		if len(seen) == 0 {
+			t.Fatal("the publish never read a name")
+		}
+		for _, got := range seen {
+			if len(got) != 1 {
+				t.Fatalf("n1 listed %v during the publish, want one holder: g1 before the handover, g4 after", got)
+			}
+		}
+		if g, ok := f.groups.GetBy("name", "n1"); !ok || g.ID != "g4" {
+			t.Fatalf("n1 = %+v, want g4", g)
+		}
+	})
 	t.Run("from a removed record", func(t *testing.T) {
 		f := newFixture(t)
 		f.seed(t)
@@ -1605,6 +1643,44 @@ func TestUniqueIndexHandsAKeyOverInOneStep(t *testing.T) {
 			t.Fatal("g3's row is gone, so its record must be removed")
 		}
 	})
+}
+
+// TestMultiIndexKeyPassedOnInOnePublishIsNeverMissing checks that a multi index key passing from
+// one record to another in one publish is never missing to a reader, whichever of the two sorts
+// first. A prompt's latest version works this way: the new version takes the prompt's key and the
+// old one gives it up in the same publish, and a reader between the two writes must still find a
+// version.
+func TestMultiIndexKeyPassedOnInOnePublishIsNeverMissing(t *testing.T) {
+	groupID := func(g *group) string { return g.ID }
+	for _, tc := range []struct{ name, giver, taker string }{
+		{"giver sorts first", "g1", "g3"},
+		{"taker sorts first", "g3", "g1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.seed(t)
+			f.mustExec(t, f.db.Model(&groupRow{}).Where("id = ?", tc.giver).Update("tag", "z"))
+			f.load(t)
+			f.mustExec(t, f.db.Model(&groupRow{}).Where("id = ?", tc.giver).Update("tag", "y"))
+			f.mustExec(t, f.db.Model(&groupRow{}).Where("id = ?", tc.taker).Update("tag", "z"))
+			var seen [][]string
+			hook := func(*group) { seen = append(seen, ids(f.groups.List("tag", "z"), groupID)) }
+			f.usesHook.Store(&hook)
+			f.refresh(t, Ref{Kind: "group", ID: tc.giver}, Ref{Kind: "group", ID: tc.taker})
+			f.usesHook.Store(nil)
+			if len(seen) == 0 {
+				t.Fatal("the publish never read a tag set")
+			}
+			for _, got := range seen {
+				if len(got) == 0 {
+					t.Fatalf("tag z listed no record during the publish (reads %v), want the giver or the taker", seen)
+				}
+			}
+			if got := ids(f.groups.List("tag", "z"), groupID); !slices.Equal(got, []string{tc.taker}) {
+				t.Fatalf("tag z = %v after the publish, want [%s]", got, tc.taker)
+			}
+		})
+	}
 }
 
 // TestLoadRefusesDuplicateUniqueKeys checks that boot fails, naming both records, when the rows
@@ -1694,7 +1770,7 @@ func TestIndexHoldsALoneRecordInline(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&before)
 	for i := range recs {
-		ix.move(ids[i], nil, recs[i])
+		ix.add(ids[i], recs[i])
 	}
 	runtime.GC()
 	runtime.GC()
@@ -1707,13 +1783,13 @@ func TestIndexHoldsALoneRecordInline(t *testing.T) {
 
 	label := recs[0].Label
 	extra := &item{ID: "z", Label: label}
-	ix.move("z", nil, extra)
+	ix.add("z", extra)
 	ix.data.view(label, func(s keySlot[item], ok bool) {
 		if !ok || s.many == nil || len(s.many) != 2 {
 			t.Fatalf("a second record must turn the key into a map: %+v", s)
 		}
 	})
-	ix.move("z", extra, nil)
+	ix.drop("z", extra, nil)
 	ix.data.view(label, func(s keySlot[item], ok bool) {
 		if !ok || s.many != nil || s.rec != recs[0] {
 			t.Fatalf("dropping back to one record must hold it inline again: %+v", s)
