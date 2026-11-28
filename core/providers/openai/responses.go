@@ -1062,6 +1062,27 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		// xAI rejects instructions with previous_response_id. Move only the exact
+		// MCP-generated block to input; explicit caller instructions stay untouched.
+		if baseProvider == schemas.XAI && ctx != nil && req.PreviousResponseID != nil &&
+			*req.PreviousResponseID != "" && req.Instructions != nil {
+			if injected, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsText).(*string); ok && injected != nil && *injected != "" {
+				matched := false
+				if *req.Instructions == *injected {
+					req.Instructions = nil
+					matched = true
+				} else if caller, ok := strings.CutSuffix(*req.Instructions, "\n\n"+*injected); ok {
+					req.Instructions = &caller
+					matched = true
+				}
+				if matched {
+					req.Input.OpenAIResponsesRequestInputArray = append([]schemas.ResponsesMessage{{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+						Content: &schemas.ResponsesMessageContent{ContentStr: injected},
+					}}, req.Input.OpenAIResponsesRequestInputArray...)
+				}
+			}
+		}
 		// prompt_cache_options is a gpt-5.6+ model field, valid on any host serving one.
 		if !caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(capModel)) ||
 			caps.FieldUnsupported(schemas.FieldPromptCacheOptions, false) {
