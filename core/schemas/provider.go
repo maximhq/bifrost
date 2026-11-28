@@ -942,6 +942,22 @@ type ResponsesNamespaceToolProvider interface {
 	SupportsResponsesNamespaceTools(ctx *BifrostContext, key Key, model string) bool
 }
 
+// KeyScopedModelDiscoveryProvider opts a provider into discovery that lists
+// the models its upstream allows for each credential.
+type KeyScopedModelDiscoveryProvider interface {
+	SupportsKeyScopedModelDiscovery() bool
+}
+
+// UseKeyScopedModelDiscovery reports whether the provider should discover models
+// using upstream key permissions. Unfiltered requests ask for the full catalog.
+func UseKeyScopedModelDiscovery(provider Provider, request *BifrostListModelsRequest) bool {
+	if request == nil || request.Unfiltered {
+		return false
+	}
+	capable, ok := provider.(KeyScopedModelDiscoveryProvider)
+	return ok && capable.SupportsKeyScopedModelDiscovery()
+}
+
 // WebSocketCapableProvider is an optional interface that providers can implement
 // to indicate support for the OpenAI Responses API WebSocket Mode.
 // Checked via type assertion: provider.(WebSocketCapableProvider).

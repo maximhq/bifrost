@@ -9,9 +9,12 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -216,14 +219,19 @@ func TestToBifrostDecisionResponse_CostOnlyWhenBilled(t *testing.T) {
 	}
 }
 
-// TestListModels_MergesLiveDecisionModels pins that the decision models come from
-// OpenRouter's decisions listing, which its default /v1/models omits: each listed model
-// appears once, models it does not list (the old hardcoded alias) do not appear, and
-// they go through the same per-key filtering as every other model.
+// TestListModels_MergesLiveDecisionModels covers OpenRouter's dedicated decisions
+// listing for the full catalog and its authenticated listing for the key's models.
+// Each route lists its decision models once, and the key's list applies local filters.
 func TestListModels_MergesLiveDecisionModels(t *testing.T) {
+	paths := make(chan string, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths <- r.URL.RequestURI()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.URL.Path == "/v1/auth/key":
+			fmt.Fprint(w, `{}`)
+		case r.URL.Path == "/v1/models/user" && r.URL.Query().Get("output_modalities") == "all":
+			fmt.Fprint(w, `{"data":[{"id":"microsoft/microsoft-decision-1"},{"id":"perplexity/pplx-decider-v1.1-27b"},{"id":"typesafe/jev-1.13"},{"id":"openai/gpt-4o"}]}`)
 		case r.URL.Path == "/v1/models" && r.URL.Query().Get("output_modalities") == "decisions":
 			_, _ = fmt.Fprint(w, `{"data":[{"id":"microsoft/microsoft-decision-1"},{"id":"perplexity/pplx-decider-v1.1-27b"},{"id":"typesafe/jev-1.13"}]}`)
 		case r.URL.Path == "/v1/models":
@@ -236,21 +244,29 @@ func TestListModels_MergesLiveDecisionModels(t *testing.T) {
 
 	provider := newDecisionTestProvider(server.URL)
 	for name, tt := range map[string]struct {
-		allowed []string
-		want    []string
+		allowed    []string
+		unfiltered bool
+		want       []string
+		wantPaths  []string
 	}{
 		"all models": {
-			allowed: []string{"*"},
-			want:    []string{"openrouter/microsoft/microsoft-decision-1", "openrouter/openai/gpt-4o", "openrouter/perplexity/pplx-decider-v1.1-27b", "openrouter/typesafe/jev-1.13"},
+			allowed:    []string{"openai/gpt-4o"},
+			unfiltered: true,
+			want:       []string{"openrouter/microsoft/microsoft-decision-1", "openrouter/openai/gpt-4o", "openrouter/perplexity/pplx-decider-v1.1-27b", "openrouter/typesafe/jev-1.13"},
+			wantPaths:  []string{"/v1/auth/key", "/v1/models", "/v1/embeddings/models", "/v1/models?output_modalities=decisions"},
 		},
 		"allowed list filters decision models too": {
-			allowed: []string{"openai/gpt-4o", "perplexity/pplx-decider-v1.1-27b"},
-			want:    []string{"openrouter/openai/gpt-4o", "openrouter/perplexity/pplx-decider-v1.1-27b"},
+			allowed:   []string{"openai/gpt-4o", "perplexity/pplx-decider-v1.1-27b"},
+			want:      []string{"openrouter/openai/gpt-4o", "openrouter/perplexity/pplx-decider-v1.1-27b"},
+			wantPaths: []string{"/v1/models/user?output_modalities=all"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			resp, bifrostErr := provider.ListModels(ctx, []schemas.Key{{Models: tt.allowed}}, &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter})
+			defer ctx.Cancel()
+			ctx.SetValue(schemas.BifrostContextKeyValidateKeys, true)
+			keys := []schemas.Key{{Models: tt.allowed, Value: *schemas.NewSecretVar("fixture-key")}}
+			resp, bifrostErr := provider.ListModels(ctx, keys, &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter, Unfiltered: tt.unfiltered})
 			if bifrostErr != nil {
 				t.Fatalf("ListModels: %v", bifrostErr.Error.Message)
 			}
@@ -261,6 +277,13 @@ func TestListModels_MergesLiveDecisionModels(t *testing.T) {
 			slices.Sort(ids)
 			if !slices.Equal(ids, tt.want) {
 				t.Errorf("models = %v, want %v", ids, tt.want)
+			}
+			var gotPaths []string
+			for len(paths) > 0 {
+				gotPaths = append(gotPaths, <-paths)
+			}
+			if !slices.Equal(gotPaths, tt.wantPaths) {
+				t.Errorf("upstream paths = %v, want %v", gotPaths, tt.wantPaths)
 			}
 		})
 	}
@@ -284,7 +307,8 @@ func TestListModels_DecisionListingFailureKeepsOtherModels(t *testing.T) {
 	defer server.Close()
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	resp, bifrostErr := newDecisionTestProvider(server.URL).ListModels(ctx, []schemas.Key{{Models: []string{"*"}}}, &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter})
+	defer ctx.Cancel()
+	resp, bifrostErr := newDecisionTestProvider(server.URL).ListModels(ctx, []schemas.Key{{Models: []string{"*"}}}, &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter, Unfiltered: true})
 	if bifrostErr != nil {
 		t.Fatalf("ListModels: %v", bifrostErr.Error.Message)
 	}
@@ -294,6 +318,361 @@ func TestListModels_DecisionListingFailureKeepsOtherModels(t *testing.T) {
 }
 
 const testImageURL = "data:image/png;base64,iVBORw0KGgo="
+
+func TestListModels_UsesKeyScopedCatalog(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models/user":
+			if r.Method != http.MethodGet || r.URL.RawQuery != "output_modalities=all" ||
+				r.Header.Get("Authorization") != "Bearer fixture-key" {
+				t.Errorf("expected an authenticated GET for all modalities, got %s %s", r.Method, r.URL)
+			}
+			fmt.Fprint(w, `{"data":[{"id":"openai/allowed"},{"id":"qwen/embedding"},{"id":"typesafe/decision"}]}`)
+		case "/v1/models":
+			fmt.Fprint(w, `{"data":[{"id":"openai/allowed"},{"id":"qwen/embedding"},{"id":"typesafe/decision"}]}`)
+		case "/v1/embeddings/models":
+			fmt.Fprint(w, `{"data":[{"id":"qwen/restricted-embedding"}]}`)
+		case "/v1/auth/key":
+			fmt.Fprint(w, `{}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	ctx.SetValue(schemas.BifrostContextKeyValidateKeys, true)
+	keys := []schemas.Key{{ID: "a", Value: *schemas.NewSecretVar("fixture-key"), Models: schemas.WhiteList{"*"}}}
+	response, err := newDecisionTestProvider(server.URL).ListModels(ctx, keys, &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter})
+	if err != nil {
+		t.Fatalf("authenticated discovery failed: %v", err.GetErrorString())
+	}
+	want := []string{"openrouter/openai/allowed", "openrouter/qwen/embedding", "openrouter/typesafe/decision"}
+	if got := listedModelIDs(response); !slices.Equal(got, want) {
+		t.Errorf("models = %v, want %v", got, want)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("requests = %d, want 1", got)
+	}
+}
+
+func listedModelIDs(response *schemas.BifrostListModelsResponse) []string {
+	var ids []string
+	for _, model := range response.Data {
+		ids = append(ids, model.ID)
+	}
+	return ids
+}
+
+func TestListModels_KeyScopedCatalogPreservesAuthorizationHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer configured-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error":{"message":"authorization required"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":[{"id":"openai/allowed"}]}`)
+	}))
+	t.Cleanup(server.Close)
+	provider := openrouter.NewOpenRouterProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL: server.URL,
+			ExtraHeaders: map[string]schemas.SecretVar{
+				"Authorization": *schemas.NewSecretVar("Bearer configured-key"),
+			},
+		},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	response, err := provider.ListModels(ctx, []schemas.Key{{Models: schemas.WhiteList{"*"}}}, &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter})
+	if err != nil {
+		t.Fatalf("list models with configured authorization: %s", err.GetErrorString())
+	}
+	if got := listedModelIDs(response); !slices.Equal(got, []string{"openrouter/openai/allowed"}) {
+		t.Fatalf("models = %v, want the upstream model", got)
+	}
+}
+
+func TestListModels_KeyScopedCatalogAppliesLocalFilters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"openai/allowed"},{"id":"openai/blocked"},{"id":"typesafe/decision"}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	key := schemas.Key{
+		ID:                "a",
+		Value:             *schemas.NewSecretVar("fixture-key"),
+		Models:            schemas.WhiteList{"regex:openai/.*", "openrouter/typesafe/decision", "friendly", "unavailable-alias", "nearby-alias", "openai/restricted"},
+		BlacklistedModels: schemas.BlackList{"openrouter/openai/blocked"},
+		Aliases: schemas.KeyAliases{
+			"openrouter/friendly": {ModelID: "openrouter/openai/allowed"},
+			"unavailable-alias":   {ModelID: "openai/restricted"},
+			"nearby-alias":        {ModelID: "openai/allowed-20261001"},
+		},
+	}
+	response, err := newDecisionTestProvider(server.URL).ListModels(ctx, []schemas.Key{key}, &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter})
+	if err != nil {
+		t.Fatalf("list models: %s", err.GetErrorString())
+	}
+	want := []string{"openrouter/friendly", "openrouter/openai/allowed", "openrouter/typesafe/decision"}
+	if got := listedModelIDs(response); !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want %v", got, want)
+	}
+	if alias := response.Data[0].Alias; alias == nil || *alias != "openai/allowed" {
+		t.Errorf("friendly alias did not retain its allowed upstream target: %+v", response.Data[0])
+	}
+}
+
+type discoveryTestGrant struct {
+	schemas.Grant
+	access schemas.Access
+}
+
+func (g discoveryTestGrant) Access() schemas.Access { return g.access }
+
+type discoveryTestAccess struct {
+	schemas.Access
+	keyIDs []string
+}
+
+func (discoveryTestAccess) IsModelAllowed(_ string, model string) bool {
+	return model != "openai/caller-blocked"
+}
+
+func (a discoveryTestAccess) KeysForModel(_ string, model string) ([]string, bool) {
+	if a.keyIDs != nil {
+		return a.keyIDs, true
+	}
+	switch model {
+	case "openai/wrong-key", "openai/shared":
+		return []string{"b"}, true
+	case "openai/no-keys":
+		return nil, true
+	default:
+		return nil, false
+	}
+}
+
+func TestListModels_KeyScopedCatalogQueriesOnlyAuthorizedKeys(t *testing.T) {
+	for _, ids := range [][]string{{"b"}, {}} {
+		t.Run(fmt.Sprintf("allowed keys %v", ids), func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Header.Get("Authorization") != "Bearer fixture-b" {
+					t.Errorf("queried a key the caller cannot use: %s", r.Header.Get("Authorization"))
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"data":[{"id":"openai/allowed"}]}`)
+			}))
+			t.Cleanup(server.Close)
+			keys := []schemas.Key{
+				{ID: "a", Value: *schemas.NewSecretVar("fixture-a"), Models: schemas.WhiteList{"*"}},
+				{ID: "b", Value: *schemas.NewSecretVar("fixture-b"), Models: schemas.WhiteList{"*"}},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			ctx.SetGrant(discoveryTestGrant{access: discoveryTestAccess{keyIDs: ids}})
+			response, err := newDecisionTestProvider(server.URL).ListModels(ctx, keys, &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter})
+			if err != nil {
+				t.Fatalf("list models: %s", err.GetErrorString())
+			}
+			if got := calls.Load(); got != int32(len(ids)) {
+				t.Errorf("upstream requests = %d, want %d", got, len(ids))
+			}
+			var want []string
+			if len(ids) > 0 {
+				want = []string{"openrouter/openai/allowed"}
+			}
+			if got := listedModelIDs(response); !slices.Equal(got, want) {
+				t.Errorf("models = %v, want %v", got, want)
+			}
+			if len(response.KeyStatuses) != len(ids) {
+				t.Errorf("key statuses = %+v, want only queried keys %v", response.KeyStatuses, ids)
+			}
+			if keys[0].ID != "a" || keys[1].ID != "b" {
+				t.Fatal("list models changed the caller's keys")
+			}
+		})
+	}
+}
+
+func TestListModels_KeyScopedCatalogCombinesAuthorizedKeys(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Header.Get("Authorization") {
+		case "Bearer fixture-a":
+			fmt.Fprint(w, `{"data":[{"id":"openai/a"},{"id":"openai/shared"},{"id":"openai/wrong-key"},{"id":"openai/no-keys"}]}`)
+		case "Bearer fixture-b":
+			fmt.Fprint(w, `{"data":[{"id":"openai/b"},{"id":"openai/shared"},{"id":"openai/caller-blocked"}]}`)
+		default:
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"error":{"message":"key forbidden"}}`)
+		}
+	}))
+	t.Cleanup(server.Close)
+	keys := []schemas.Key{
+		{ID: "a", Value: *schemas.NewSecretVar("fixture-a"), Models: schemas.WhiteList{"*"}},
+		{ID: "b", Value: *schemas.NewSecretVar("fixture-b"), Models: schemas.WhiteList{"*"}},
+		{ID: "c", Value: *schemas.NewSecretVar("fixture-c"), Models: schemas.WhiteList{"*"}},
+	}
+	provider := newDecisionTestProvider(server.URL)
+	request := &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter}
+	for _, tc := range []struct {
+		name  string
+		setup func(*schemas.BifrostContext)
+		want  []string
+	}{
+		{"configured keys", func(*schemas.BifrostContext) {}, []string{"openrouter/openai/a", "openrouter/openai/b", "openrouter/openai/caller-blocked", "openrouter/openai/no-keys", "openrouter/openai/shared", "openrouter/openai/wrong-key"}},
+		{"caller grants", func(*schemas.BifrostContext) {}, []string{"openrouter/openai/a", "openrouter/openai/b", "openrouter/openai/shared"}},
+		{"background", func(ctx *schemas.BifrostContext) { ctx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true) }, []string{"openrouter/openai/a", "openrouter/openai/b", "openrouter/openai/caller-blocked", "openrouter/openai/no-keys", "openrouter/openai/shared", "openrouter/openai/wrong-key"}},
+		{"direct key", func(ctx *schemas.BifrostContext) { ctx.SetValue(schemas.BifrostContextKeyDirectKey, keys[0]) }, []string{"openrouter/openai/a", "openrouter/openai/no-keys", "openrouter/openai/shared", "openrouter/openai/wrong-key"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			if tc.name != "configured keys" {
+				access := discoveryTestAccess{}
+				if tc.name == "background" || tc.name == "direct key" {
+					access.keyIDs = []string{"b"}
+				}
+				ctx.SetGrant(discoveryTestGrant{access: access})
+			}
+			tc.setup(ctx)
+			selected := keys
+			if tc.name == "direct key" {
+				selected = keys[:1]
+			}
+			response, err := provider.ListModels(ctx, selected, request)
+			if err != nil {
+				t.Fatalf("list models: %s", err.GetErrorString())
+			}
+			if got := listedModelIDs(response); !slices.Equal(got, tc.want) {
+				t.Errorf("models = %v, want %v", got, tc.want)
+			}
+			if len(response.KeyStatuses) != len(selected) {
+				t.Fatalf("key statuses = %+v", response.KeyStatuses)
+			}
+			for _, status := range response.KeyStatuses {
+				want := schemas.KeyStatusSuccess
+				if status.KeyID == "c" {
+					want = schemas.KeyStatusListModelsFailed
+				}
+				if status.Status != want {
+					t.Errorf("key %q status = %s, want %s", status.KeyID, status.Status, want)
+				}
+			}
+		})
+	}
+}
+
+func TestListModels_KeyScopedCatalogErrorsAndEmptyResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"empty", http.StatusOK, `{"data":[]}`},
+		{"unauthorized", http.StatusUnauthorized, `{"error":{"message":"unauthorized"}}`},
+		{"forbidden", http.StatusForbidden, `{"error":{"message":"forbidden"}}`},
+		{"malformed", http.StatusOK, `{"data":[`},
+		{"deadline", 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.status == 0 {
+					time.Sleep(100 * time.Millisecond)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			t.Cleanup(server.Close)
+			deadline := schemas.NoDeadline
+			if tc.status == 0 {
+				deadline = time.Now().Add(20 * time.Millisecond)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), deadline)
+			defer ctx.Cancel()
+			keys := []schemas.Key{{ID: "a", Value: *schemas.NewSecretVar("fixture-key"), Models: schemas.WhiteList{"openai/restricted"}}}
+			response, err := newDecisionTestProvider(server.URL).ListModels(ctx, keys, &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter})
+			if tc.name == "empty" {
+				if err != nil || len(response.Data) != 0 || len(response.KeyStatuses) != 1 || response.KeyStatuses[0].Status != schemas.KeyStatusSuccess {
+					t.Fatalf("expected an empty success, got %v and error %v", response, err)
+				}
+				return
+			}
+			if err == nil || response != nil {
+				t.Fatalf("expected a discovery error, got %v and error %v", response, err)
+			}
+			if tc.status >= 400 && (err.StatusCode == nil || *err.StatusCode != tc.status) {
+				t.Errorf("expected status %d, got %+v", tc.status, err.StatusCode)
+			}
+			if statuses := err.ExtraFields.KeyStatuses; len(statuses) != 1 || statuses[0].Status != schemas.KeyStatusListModelsFailed {
+				t.Errorf("expected a failed key status, got %+v", statuses)
+			}
+		})
+	}
+}
+
+func BenchmarkOpenRouterListModels(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/v1/models/user":
+			fmt.Fprint(w, `{"data":[{"id":"openai/chat"},{"id":"qwen/embedding"},{"id":"typesafe/decision"}]}`)
+		case r.URL.Path == "/v1/embeddings/models":
+			fmt.Fprint(w, `{"data":[{"id":"qwen/embedding"}]}`)
+		case r.URL.Query().Get("output_modalities") == "decisions":
+			fmt.Fprint(w, `{"data":[{"id":"typesafe/decision"}]}`)
+		default:
+			fmt.Fprint(w, `{"data":[{"id":"openai/chat"}]}`)
+		}
+	}))
+	b.Cleanup(server.Close)
+	provider := newDecisionTestProvider(server.URL)
+	keys := []schemas.Key{{ID: "a", Value: *schemas.NewSecretVar("fixture-key"), Models: schemas.WhiteList{"*"}}}
+
+	for _, tc := range []struct {
+		name       string
+		provider   schemas.Provider
+		unfiltered bool
+		access     schemas.Access
+		wantCount  int
+	}{
+		{name: "available", provider: provider, wantCount: 3},
+		{name: "catalog", provider: provider, unfiltered: true, wantCount: 3},
+		{name: "authorized", provider: provider, access: discoveryTestAccess{keyIDs: []string{"a"}}, wantCount: 3},
+		{name: "legacy_openai", provider: openai.NewOpenAIProvider(&schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		}, bifrost.NewDefaultLogger(schemas.LogLevelError)), wantCount: 1},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			if tc.access != nil {
+				ctx.SetGrant(discoveryTestGrant{access: tc.access})
+			}
+			request := &schemas.BifrostListModelsRequest{Provider: tc.provider.GetProviderKey(), Unfiltered: tc.unfiltered}
+			b.ReportAllocs()
+			for b.Loop() {
+				response, err := tc.provider.ListModels(ctx, keys, request)
+				if err != nil || len(response.Data) != tc.wantCount {
+					b.Fatalf("expected %d models, got %v, error: %v", tc.wantCount, response, err)
+				}
+			}
+		})
+	}
+}
 
 func encodeOpenRouterDecision(t *testing.T, request *schemas.BifrostDecisionRequest) string {
 	t.Helper()

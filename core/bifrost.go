@@ -671,6 +671,7 @@ func (bifrost *Bifrost) lastKnownListModelsResponse(ctx *schemas.BifrostContext,
 // provider cannot block the aggregate, while a reachable provider still gets every page.
 // A provider whose poll fails contributes its last-known models from the model catalog (when one with per-provider listings is configured) instead; that
 // list is substituted in the worker, so the plugin post-hooks filter it like a live listing.
+// Key-scoped discovery keeps the upstream error instead of using last-known models.
 // A poll still running at the deadline contributes nothing, since no post-hook has seen it.
 func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -8707,7 +8708,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
-			if bifrostError != nil && req.RequestType == schemas.ListModelsRequest {
+			// A cached catalog cannot establish the key's current upstream permissions,
+			// so key-scoped discovery must preserve the error.
+			if bifrostError != nil && req.RequestType == schemas.ListModelsRequest &&
+				!schemas.UseKeyScopedModelDiscovery(provider, req.BifrostRequest.ListModelsRequest) {
 				if fallback := bifrost.lastKnownListModelsResponse(req.Context, provider.GetProviderKey(), req.BifrostRequest.ListModelsRequest, bifrostError); fallback != nil {
 					result, bifrostError = fallback, nil
 				}

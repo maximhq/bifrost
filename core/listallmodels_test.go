@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -343,6 +344,90 @@ func TestListAllModelsServesLastKnownModelsWhenPollFails(t *testing.T) {
 	}
 	if !containsModelID(resp, "groq/llama-3.3-70b-versatile") {
 		t.Fatalf("last-known models for the failed provider missing from aggregate; got %v", modelIDs(resp))
+	}
+}
+
+func TestListModelsKeyScopedFailureDoesNotServeLastKnownModels(t *testing.T) {
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"error":{"message":"discovery forbidden"}}`)
+	}))
+	t.Cleanup(failed.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenRouter, 1, 10, failed.URL)
+	account.SetKeysForProvider(schemas.OpenRouter, wildcardKey(schemas.OpenRouter))
+	tuneProviderForTest(t, account, schemas.OpenRouter)
+	catalog := &staticListerCatalog{modelsByProvider: map[schemas.ModelProvider][]string{
+		schemas.OpenRouter: {"openai/restricted"},
+	}}
+	client := newListModelsTestClient(t, account, catalog)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	request := &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter}
+	for _, tc := range []struct {
+		name string
+		list func(*schemas.BifrostContext, *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError)
+	}{
+		{"specified provider", client.ListModelsRequest},
+		{"all providers", client.ListAllModels},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := tc.list(ctx, request)
+			if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusForbidden {
+				t.Fatalf("expected upstream 403 instead of a catalog fallback, got models %v and error %v", modelIDs(resp), err)
+			}
+			statuses := err.ExtraFields.KeyStatuses
+			if len(statuses) != 1 || statuses[0].Status != schemas.KeyStatusListModelsFailed {
+				t.Errorf("expected a failed key status, got %+v", statuses)
+			}
+		})
+	}
+
+	resp, err := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{Unfiltered: true})
+	if err != nil || !containsModelID(resp, "openrouter/openai/restricted") {
+		t.Fatalf("full catalog should still use the last-known catalog, got %v and error %v", modelIDs(resp), err)
+	}
+}
+
+type keyScopedListModelsTestProvider struct{ schemas.Provider }
+
+func (*keyScopedListModelsTestProvider) SupportsKeyScopedModelDiscovery() bool { return true }
+
+func TestListAllModelsKeyScopedCapabilityIsProviderIndependent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"error":{"message":"discovery forbidden"}}`)
+	}))
+	t.Cleanup(server.Close)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+	client := newListModelsTestClient(t, account, &staticListerCatalog{
+		modelsByProvider: map[schemas.ModelProvider][]string{schemas.OpenAI: {"restricted"}},
+	})
+
+	// Replace the test worker's provider with an opt-in wrapper. Requests still
+	// enter through ListAllModels and use the normal queue and HTTP provider.
+	oldQueue, _ := client.requestQueues.Load(schemas.OpenAI)
+	oldQueue.(*ProviderQueue).signalClosing()
+	group, _ := client.waitGroups.Load(schemas.OpenAI)
+	workers := group.(*sync.WaitGroup)
+	workers.Wait()
+	queue := &ProviderQueue{queue: make(chan *ChannelMessage, 10), done: make(chan struct{})}
+	client.requestQueues.Store(schemas.OpenAI, queue)
+	workers.Add(1)
+	go client.requestWorker(&keyScopedListModelsTestProvider{client.GetProviderByKey(schemas.OpenAI)}, account.configs[schemas.OpenAI], queue, workers)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	response, err := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusForbidden {
+		t.Fatalf("a capable OpenAI-named provider must keep its error, got models %v and error %v", modelIDs(response), err)
 	}
 }
 
