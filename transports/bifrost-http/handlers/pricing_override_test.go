@@ -24,6 +24,13 @@ type pricingOverrideTestGovernanceManager struct{}
 func (pricingOverrideTestGovernanceManager) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
 	return nil
 }
+
+func (pricingOverrideTestGovernanceManager) LoadRateLimit(context.Context, string) *configstoreTables.TableRateLimit {
+	return nil
+}
+func (pricingOverrideTestGovernanceManager) ReloadRateLimit(context.Context, string) error {
+	return nil
+}
 func (pricingOverrideTestGovernanceManager) ResetBudgetUsageInMemory(context.Context, BudgetUsageResetOwner, []string) error {
 	return nil
 }

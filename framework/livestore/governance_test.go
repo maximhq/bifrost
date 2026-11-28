@@ -540,3 +540,31 @@ func TestUnreadableWebhookEndpointFailsTheLoadAndKeepsItsRecordOnRefresh(t *test
 	require.True(t, ok)
 	require.Same(t, fine, kept, "a refresh that cannot read the row keeps the record")
 }
+
+// TestRateLimitSharedByHoldersReturnsWhenReadByID pins what the governance handlers rely on when a
+// holder moves off a rate limit others share: refreshing that holder drops the row, which it no longer
+// names, and refreshing the row itself puts it back under a holder that still names it.
+func TestRateLimitSharedByHoldersReturnsWhenReadByID(t *testing.T) {
+	ctx := context.Background()
+	db := governanceDB(t).DB()
+	tokens, window := int64(5), "1h"
+	ref := func(s string) *string { return &s }
+	for _, row := range []any{
+		&tables.TableRateLimit{ID: "rl-shared", TokenMaxLimit: &tokens, TokenResetDuration: &window, RequestMaxLimit: &tokens, RequestResetDuration: &window},
+		&tables.TableRateLimit{ID: "rl-copy", TokenMaxLimit: &tokens, TokenResetDuration: &window},
+		&tables.TableTeam{ID: "team-shared", Name: "shared team", RateLimitID: ref("rl-shared")},
+		&tables.TableCustomer{ID: "customer-shared", Name: "shared customer", RateLimitID: ref("rl-shared")},
+	} {
+		require.NoError(t, db.Omit(clause.Associations).Create(row).Error)
+	}
+	s := loadedGovernance(t, db)
+	require.NoError(t, db.Table("governance_teams").Where("id = ?", "team-shared").Update("rate_limit_id", "rl-copy").Error)
+	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindTeam, ID: "team-shared"}}))
+	_, held := s.Collections.RateLimits.Get("rl-shared")
+	require.False(t, held, "the row is dropped with the holder it was held under; if this changes, the handlers' re-read is no longer needed")
+
+	require.NoError(t, s.Refresh(ctx, []Ref{{Kind: KindRateLimit, ID: "rl-shared"}}))
+	rl, held := s.Collections.RateLimits.Get("rl-shared")
+	require.True(t, held, "reading the row again did not bring it back")
+	require.Equal(t, "customer-shared", rl.CustomerID, "the row is held under the holder that still names it")
+}

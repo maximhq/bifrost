@@ -823,9 +823,17 @@ func TestCommitPoint_GovernanceCreates(t *testing.T) {
 				if !tc.childRows {
 					return
 				}
-				rl, _ := after["rate_limit"].(map[string]any)
-				if rl == nil || rl["request_max_limit"] != float64(7) {
-					t.Fatalf("after snapshot missing the saved rate limit: %s", change.After)
+				// A legacy rate_limit carrying only request fields is saved as one request limit, and no
+				// rate limit is left holding request fields.
+				rules, _ := after["request_limits"].([]any)
+				if len(rules) != 1 {
+					t.Fatalf("after snapshot holds %d request limits, want 1: %s", len(rules), change.After)
+				}
+				if rule, _ := rules[0].(map[string]any); rule == nil || rule["request_max_limit"] != float64(7) || rule["request_reset_duration"] != "1m" {
+					t.Fatalf("after snapshot's request limit is not 7 per 1m: %s", change.After)
+				}
+				if rl, _ := after["rate_limit"].(map[string]any); rl != nil && (rl["request_max_limit"] != nil || rl["request_reset_duration"] != nil) {
+					t.Fatalf("after snapshot's rate limit still carries request fields: %s", change.After)
 				}
 				if tc.name == "virtual key" {
 					if budgets, _ := after["budgets"].([]any); len(budgets) != 1 {
@@ -884,6 +892,32 @@ func TestCommitPoint_ProviderGovernanceRecordedWhenUsageResetFails(t *testing.T)
 	}
 	if len(after.Budgets) != 1 || after.Budgets[0].MaxLimit != 20 {
 		t.Fatalf("after = %s, want the new max_limit 20", change.After)
+	}
+}
+
+// TestCommitPoint_ProviderGovernanceRecordedWhenReloadFails pins that a provider's saved limits whose
+// re-read fails answer 500, saved but not loaded, with the change already recorded as saved.
+func TestCommitPoint_ProviderGovernanceRecordedWhenReloadFails(t *testing.T) {
+	h, manager, store := newCommitPointGovernanceHandler(t)
+	if err := store.AddProvider(context.Background(), schemas.OpenAI, configstore.ProviderConfig{}); err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+	manager.fail = "ReloadModelConfig"
+	ctx := newTestRequestCtx(`{"request_limits":[{"max_limit":5,"reset_duration":"1m"}]}`)
+	ctx.SetUserValue("provider_name", "openai")
+	h.updateProviderGovernance(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	if body := string(ctx.Response.Body()); !strings.Contains(body, "Provider governance updated in database but failed to reload in-memory state") {
+		t.Fatalf("body = %s, want the saved-but-not-loaded error", body)
+	}
+	change := requireCommitPointChange(t, ctx, "provider_governance.updated", "provider", "openai")
+	var after ProviderGovernanceResponse
+	if err := json.Unmarshal(change.After, &after); err != nil {
+		t.Fatalf("decode after: %v", err)
+	}
+	if len(after.RequestLimits) != 1 || after.RequestLimits[0].RequestMaxLimit == nil || *after.RequestLimits[0].RequestMaxLimit != 5 {
+		t.Fatalf("after = %s, want the saved request limit of 5", change.After)
 	}
 }
 

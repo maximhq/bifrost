@@ -3673,6 +3673,53 @@ func TestGovernanceStore_RequestLimitsLoadWithTheirHolder(t *testing.T) {
 	assert.Equal(t, []string{"mc-tokens", "mc-rule"}, limitIDsOf(holderLevel))
 }
 
+// TestGovernanceStore_GovernanceDataCarriesRequestLimits pins that the in-memory governance data,
+// which from_memory reads serve, lists each team's, customer's and model config's request limits with
+// the usage counted in memory.
+func TestGovernanceStore_GovernanceDataCarriesRequestLimits(t *testing.T) {
+	ctx := context.Background()
+	customer := buildCustomer("customer-1", "Customer", nil)
+	team := buildTeam("team-1", "Team", nil)
+	mc := buildModelConfig("mc-global", configstoreTables.ModelConfigAllModels, nil, nil, nil)
+	teamRule := buildRequestLimit("team-rule", 5, 0, "1h", configstoreTables.LimitScopeShared)
+	teamRule.TeamID = &team.ID
+	customerRule := buildRequestLimit("customer-rule", 7, 0, "1d", configstoreTables.LimitScopeMCP)
+	customerRule.CustomerID = &customer.ID
+	mcRule := buildRequestLimit("mc-rule", 9, 0, "1h", configstoreTables.LimitScopeModel)
+	mcRule.ModelConfigID = &mc.ID
+	h := newLiveHarness(t, &configstore.GovernanceConfig{
+		Teams:        []configstoreTables.TableTeam{*team},
+		Customers:    []configstoreTables.TableCustomer{*customer},
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		RateLimits:   []configstoreTables.TableRateLimit{teamRule, customerRule, mcRule},
+	}, nil)
+	store := h.mustGovernanceStore(NewMockLogger(), nil)
+	for _, id := range []string{"team-rule", "customer-rule", "mc-rule"} {
+		require.NoError(t, store.BumpRateLimitUsage(ctx, id, 0, false, true))
+	}
+
+	usage := func(limits []configstoreTables.TableRateLimit) map[string]int64 {
+		out := map[string]int64{}
+		for _, rl := range limits {
+			out[rl.ID] = rl.RequestCurrentUsage
+		}
+		return out
+	}
+	data := store.GetGovernanceData(ctx)
+	require.Contains(t, data.Teams, team.ID)
+	assert.Equal(t, map[string]int64{"team-rule": 1}, usage(data.Teams[team.ID].RequestLimits))
+	require.Contains(t, data.Customers, customer.ID)
+	assert.Equal(t, map[string]int64{"customer-rule": 1}, usage(data.Customers[customer.ID].RequestLimits))
+	var modelConfig *configstoreTables.TableModelConfig
+	for _, m := range data.ModelConfigs {
+		if m.ID == mc.ID {
+			modelConfig = m
+		}
+	}
+	require.NotNil(t, modelConfig)
+	assert.Equal(t, map[string]int64{"mc-rule": 1}, usage(modelConfig.RequestLimits))
+}
+
 // TestGovernanceStore_RequestLimitsFollowTheirHolder pins that a holder's request limits follow its
 // refresh the way a write path drives it: a rule written and then the holder refreshed binds, a rule
 // deleted and the holder refreshed is gone, and removing the holder removes its rules.

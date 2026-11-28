@@ -65,6 +65,55 @@ func TestGovernanceDataFromRowsServesFullRowsWithLiveUsage(t *testing.T) {
 	assert.Equal(t, 12.5, data.Budgets[budget.ID].CurrentUsage)
 }
 
+// TestGovernanceDataFromRowsServesLiveRequestLimitUsage checks that a team's, a customer's and a model
+// config's request limits in the admin snapshot carry the usage counted in memory, not the count the
+// config store last flushed.
+func TestGovernanceDataFromRowsServesLiveRequestLimitUsage(t *testing.T) {
+	ctx := context.Background()
+	customer := buildCustomer("cust-1", "Acme", nil)
+	team := buildTeam("team-1", "Platform", nil)
+	mc := buildModelConfig("mc-global", configstoreTables.ModelConfigAllModels, nil, nil, nil)
+	teamRule := buildRequestLimit("team-rule", 5, 0, "1h", configstoreTables.LimitScopeShared)
+	teamRule.TeamID = &team.ID
+	customerRule := buildRequestLimit("customer-rule", 7, 0, "1d", configstoreTables.LimitScopeMCP)
+	customerRule.CustomerID = &customer.ID
+	mcRule := buildRequestLimit("mc-rule", 9, 0, "1h", configstoreTables.LimitScopeModel)
+	mcRule.ModelConfigID = &mc.ID
+	h := newLiveHarness(t, &configstore.GovernanceConfig{
+		Customers:    []configstoreTables.TableCustomer{*customer},
+		Teams:        []configstoreTables.TableTeam{*team},
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		RateLimits:   []configstoreTables.TableRateLimit{teamRule, customerRule, mcRule},
+	}, nil)
+	store := h.mustGovernanceStore(NewMockLogger(), nil)
+	for _, id := range []string{"team-rule", "customer-rule", "mc-rule"} {
+		require.NoError(t, store.BumpRateLimitUsage(ctx, id, 0, false, true))
+	}
+
+	usage := store.GetGovernanceUsageData(ctx)
+	data, err := GovernanceDataFromRows(ctx, h.configStore, usage.Budgets, usage.RateLimits)
+	require.NoError(t, err)
+	counted := func(limits []configstoreTables.TableRateLimit) map[string]int64 {
+		out := map[string]int64{}
+		for _, rl := range limits {
+			out[rl.ID] = rl.RequestCurrentUsage
+		}
+		return out
+	}
+	require.Contains(t, data.Teams, team.ID)
+	assert.Equal(t, map[string]int64{"team-rule": 1}, counted(data.Teams[team.ID].RequestLimits))
+	require.Contains(t, data.Customers, customer.ID)
+	assert.Equal(t, map[string]int64{"customer-rule": 1}, counted(data.Customers[customer.ID].RequestLimits))
+	var modelConfig *configstoreTables.TableModelConfig
+	for _, m := range data.ModelConfigs {
+		if m.ID == mc.ID {
+			modelConfig = m
+		}
+	}
+	require.NotNil(t, modelConfig)
+	assert.Equal(t, map[string]int64{"mc-rule": 1}, counted(modelConfig.RequestLimits))
+}
+
 // TestModelConfigIndexShadowsAsBefore checks how model configs whose names fold to one key are
 // indexed: the one with the higher ID answers after a load, as configs always loaded in ID order;
 // deleting it leaves the key empty rather than reviving the one it shadowed; and a config whose name

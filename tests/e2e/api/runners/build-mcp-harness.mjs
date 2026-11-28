@@ -7317,9 +7317,11 @@ const vkUse = (v) => ({ headers: [{ key: "x-bf-vk", value: `{{${v}}}` }] });
 const vkMemory = (id, title, v, asserts, extraTests = []) => request(id, title, "GET", `/api/governance/virtual-keys/{{${v}_id}}?from_memory=true`, { asserts: [A.status(200), ...asserts], extraTests });
 const VK_READ = "var vk = pm.response.json().virtual_key;";
 const keepBudget = (v) => [VK_READ, `pm.collectionVariables.set(${lit(v)}, String(vk.budgets[0].current_usage));`];
-const keepRequests = (v) => [VK_READ, `pm.collectionVariables.set(${lit(v)}, String(vk.rate_limit.request_current_usage));`];
+// The key's request count is on its request limit; rate_limit carries the token limit only.
+const VK_REQUESTS = "var requestLimit = (vk.request_limits || [])[0] || {};";
+const keepRequests = (v) => [VK_READ, VK_REQUESTS, `pm.collectionVariables.set(${lit(v)}, String(requestLimit.request_current_usage));`];
 const budgetPlus = (v, d) => A.custom(`budget current_usage is ${d} more than recorded`, [VK_READ, `pm.expect(vk.budgets[0].current_usage, 'body: ' + pm.response.text()).to.be.closeTo(Number(pm.collectionVariables.get(${lit(v)})) + ${d}, 1e-9);`]);
-const requestsPlus = (v, d) => A.custom(`request_current_usage is ${d} more than recorded`, [VK_READ, `pm.expect(vk.rate_limit.request_current_usage, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get(${lit(v)})) + ${d});`]);
+const requestsPlus = (v, d) => A.custom(`request_current_usage is ${d} more than recorded`, [VK_READ, VK_REQUESTS, `pm.expect(requestLimit.request_current_usage, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get(${lit(v)})) + ${d});`]);
 // logOf polls GET /api/mcp-logs/<R> until the write lands; asserts see the entry as `e`.
 const logOf = (id, title, R, asserts) => request(id, title, "GET", `/api/mcp-logs/${R}`, {
   pre: ["var left = 30;", `function poll() { pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/${R}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) { if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; } setTimeout(poll, 500); }); }`, "poll();"],
