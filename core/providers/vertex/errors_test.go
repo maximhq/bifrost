@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"compress/gzip"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,6 +24,33 @@ func TestParseVertexError_PopulatesStatusType(t *testing.T) {
 	require.NotNil(t, bifrostErr.Error.Type, "nested error.type must be populated from status")
 	assert.Equal(t, "RESOURCE_EXHAUSTED", *bifrostErr.Error.Type)
 	assert.Equal(t, "Quota exceeded", bifrostErr.Error.Message)
+}
+
+// A buffered gzip rejection still has a usable HTTP status and retry hint.
+func TestParseVertexErrorBufferedDecodeFailure(t *testing.T) {
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusForbidden)
+	resp.Header.Set("Content-Encoding", "gzip")
+	resp.Header.Set("Retry-After", "7")
+	resp.SetBodyString("invalid gzip header")
+
+	got := parseVertexError(&resp)
+	require.NotNil(t, got.Error)
+	assert.False(t, got.IsBifrostError)
+	assert.Equal(t, fasthttp.StatusForbidden, got.EffectiveHTTPStatus())
+	assert.ErrorIs(t, got.Error.Error, gzip.ErrHeader)
+	assert.Equal(t, int64(7000), got.ExtraFields.RetryAfter)
+}
+
+func BenchmarkParseVertexErrorBufferedDecodeFailure(b *testing.B) {
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusForbidden)
+	resp.Header.Set("Content-Encoding", "gzip")
+	resp.SetBodyString("invalid gzip header")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = parseVertexError(&resp)
+	}
 }
 
 // TestParseVertexError_NoStatusNoType verifies that when the body carries no

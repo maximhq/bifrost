@@ -27,8 +27,7 @@ func parseVertexErrorBody(resp *fasthttp.Response) *schemas.BifrostError {
 
 	decodedBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-		return bifrostErr
+		return providerUtils.NewProviderAPIError(schemas.ErrProviderResponseDecode, err, resp.StatusCode(), nil, nil)
 	}
 
 	// Check for empty response

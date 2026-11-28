@@ -2,13 +2,23 @@ package replicate
 
 import (
 	"testing"
+	"testing/iotest"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
 func TestParseReplicateError(t *testing.T) {
+	t.Run("stalled streaming rejection", func(t *testing.T) {
+		var resp fasthttp.Response
+		resp.SetStatusCode(fasthttp.StatusBadRequest)
+		resp.SetBodyStream(iotest.ErrReader(providerUtils.ErrStreamIdleTimeout), -1)
+		got := parseReplicateError(&resp)
+		require.ErrorIs(t, got.Error.Error, providerUtils.ErrStreamIdleTimeout)
+		assert.Equal(t, 504, got.EffectiveHTTPStatus())
+	})
 	t.Run("detail message with a retry hint", func(t *testing.T) {
 		var resp fasthttp.Response
 		resp.SetStatusCode(fasthttp.StatusTooManyRequests)

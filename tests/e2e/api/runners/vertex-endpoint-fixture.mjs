@@ -9,7 +9,9 @@ import { argValue, createInterceptProxy } from "./lib/tls-intercept-proxy.mjs";
 // gateway's HTTP proxy instead (see lib/tls-intercept-proxy.mjs): it terminates TLS for the
 // requested host, records the decrypted request, and replies with a canned Gemini, Claude or OpenAI body, or a finished Veo operation.
 //
-//   node vertex-endpoint-fixture.mjs --app-dir <dir> [--port 8792]
+//   node vertex-endpoint-fixture.mjs --app-dir <dir> [--port 8792] [--body-lifecycle]
+// --body-lifecycle enables the credential-eviction cases and requests unary streaming on gateways that support it.
+// GET /__tokens counts OAuth exchanges, so a case can observe credential reload on the next request.
 //
 // It writes <dir>/config.json (one Vertex key per region, a service account whose token_uri points
 // back here, and the proxy plus the CA the gateway must trust), then starts listening. Point a
@@ -18,6 +20,8 @@ import { argValue, createInterceptProxy } from "./lib/tls-intercept-proxy.mjs";
 
 const args = process.argv.slice(2);
 const appDir = argValue(args, "--app-dir", "");
+const bodyLifecycle = args.includes("--body-lifecycle");
+let tokenRequests = 0;
 const port = Number(argValue(args, "--port", process.env.VERTEX_FIXTURE_PORT || "8792"));
 if (!appDir) {
 	console.error("usage: node vertex-endpoint-fixture.mjs --app-dir <dir> [--port 8792]");
@@ -72,6 +76,10 @@ const proxy = createInterceptProxy({
 			if (req.headers.authorization !== "Bearer fixture-access-token" || input.model !== model || !Array.isArray(input.messages) || input.contents || input.anthropic_version) {
 				return { status: 400, body: JSON.stringify({ error: { message: "custom endpoint requires OAuth and OpenAI messages with the served model name" } }) };
 			}
+			// Valid rejection headers followed by an invalid gzip body exercise materialization failure.
+			const prompt = bodyLifecycle && input.messages.find((message) => message?.role === "user")?.content;
+			const rejection = typeof prompt === "string" && prompt.match(/^body-lifecycle-auth-(401|403)$/);
+			if (rejection) return { status: Number(rejection[1]), headers: { "Content-Encoding": "gzip", "Retry-After": "7" }, body: "invalid gzip header" };
 			const base = { id: "chatcmpl-vertex-custom", created: 1, model };
 			const usage = { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 };
 			if (input.stream) {
@@ -98,9 +106,15 @@ const proxy = createInterceptProxy({
 	},
 	// OAuth token endpoint for the service account below, so no call goes to Google.
 	route: (url, req, res) => {
+		if (url.pathname === "/__tokens") {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ data: [{ requests: tokenRequests }] }));
+			return true;
+		}
 		if (url.pathname !== "/token") return false;
 		req.resume();
 		req.on("end", () => {
+			tokenRequests++;
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ access_token: "fixture-access-token", token_type: "Bearer", expires_in: 3600 }));
 		});
@@ -129,7 +143,13 @@ const regions = {
 	"vertex-us-central1": { region: "us-central1" },
 	"vertex-us-central1-pinned": { region: "us-central1", force_single_region: true },
 };
+// Opt in so existing endpoint-selection cases retain their normal buffering policy.
 const config = {
+	...(bodyLifecycle ? {
+		large_payload_optimization: { enabled: true, response_threshold_bytes: 1 },
+		setup_token: "pr8284-local-fixture-only",
+		client: { enforce_auth_on_inference: false },
+	} : {}),
 	framework: { pricing: { pricing_url: `http://127.0.0.1:${port}/pricing.json`, model_parameters_url: `http://127.0.0.1:${port}/model-parameters.json`, mcp_library_sync_interval: 0 } },
 	providers: {
 		vertex: {
@@ -155,7 +175,14 @@ fs.mkdirSync(appDir, { recursive: true });
 fs.writeFileSync(path.join(appDir, "config.json"), JSON.stringify(config, null, 2));
 fs.writeFileSync(path.join(appDir, "harness-environment.json"), JSON.stringify({
 	name: "Vertex endpoint fixture",
-	values: [{ key: "vertexEndpointFixture", value: "1", enabled: true }],
+	values: [
+		{ key: "vertexEndpointFixture", value: "1", enabled: true },
+		{ key: "vertexBodyLifecycleFixture", value: bodyLifecycle ? "1" : "0", enabled: true },
+		...(bodyLifecycle ? [
+			{ key: "vertexOAuthCounterUrl", value: `http://127.0.0.1:${port}/__tokens`, enabled: true },
+			{ key: "setupToken", value: "pr8284-local-fixture-only", enabled: true },
+		] : []),
+	],
 	_postman_variable_scope: "environment",
 }, null, 2));
 

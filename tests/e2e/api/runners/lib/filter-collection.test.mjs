@@ -53,6 +53,17 @@ try {
     execFileSync("node", [FILTER, "--source", augmented, "--out", out, "--provider", provider], { stdio: "pipe" });
     partitions[provider] = rowNames(JSON.parse(readFileSync(out, "utf8")));
   }
+  test("all four Vertex OAuth checks run together only in the Vertex serial pass", () => {
+    const out = join(scratch, "vertex-oauth.json");
+    for (const [provider, pass, expected] of [
+      ["openai", "--only-serial", 0],
+      ["vertex", "--exclude-serial", 0],
+      ["vertex", "--only-serial", 4],
+    ]) {
+      execFileSync("node", [FILTER, "--source", augmented, "--out", out, "--feature", "vertex body lifecycle", "--provider", provider, pass], { stdio: "pipe" });
+      assert.equal(rowNames(JSON.parse(readFileSync(out, "utf8"))).length, expected, `${provider} ${pass}`);
+    }
+  });
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

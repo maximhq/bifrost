@@ -2,9 +2,13 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"math"
+	"net"
+	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
@@ -109,24 +113,85 @@ func PrepareResponseStreaming(ctx *schemas.BifrostContext, client *fasthttp.Clie
 	return BuildLargeResponseClient(client, responseThreshold)
 }
 
-// MaterializeStreamErrorBody reads a streamed error body into resp so that resp.Body()
-// returns the error payload for parsing. No-op when response streaming is not active.
-func MaterializeStreamErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
-	responseThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
-	if responseThreshold <= 0 {
-		return
+const maxStreamErrorBodySize = 512 << 10
+
+var errStreamErrorBodyTooLarge = errors.New("provider error response body exceeds 512 KiB")
+
+// MaterializeStreamErrorBody buffers a streamed error response up to 512 KiB.
+// It returns I/O and decompression failures and detaches the failed stream so
+// even a caller that ignores the error cannot read the same body again.
+// Buffered responses are unchanged, regardless of the large-response threshold.
+func MaterializeStreamErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) *schemas.BifrostError {
+	bodyStream := resp.BodyStream()
+	if bodyStream == nil {
+		return nil
 	}
-	if bodyStream := resp.BodyStream(); bodyStream != nil {
-		gz, reader, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
-		if wasGzip {
-			defer ReleaseGzipReader(gz)
+	if body, ok := bodyStream.(*streamBody); ok {
+		// A truncated chunked rejection must report its read failure to the
+		// error converter. SSE consumers use plain EOF to detect a missing event.
+		body.errorBody = true
+		// A provider may reject a 2xx response (for example, chat accepts only 200).
+		// Rebind a unary body returned for downstream use before reading any bytes.
+		if ctx != nil {
+			if body.conn.ctx == context.Background() {
+				body.conn.ctx = ctx
+				body.watcher = startCancelWatcher(ctx, AttemptAbortFromContext(ctx), body.conn.Conn)
+			}
+			responseBodyIdleTimeout(ctx, body)
 		}
-		bodyBytes, readErr := io.ReadAll(io.LimitReader(reader, 512*1024)) // 512KB cap for error bodies
-		if readErr != nil {
-			return
-		}
-		resp.SetBody(bodyBytes)
 	}
+	encoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
+	// Decode a single gzip stream directly. A coding list must be decoded in
+	// reverse order, with the same size bound on each intermediate buffer.
+	var bodyBytes []byte
+	var readErr error
+	if encoding == "gzip" || encoding == "x-gzip" {
+		gz, err := AcquireGzipReader(bodyStream)
+		if err == nil {
+			bodyBytes, err = readLimitedErrorBody(gz)
+		}
+		ReleaseGzipReader(gz)
+		readErr = err
+	} else {
+		bodyBytes, readErr = readLimitedErrorBody(bodyStream)
+		if readErr == nil && len(bodyBytes) > 0 && encoding != "" && encoding != "identity" {
+			bodyBytes, readErr = decodeContentEncodings(bodyBytes, encoding, readLimitedErrorBody)
+		}
+	}
+	if readErr != nil {
+		_ = resp.CloseBodyStream()
+		return streamErrorBodyReadError(resp, readErr)
+	}
+	if encoding != "" && encoding != "identity" {
+		resp.Header.Del("Content-Encoding")
+	}
+	resp.SetBody(bodyBytes)
+	return nil
+}
+
+func readLimitedErrorBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxStreamErrorBodySize+1))
+	if err == nil && len(body) > maxStreamErrorBodySize {
+		return nil, errStreamErrorBodyTooLarge
+	}
+	return body, err
+}
+
+// streamErrorBodyReadError retains the upstream rejection and retry hint when
+// its error body cannot be decoded. Interruptions keep their existing classification.
+func streamErrorBodyReadError(resp *fasthttp.Response, readErr error) *schemas.BifrostError {
+	bifrostErr := largeResponseReadError(readErr)
+	if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) ||
+		errors.Is(readErr, ErrStreamIdleTimeout) || errors.Is(readErr, ErrStreamFirstTokenTimeout) {
+		return bifrostErr
+	}
+	bifrostErr.IsBifrostError = false
+	bifrostErr.StatusCode = schemas.Ptr(resp.StatusCode())
+	if errors.Is(readErr, errStreamErrorBodyTooLarge) {
+		bifrostErr.Error.Message = errStreamErrorBodyTooLarge.Error()
+	}
+	ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
 }
 
 // FinalizeResponseWithLargeDetection processes the response body with optional large response
@@ -184,14 +249,33 @@ func FinalizeResponseWithLargeDetection(
 		return body, false, nil
 	}
 
-	// Every read below touches the upstream socket, whose deadline the transport
-	// lifted once the headers arrived (see contextTransport). Bound each read with
-	// the stream idle timeout and close the socket on cancellation, exactly as
-	// SetupStreamingPassthrough does for streamed bodies, so a stalled upstream can
-	// pin neither the provider worker during the prefetch nor the transport writer
-	// draining the LargeResponseReader afterwards. Decompression is set up once so
-	// the prefetched bytes and the streamed remainder share one gzip reader.
-	gz, reader, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
+	// The provider owns gzip initialization and prefetch. Once it returns a
+	// large reader, the HTTP writer owns the remaining reads and can outlive
+	// the handler's context. Only the idle bound follows that reader.
+	stopCancellation := SetupStreamCancellation(ctx, bodyStream, logger)
+	defer func() {
+		if stopCancellation != nil {
+			stopCancellation()
+		}
+	}()
+	// Closing the socket to interrupt a prefetch can return a network error.
+	// Report the caller's cancellation or deadline in that case.
+	readError := func(err error) *schemas.BifrostError {
+		closed, _ := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool)
+		if closed && (errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, ErrStreamClosed)) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				err = ctxErr
+			} else if AttemptAbortFromContext(ctx).Fired() {
+				err = ErrStreamFirstTokenTimeout
+			}
+		}
+		return largeResponseReadError(err)
+	}
+	idleTimeout := responseBodyIdleTimeout(ctx, bodyStream)
+	gz, reader, wasGzip, decompressErr := decompressBodyStreamIfGzip(resp, bodyStream)
+	if decompressErr != nil {
+		return nil, false, readError(decompressErr)
+	}
 	if wasGzip {
 		// Content-Length describes the compressed body. Classify by decompressed
 		// size through the bounded unknown-length path below, so a payload that is
@@ -199,10 +283,8 @@ func FinalizeResponseWithLargeDetection(
 		// transport then serves it chunked, as it always did for gzip bodies.
 		contentLength = -1
 	}
-	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, bodyStream, GetStreamIdleTimeout(ctx), ctx)
-	stopCancellation := SetupStreamCancellation(ctx, bodyStream, logger)
+	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, bodyStream, idleTimeout, ctx)
 	cleanup := func() {
-		stopCancellation()
 		stopIdleTimeout()
 		if wasGzip {
 			ReleaseGzipReader(gz)
@@ -214,7 +296,7 @@ func FinalizeResponseWithLargeDetection(
 		bodyBytes, readErr := io.ReadAll(reader)
 		cleanup()
 		if readErr != nil {
-			return nil, false, largeResponseReadError(readErr)
+			return nil, false, readError(readErr)
 		}
 		return bodyBytes, false, nil
 	}
@@ -222,49 +304,59 @@ func FinalizeResponseWithLargeDetection(
 	// Unknown Content-Length (chunked transfer encoding) — buffer up to responseThreshold
 	// to determine if response is truly large. Responses within threshold are returned
 	// buffered for normal parsing/logging; only responses exceeding threshold are streamed.
+	var prefetchBuf []byte
 	if contentLength <= 0 {
 		bodyBytes, readErr := io.ReadAll(io.LimitReader(reader, responseThreshold+1))
 		if readErr != nil {
 			cleanup()
-			return nil, false, largeResponseReadError(readErr)
+			return nil, false, readError(readErr)
 		}
 		if int64(len(bodyBytes)) <= responseThreshold {
 			cleanup()
 			return bodyBytes, false, nil
 		}
-		// Exceeds threshold without Content-Length — set up large response streaming.
-		combinedReader := io.MultiReader(bytes.NewReader(bodyBytes), reader)
-		closableReader := &LargeResponseReader{
-			Reader:  combinedReader,
-			Resp:    resp,
-			ctx:     ctx,
-			cleanup: cleanup,
+		prefetchBuf = bodyBytes
+	} else {
+		// Known large response: prefetch up to 64 KiB for metadata extraction.
+		prefetchSize := 64 * 1024
+		if ps, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadPrefetchSize).(int); ok && ps > 0 {
+			prefetchSize = ps
 		}
-		ctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
-		ctx.SetValue(schemas.BifrostContextKeyLargeResponseReader, closableReader)
-		ctx.SetValue(schemas.BifrostContextKeyLargeResponseContentLength, contentLength)
-		if ct := string(resp.Header.ContentType()); ct != "" {
-			ctx.SetValue(schemas.BifrostContextKeyLargeResponseContentType, ct)
+		prefetchBuf = make([]byte, min(prefetchSize, contentLength))
+		// A read can finish the prefix and report a terminal error together.
+		// Plain EOF is complete only at the declared end of the whole body.
+		for offset := 0; offset < len(prefetchBuf); {
+			n, readErr := reader.Read(prefetchBuf[offset:])
+			offset += n
+			if readErr == nil {
+				continue
+			}
+			if readErr == io.EOF && offset == contentLength {
+				break
+			}
+			cleanup()
+			if readErr == io.EOF {
+				readErr = io.ErrUnexpectedEOF
+			}
+			return nil, false, readError(readErr)
 		}
-		previewLen := min(len(bodyBytes), 1048576)
-		ctx.SetValue(schemas.BifrostContextKeyLargePayloadResponsePreview, string(trimIncompleteRune(bodyBytes[:previewLen])))
-		return nil, true, nil
 	}
 
-	// Known large response (Content-Length > threshold, never gzip: that was
-	// reclassified above) — prefetch first 64KB for metadata extraction, then
-	// stream the rest without full materialization.
-	prefetchSize := 64 * 1024 // default
-	if ps, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadPrefetchSize).(int); ok && ps > 0 {
-		prefetchSize = ps
+	// Complete the ownership transfer before publishing the reader. Cancellation
+	// can close the body even when the last prefetch read returned enough bytes.
+	stopCancellation()
+	stopCancellation = nil
+	handoffErr := ctx.Err()
+	if handoffErr == nil && AttemptAbortFromContext(ctx).Fired() {
+		handoffErr = ErrStreamFirstTokenTimeout
 	}
-	prefetchBuf := make([]byte, prefetchSize)
-	n, readErr := io.ReadFull(reader, prefetchBuf)
-	if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+	if idle, ok := reader.(*idleTimeoutReader); ok && idle.fired.Load() && handoffErr == nil {
+		handoffErr = ErrStreamIdleTimeout
+	}
+	if handoffErr != nil {
 		cleanup()
-		return nil, false, largeResponseReadError(readErr)
+		return nil, false, largeResponseReadError(handoffErr)
 	}
-	prefetchBuf = prefetchBuf[:n]
 
 	combinedReader := io.MultiReader(bytes.NewReader(prefetchBuf), reader)
 	closableReader := &LargeResponseReader{
@@ -280,7 +372,7 @@ func FinalizeResponseWithLargeDetection(
 	if ct := string(resp.Header.ContentType()); ct != "" {
 		ctx.SetValue(schemas.BifrostContextKeyLargeResponseContentType, ct)
 	}
-	previewLen := min(n, 1048576)
+	previewLen := min(len(prefetchBuf), 1048576)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadResponsePreview, string(trimIncompleteRune(prefetchBuf[:previewLen])))
 
 	return nil, true, nil
@@ -290,8 +382,14 @@ func FinalizeResponseWithLargeDetection(
 // stall caught by the idle timeout is a 504 like any other upstream timeout;
 // everything else is the decode error this path always returned.
 func largeResponseReadError(readErr error) *schemas.BifrostError {
-	if errors.Is(readErr, ErrStreamIdleTimeout) {
+	if errors.Is(readErr, ErrStreamIdleTimeout) || errors.Is(readErr, context.DeadlineExceeded) {
 		return NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, readErr)
+	}
+	if errors.Is(readErr, context.Canceled) {
+		return &schemas.BifrostError{
+			StatusCode: schemas.Ptr(499),
+			Error:      &schemas.ErrorField{Message: schemas.ErrRequestCancelled, Type: schemas.Ptr(schemas.RequestCancelled), Error: readErr},
+		}
 	}
 	return NewBifrostOperationError(schemas.ErrProviderResponseDecode, readErr)
 }
@@ -336,13 +434,29 @@ func ParseOpenAIUsageFromBytes(data []byte) *schemas.BifrostLLMUsage {
 	return result
 }
 
+// responseBodyIdleTimeout keeps decoded reads on the same budget as the raw
+// socket. An override supplied before the first body read applies to both.
+func responseBodyIdleTimeout(ctx *schemas.BifrostContext, stream io.Reader) time.Duration {
+	if body, ok := stream.(*streamBody); ok {
+		if ctx != nil {
+			body.conn.idleTimeout = streamIdleTimeout(ctx, body.conn.idleTimeout)
+		}
+		return body.conn.idleTimeout
+	}
+	if ctx == nil {
+		return DefaultStreamIdleTimeout
+	}
+	return GetStreamIdleTimeout(ctx)
+}
+
 // WrapStreamingResponseBody hands a streamed response body to the transport as one reader:
 // decompressed, failing after the stream idle timeout when the provider stalls, closed when the
 // request context ends, and releasing resp on Close. The caller must not release resp itself.
 func WrapStreamingResponseBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) *LargeResponseReader {
-	reader, releaseGzip := DecompressStreamBody(resp)
-	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx), ctx)
+	idleTimeout := responseBodyIdleTimeout(ctx, resp.BodyStream())
 	stopCancellation := SetupStreamCancellation(ctx, resp.BodyStream(), nil)
+	reader, releaseGzip := DecompressStreamBody(resp)
+	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), idleTimeout, ctx)
 	return &LargeResponseReader{
 		Reader: reader,
 		Resp:   resp,
@@ -366,10 +480,11 @@ func SetupStreamingPassthrough(ctx *schemas.BifrostContext, resp *fasthttp.Respo
 		return false
 	}
 
+	idleTimeout := responseBodyIdleTimeout(ctx, resp.BodyStream())
 	reader, releaseGzip := DecompressStreamBody(resp)
 
 	// Wrap reader with idle timeout to detect stalled streams.
-	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx), ctx)
+	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), idleTimeout, ctx)
 
 	// Wire cancellation to the raw fasthttp body. On a mid-stream client disconnect this fires
 	// wce.CloseWithError(ctx.Err()) to unblock the transport's Read and sets

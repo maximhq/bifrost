@@ -501,7 +501,7 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 	unbind := bindRequestContext(req, ctx)
 	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
 		defer unbind()
-		return client.Do(req, resp)
+		return finishUnaryRequest(resp, client.Do(req, resp))
 	})
 	return latency, bifrostErr, wait
 }
@@ -512,7 +512,7 @@ func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp
 	unbind := bindRequestContext(req, ctx)
 	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
 		defer unbind()
-		return client.DoRedirects(req, resp, maxRedirects)
+		return finishUnaryRequest(resp, client.DoRedirects(req, resp, maxRedirects))
 	})
 	return latency, bifrostErr, wait
 }
@@ -530,7 +530,7 @@ func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp
 // call, and the client's contextTransport applies the client's ReadTimeout
 // (default_request_timeout_in_seconds) and the ctx deadline to the header wait,
 // closes the socket when ctx is cancelled, and lifts the deadline once headers
-// arrive so the body is governed only by the stream idle timeout
+// arrive so body reads use the idle timeout and explicit context deadline
 // (maximhq/bifrost#7034). A silent upstream therefore fails with
 // fasthttp.ErrTimeout instead of pinning the worker until it closes.
 //
@@ -1428,8 +1428,9 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 	}, nil
 }
 
-// ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
-// It merges with any existing TLSConfig (e.g., from ConfigureProxy).
+// ConfigureTLS applies the provider's TLS settings after proxy and dialer setup.
+// At this point the managed transport also has the NetworkConfig it needs for
+// body reads. Both streaming client variants inherit it when they are cloned.
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
 	tlsConfig, err := networkTLSConfig(client.TLSConfig, networkConfig, logger)
 	if err != nil {
@@ -1438,6 +1439,9 @@ func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, 
 		return client
 	}
 	client.TLSConfig = tlsConfig
+	if _, managed := client.Transport.(*contextTransport); managed && networkConfig.StreamIdleTimeoutInSeconds > 0 {
+		client.Transport = &contextTransport{idleTimeout: time.Duration(networkConfig.StreamIdleTimeoutInSeconds) * time.Second}
+	}
 	return client
 }
 
@@ -2304,8 +2308,9 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 // is what turned a transient connection fault into one that persisted until the
 // process was restarted.
 //
-// Per-chunk idle detection is enforced at the application layer via
-// NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
+// contextTransport applies the idle timeout to raw socket reads, including
+// gzip initialization and cleanup. NewIdleTimeoutReader also monitors decoded
+// reads at the application layer (see GetStreamIdleTimeout).
 func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c := CloneFastHTTPClientConfig(base)
 	c.StreamResponseBody = true
@@ -2335,20 +2340,27 @@ func BuildStreamingHTTPClient(base *http.Client) *http.Client {
 // decompressBodyStreamIfGzip checks Content-Encoding for gzip and wraps the stream
 // with on-the-fly decompression using a pooled gzip.Reader. Clears Content-Encoding
 // header so downstream consumers don't double-decompress. Returns original reader
-// unchanged if not gzip-encoded or if gzip reader creation fails.
-func decompressBodyStreamIfGzip(resp *fasthttp.Response, stream io.Reader) (*gzip.Reader, io.Reader, bool) {
+// unchanged if not gzip-encoded. Initialization errors are returned to prevent
+// consumers from reading the failed body again.
+func decompressBodyStreamIfGzip(resp *fasthttp.Response, stream io.Reader) (*gzip.Reader, io.Reader, bool, error) {
 	ce := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
 	if !strings.Contains(ce, "gzip") {
-		return nil, stream, false
+		return nil, stream, false, nil
 	}
 	gz, err := AcquireGzipReader(stream)
 	if err != nil {
 		ReleaseGzipReader(gz)
-		return nil, stream, false
+		return nil, nil, false, err
 	}
 	resp.Header.Del("Content-Encoding")
-	return gz, gz, true
+	return gz, gz, true, nil
 }
+
+// failedStreamReader preserves an eager decompression failure for read-based
+// consumers without touching the underlying body a second time.
+type failedStreamReader struct{ err error }
+
+func (r failedStreamReader) Read([]byte) (int, error) { return 0, r.err }
 
 // DecompressStreamBody returns a reader for consuming the response body, with
 // on-the-fly gzip decompression when Content-Encoding indicates gzip. The response
@@ -2368,7 +2380,10 @@ func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 		// that pass the reader to bufio.NewScanner without nil checks.
 		return bytes.NewReader(nil), func() {}
 	}
-	gz, decompressed, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
+	gz, decompressed, wasGzip, err := decompressBodyStreamIfGzip(resp, bodyStream)
+	if err != nil {
+		return failedStreamReader{err: err}, func() {}
+	}
 	if !wasGzip {
 		return bodyStream, func() {}
 	}
@@ -2959,6 +2974,9 @@ func rootErrorMessage(raw interface{}) string {
 // on responses that are almost certainly valid JSON. errorResp must be a pointer to
 // the target struct for unmarshaling.
 func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
+	if readErr := MaterializeStreamErrorBody(nil, resp); readErr != nil {
+		return readErr
+	}
 	bifrostErr := handleProviderAPIError(resp, errorResp)
 	ApplyRetryAfter(bifrostErr, &resp.Header)
 	return bifrostErr
@@ -3297,7 +3315,11 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 	if contentEncoding == "" || contentEncoding == "identity" {
 		return result, nil
 	}
+	return decodeContentEncodings(result, contentEncoding, io.ReadAll)
+}
 
+// readAll controls the output bound for each layer of a stacked content encoding.
+func decodeContentEncodings(result []byte, contentEncoding string, readAll func(io.Reader) ([]byte, error)) ([]byte, error) {
 	encodings := strings.Split(contentEncoding, ",")
 	for i := len(encodings) - 1; i >= 0; i-- {
 		encoding := strings.TrimSpace(encodings[i])
@@ -3316,7 +3338,7 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 				ReleaseGzipReader(gz)
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
 			}
-			result, err = io.ReadAll(gz)
+			result, err = readAll(gz)
 			ReleaseGzipReader(gz)
 			if err != nil {
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
@@ -3327,7 +3349,7 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 				ReleaseFlateReader(fr)
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
 			}
-			result, err = io.ReadAll(fr)
+			result, err = readAll(fr)
 			ReleaseFlateReader(fr)
 			if err != nil {
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
@@ -3335,7 +3357,7 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 		case "br":
 			br := AcquireBrotliReader(reader)
 			var err error
-			result, err = io.ReadAll(br)
+			result, err = readAll(br)
 			ReleaseBrotliReader(br)
 			if err != nil {
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
@@ -3346,7 +3368,7 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 				ReleaseZstdDecoder(dec)
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
 			}
-			result, err = io.ReadAll(dec)
+			result, err = readAll(dec)
 			ReleaseZstdDecoder(dec)
 			if err != nil {
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
@@ -4261,9 +4283,18 @@ func SetStreamIdleTimeoutIfEmpty(ctx *schemas.BifrostContext, configSeconds int)
 
 // GetStreamIdleTimeout reads the per-chunk idle timeout from context,
 // falling back to DefaultStreamIdleTimeout if not set.
-func GetStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
-	if timeout, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && timeout > 0 {
-		return timeout
+func GetStreamIdleTimeout(ctx context.Context) time.Duration {
+	return streamIdleTimeout(ctx, 0)
+}
+
+func streamIdleTimeout(ctx context.Context, providerDefault time.Duration) time.Duration {
+	if ctx != nil {
+		if timeout, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && timeout > 0 {
+			return timeout
+		}
+	}
+	if providerDefault > 0 {
+		return providerDefault
 	}
 	return DefaultStreamIdleTimeout
 }
