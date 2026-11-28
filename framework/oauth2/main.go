@@ -136,7 +136,7 @@ func NewOAuth2Provider(configStore configstore.ConfigStore, live *livestore.Stor
 	if err != nil {
 		return nil, err
 	}
-	endpoints, err := live.RegisterState[resourceEndpoint](context.Background(), resourceEndpointsTable, livestore.KindMCPClient, livestore.WithTTL(resourceEndpointTTL))
+	endpoints, err := live.NewStateTable[resourceEndpoint](context.Background(), resourceEndpointsTable, livestore.KindMCPClient, livestore.WithTTL(resourceEndpointTTL))
 	if err != nil {
 		return nil, err
 	}

@@ -230,7 +230,7 @@ func TestInternsSharesOneCountAcrossCollectionsAndTables(t *testing.T) {
 	wantUses(t, f.tags, ha, 2, "g1 and g2 share tag a")
 
 	part := func(h *tagHolder) **tagSet { return &h.T }
-	state, err := f.s.RegisterState[tagHolder](context.Background(), "group_tag_copy", Kind("group"), Interns(f.tags, part))
+	state, err := f.s.NewStateTable[tagHolder](context.Background(), "group_tag_copy", Kind("group"), Interns(f.tags, part))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,8 +323,8 @@ func TestTableInternsSeveralPartsAndTheWrongType(t *testing.T) {
 	if _, err := s.Register(Kind("blob_owner"), nil, emptyLoader[owner]()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RegisterState[blob](context.Background(), "wrong_state", Kind("blob_owner"), Interns(blobs, blobPart)); err == nil || !strings.Contains(err.Error(), `"wrong_state"`) {
-		t.Fatalf("RegisterState with an Interns for another type = %v, want an error naming the table", err)
+	if _, err := s.NewStateTable[blob](context.Background(), "wrong_state", Kind("blob_owner"), Interns(blobs, blobPart)); err == nil || !strings.Contains(err.Error(), `"wrong_state"`) {
+		t.Fatalf("NewStateTable with an Interns for another type = %v, want an error naming the table", err)
 	}
 	if _, err := s.NewTable[string, *refRec](context.Background(), "wrong", Interns(blobs, blobPart)); err != nil {
 		t.Fatalf("a refused table must not keep its name: %v", err)

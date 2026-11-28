@@ -105,7 +105,7 @@ reviews:
           or a map behind an atomic pointer, used as a cache, an index or runtime state.
         - The fix is a live-store structure chosen by what a miss means: a collection (every row of a config-database kind;
           a miss means the row does not exist), a cache (only what was asked for; a miss means go fetch), or a table
-          (what the process writes itself; a miss means nothing was written yet; state keyed by a record uses RegisterState).
+          (what the process writes itself; a miss means nothing was written yet; state keyed by a record uses NewStateTable).
         - Components keep only handles (connections, goroutines, locks, compiled programs) and per-request buffers.
         - A map that genuinely cannot move must be added to tests/rawmaps/allowlist.txt with its group and a reason;
           TestRepositoryKeepsDataInTheLiveStore fails otherwise.

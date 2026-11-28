@@ -67,7 +67,7 @@ func NewStore(live *livestore.Store, logger schemas.Logger) (*Store, error) {
 	if rs.scopes, err = live.NewTable[string, []*configstoreTables.TableRoutingRule](context.Background(), ruleScopesTable); err != nil {
 		return nil, err
 	}
-	if rs.programs, err = live.RegisterState[compiledRule](context.Background(), ruleProgramsTable, livestore.KindRoutingRule, livestore.HoldsHandles()); err != nil {
+	if rs.programs, err = live.NewStateTable[compiledRule](context.Background(), ruleProgramsTable, livestore.KindRoutingRule, livestore.HoldsHandles()); err != nil {
 		_ = live.DropTable(context.Background(), rs.scopes.Name())
 		return nil, err
 	}

@@ -101,7 +101,7 @@ const (
 )
 
 // internalPrefix starts the name of every table the store creates for itself, such as the misses
-// a collection's Load remembers. NewTable, RegisterState and DropTable refuse such names, so no
+// a collection's Load remembers. NewTable, NewStateTable and DropTable refuse such names, so no
 // component can create one ahead of the store or drop one from under it.
 const internalPrefix = "internal:"
 

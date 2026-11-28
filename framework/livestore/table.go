@@ -155,11 +155,11 @@ func (s *Store) NewTable[K comparable, V any](ctx context.Context, name string, 
 	return t, nil
 }
 
-// RegisterState creates a table keyed by IDs of kind of: removing an entity of that kind
+// NewStateTable creates a table keyed by IDs of kind of: removing an entity of that kind
 // removes its entry. It fails when the name is empty, registered or in the reserved internal:
 // range, or the kind is empty or unknown, and with ErrInSubscriber when ctx is a subscriber's. An
 // empty kind is refused rather than made a plain table, whose entries no removal would clear.
-func (s *Store) RegisterState[V any](ctx context.Context, name string, of Kind, opts ...TableOption) (*Table[string, *V], error) {
+func (s *Store) NewStateTable[V any](ctx context.Context, name string, of Kind, opts ...TableOption) (*Table[string, *V], error) {
 	if err := inSubscriber(ctx); err != nil {
 		return nil, err
 	}

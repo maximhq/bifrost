@@ -122,7 +122,7 @@ func (o InternsOption[T, P]) applyCollection(c *Collection[T]) error {
 	return nil
 }
 
-// applyTable adds the declaration to a table's options; NewTable and RegisterState bind it to the
+// applyTable adds the declaration to a table's options; NewTable and NewStateTable bind it to the
 // table's value type.
 func (o InternsOption[T, P]) applyTable(opts *tableOptions) {
 	opts.interns = append(opts.interns, o.link)
