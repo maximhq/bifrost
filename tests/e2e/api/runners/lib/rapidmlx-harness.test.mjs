@@ -21,6 +21,7 @@ function expect(value) {
     eql: (expected) => assert.deepEqual(value, expected),
     include: (expected) => assert.ok(value.includes(expected)),
     match: (pattern) => assert.match(value, pattern),
+    above: (bound) => assert.ok(value > bound),
     a: (type) => {
       assert.equal(Array.isArray(value) ? "array" : typeof value, type);
       return chain;
@@ -61,6 +62,7 @@ function failures(row, body, code = 200) {
 
 const unary = folder.item.find((row) => row.name.includes("responses unary"));
 const streaming = folder.item.find((row) => row.name.includes("responses streaming"));
+const chatStreaming = folder.item.find((row) => row.name.includes("chat/completions streaming"));
 const sse = (...events) =>
   events.map((event) => "data: " + JSON.stringify(event) + "\n\n").join("");
 const completed = { type: "response.completed" };
@@ -163,5 +165,22 @@ test("Rapid-MLX Responses SSE requires answer-text deltas and completion events"
     [answer, { type: "response.output_text.done", text: "response.completed" }],
   ]) {
     assert.ok(failures(streaming, sse(...events)).length > 0, JSON.stringify(events));
+  }
+});
+
+test("Rapid-MLX chat SSE requires nonempty delta content and a standalone [DONE] frame", () => {
+  const chunk = (content) => ({ object: "chat.completion.chunk", choices: [{ index: 0, delta: { content } }] });
+  const done = "data: [DONE]\n\n";
+  assert.equal(failures(chatStreaming, sse(chunk("Hello")) + done).length, 0);
+  assert.equal(failures(chatStreaming, (sse(chunk("Hello")) + done).replaceAll("\n", "\r\n")).length, 0);
+  for (const body of [
+    sse(chunk("Hello [DONE]")),
+    sse(chunk("Hello")) + "data: {\"note\":\"[DONE]\"}\n\n",
+    sse(chunk("")) + done,
+    sse({ object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant" } }] }) + done,
+    sse(chunk(42)) + done,
+    done,
+  ]) {
+    assert.ok(failures(chatStreaming, body).length > 0, body);
   }
 });
