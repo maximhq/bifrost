@@ -2,6 +2,8 @@ package registry
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +38,21 @@ type MCPUserDiscoveryContent struct {
 	ResourceTemplates []mcp.ResourceTemplate
 	Prompts           []mcp.Prompt
 	DiscoveredAt      time.Time
+}
+
+// PoolKey is the discovery's key in the shared pool of discoveries: the first sixteen bytes of the
+// SHA-256 hex digest in Hash, or the first sixteen bytes of Hash's own SHA-256 when it is not hex.
+// Equal keys share one copy, so the key must be collision resistant.
+func (d *MCPUserDiscoveryContent) PoolKey() [16]byte {
+	var k [16]byte
+	if len(d.Hash) >= 2*len(k) {
+		if _, err := hex.Decode(k[:], []byte(d.Hash[:2*len(k)])); err == nil {
+			return k
+		}
+	}
+	sum := sha256.Sum256([]byte(d.Hash))
+	copy(k[:], sum[:])
+	return k
 }
 
 // MCPUserDiscoveryByCaller names the index of bindings by caller, keyed by MCPUserDiscoveryCaller.
