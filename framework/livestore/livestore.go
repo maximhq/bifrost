@@ -74,9 +74,11 @@ type UniqueConflictError struct {
 	IDs   []string // the records that would share the key, in ID order
 }
 
-// Error names the records and the key they would share.
+// Error names the records and the index they would share a key in, never the key: a unique key
+// can be a credential, such as a virtual key's value, and callers log this error. A caller that
+// needs the key reads Key through errors.As.
 func (e *UniqueConflictError) Error() string {
-	return fmt.Sprintf("livestore: %s %s would share %s %q in a unique index", e.Kind, strings.Join(e.IDs, ", "), e.Index, e.Key)
+	return fmt.Sprintf("livestore: %s %s would share a key in unique index %s", e.Kind, strings.Join(e.IDs, ", "), e.Index)
 }
 
 // Is makes errors.Is(err, ErrUniqueConflict) match.
