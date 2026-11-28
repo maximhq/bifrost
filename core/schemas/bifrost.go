@@ -93,6 +93,7 @@ const (
 	MachGen       ModelProvider = "machgen"
 	Baseten       ModelProvider = "baseten"
 	Kimchi        ModelProvider = "kimchi"
+	Wally         ModelProvider = "wally"
 	Soniox        ModelProvider = "soniox"
 )
 
@@ -150,6 +151,7 @@ var StandardProviders = []ModelProvider{
 	MachGen,
 	Baseten,
 	Kimchi,
+	Wally,
 	Soniox,
 }
 

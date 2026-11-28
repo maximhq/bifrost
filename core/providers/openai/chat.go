@@ -224,6 +224,17 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			openaiReq.MaxCompletionTokens = nil
 		}
 		return openaiReq
+	case schemas.Wally:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		// Wally's chat schema rejects unknown fields and has no top_k.
+		openaiReq.ChatParameters.TopK = nil
+		// Follow Wally's documented output-token contract. Wally accepts caps
+		// down to 1, so send the caller's value rather than OpenAI's 16 floor.
+		if openaiReq.MaxCompletionTokens != nil {
+			openaiReq.MaxTokens = bifrostReq.Params.MaxCompletionTokens
+			openaiReq.MaxCompletionTokens = nil
+		}
+		return openaiReq
 	case schemas.Databricks:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// Llama, gpt-oss and Qwen endpoints reject max_completion_tokens with a 400

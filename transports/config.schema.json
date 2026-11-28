@@ -956,6 +956,9 @@
         "kimchi": {
           "$ref": "#/$defs/provider"
         },
+        "wally": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },

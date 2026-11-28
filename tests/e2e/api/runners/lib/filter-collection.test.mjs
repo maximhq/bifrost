@@ -73,6 +73,46 @@ test("MachGen rows stay out of the partitions their model ids name", () => {
   }
 });
 
+// Template bodies with an unquoted placeholder ({{maxTokens}}) are not JSON. The filter must
+// still read only the top-level model there: a nested metadata.model naming wally/ must not move
+// an OpenAI row into the wally partition, and a wally/ row must stay out of the deepseek one.
+const templateRow = (name, body) => ({
+  name,
+  request: { method: "POST", url: { raw: "{{baseUrl}}/v1/chat/completions" }, body: { mode: "raw", raw: body } },
+});
+const templateScratch = mkdtempSync(join(tmpdir(), "filter-collection-template-"));
+const templatePartitions = {};
+try {
+  const source = join(templateScratch, "source.json");
+  writeFileSync(source, JSON.stringify({
+    info: { name: "template bodies", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+    item: [{
+      name: "Template bodies",
+      item: [
+        templateRow("chat", '{"model": "openai/gpt-4o-mini", "max_tokens": {{maxTokens}}, "metadata": {"model": "wally/deepseek-v4.1-flash"}}'),
+        templateRow("chat stream", '{"model": "wally/deepseek-v4.1-flash", "max_tokens": {{maxTokens}}, "stream": true}'),
+      ],
+    }],
+  }));
+  for (const provider of ["openai", "wally", "deepseek"]) {
+    const out = join(templateScratch, `${provider}.json`);
+    execFileSync("node", [FILTER, "--source", source, "--out", out, "--provider", provider], { stdio: "pipe" });
+    templatePartitions[provider] = rowNames(JSON.parse(readFileSync(out, "utf8")));
+  }
+} finally {
+  rmSync(templateScratch, { recursive: true, force: true });
+}
+
+test("a template body is routed by its top-level model, not metadata.model", () => {
+  assert.ok(templatePartitions.openai.includes("Template bodies / chat"), "OpenAI row dropped from the openai partition");
+  assert.ok(!templatePartitions.wally.includes("Template bodies / chat"), "OpenAI row claimed by the wally partition");
+});
+
+test("a wally/ template body stays in the wally partition only", () => {
+  assert.ok(templatePartitions.wally.includes("Template bodies / chat stream"), "Wally row dropped from the wally partition");
+  assert.ok(!templatePartitions.deepseek.includes("Template bodies / chat stream"), "Wally row claimed by the deepseek partition");
+});
+
 // A Files API call on the OpenAI-compatible route names its real provider in a "provider" form
 // field (upload) or query parameter (delete). The URL still contains "/openai", so without reading
 // the declared provider an openai run would claim the Azure pair too: it runs twice, and the openai

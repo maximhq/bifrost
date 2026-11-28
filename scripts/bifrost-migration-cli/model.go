@@ -149,6 +149,7 @@ var standardProviders = map[string]bool{
 	"vertex":         true,
 	"vllm":           true,
 	"wafer":          true,
+	"wally":          true,
 	"xai":            true,
 }
 

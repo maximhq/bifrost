@@ -43,6 +43,7 @@ ModelProvider:
     - machgen
     - baseten
     - kimchi
+    - wally
     - soniox
 
 Fallback:

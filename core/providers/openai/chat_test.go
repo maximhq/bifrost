@@ -2139,6 +2139,7 @@ func TestToOpenAIChatRequest_LegacyMaxTokensProvidersUseMaxTokensOnWire(t *testi
 		name     string
 		provider schemas.ModelProvider
 	}{
+		{name: "Wally", provider: schemas.Wally},
 		{name: "Go", provider: schemas.OpencodeGo},
 		{name: "Zen", provider: schemas.OpencodeZen},
 		{name: "Ollama", provider: schemas.Ollama},
@@ -2176,6 +2177,39 @@ func TestToOpenAIChatRequest_LegacyMaxTokensProvidersUseMaxTokensOnWire(t *testi
 			require.NotContains(t, wire, "max_completion_tokens")
 		})
 	}
+}
+
+func TestToOpenAIChatRequest_WallyDropsTopKAndKeepsSmallCap(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Wally,
+		Model:    "deepseek-v4.1-flash",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(5),
+			TopK:                schemas.Ptr(40),
+		},
+	}
+
+	converted := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), bifrostReq)
+	require.NotNil(t, converted)
+
+	wireJSON, err := providerUtils.MarshalSorted(converted)
+	require.NoError(t, err)
+
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(wireJSON, &wire))
+	require.NotContains(t, wire, "top_k", "Wally rejects top_k: %s", wireJSON)
+	require.NotContains(t, wire, "max_completion_tokens")
+	var maxTokens int
+	require.NoError(t, json.Unmarshal(wire["max_tokens"], &maxTokens))
+	require.Equal(t, 5, maxTokens, "Wally cap below 16 must not be raised: %s", wireJSON)
+
+	// The caller's parameters are not mutated.
+	require.Equal(t, 40, *bifrostReq.Params.TopK)
+	require.Equal(t, 5, *bifrostReq.Params.MaxCompletionTokens)
 }
 
 // When a conversation switches from Gemini to OpenAI, Gemini's thoughtSignature is
@@ -3860,6 +3894,19 @@ func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
 	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
 	require.NoError(t, err)
 	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
+}
+
+func BenchmarkToOpenAIChatRequestWallyTokenCap(b *testing.B) {
+	for _, provider := range []schemas.ModelProvider{schemas.Wally, schemas.OpenAI} {
+		b.Run(string(provider), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{Provider: provider, Model: "deepseek-v4.1-flash", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}, Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(512)}}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIChatRequest(ctx, req)
+			}
+		})
+	}
 }
 
 func zeroCostUpstream(t *testing.T) *httptest.Server {
