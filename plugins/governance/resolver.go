@@ -159,6 +159,16 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 			}
 		}
 	}
+	// A passthrough the transport marks as able to run a model it does not name (a run of a Managed
+	// Agents deployment starts its agent's model) is held to an access that allows every model of the
+	// provider. A model its body names does not satisfy that: it is not the model that runs. It is
+	// checked before the unseen-model rule below, whose reason would ask for a model that cannot help.
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeyPassthroughRunsUnseenModel) && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
+		return &EvaluationResult{
+			Decision: DecisionModelBlocked,
+			Reason:   denialReason(fmt.Sprintf("Passthrough on provider '%s' requires an access that allows every model of the provider: this request can run a model it does not name", provider), access.DeniedPermitsForModel(string(provider), "")),
+		}
+	}
 	// A passthrough body is forwarded as the provider reads it. The models it names are evaluated
 	// one by one before this pass (PreLLMHook reads them from the body), so a request that names
 	// none anywhere leaves a model restriction with nothing to check. It is refused rather than

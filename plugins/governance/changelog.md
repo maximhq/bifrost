@@ -1,3 +1,4 @@
+- fix: Anthropic Managed Agents deployment create, update, run and unpause through `/anthropic_passthrough` need an access that allows every Anthropic model, whatever model the body names
 - feat: the Codex passthrough model list is filtered to the caller's allowed models
 - feat: virtual keys are read from the `xi-api-key` header for ElevenLabs clients
 - fix: updating the budget of a config.json virtual key no longer fails with `invalid reset duration format` (thanks [@High-PO](https://github.com/High-PO)!)

@@ -27642,6 +27642,926 @@
           }
         }
       ]
+    },
+    {
+      "name": "/anthropic_passthrough: a model-restricted VK reads a Managed Agents deployment but cannot start one",
+      "description": "Claude Managed Agents deployments live at /v1/deployments/{id} on the Anthropic API, and /anthropic_passthrough forwards them (#10373). Path model parsing used to read any deployments/{x} segment as an Azure deployment name, so the deployment id became the request's model and governance refused it with model_blocked before anything reached Anthropic. A deployments path names no model now. Reading a deployment starts nothing and skips the model allowlist; unpausing or running one can start a run of an agent whose model governance never sees, so a VK that restricts models is refused, even when the body names a model it allows (the run starts the agent's model, not that one). The VK allows only claude-haiku-4-5 on the standard anthropic provider. The deployment does not exist, so the read gets Anthropic's own 404 not_found_error and nothing is created or run on the Anthropic account. Red before the change: every request is 403 model_blocked naming the deployment id. Needs an Anthropic key with Managed Agents access. Serial-only (global standard provider).",
+      "item": [
+        {
+          "id": "rt-passthrough-deployments-model-restricted-vk-01-add-provider",
+          "name": "01. add provider [passthrough-deployments-model-restricted-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-model-restricted-vk]\";",
+                  "pm.test(\"01. add provider [passthrough-deployments-model-restricted-vk]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"anthropic\"}"
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-model-restricted-vk-02-add-key",
+          "name": "02. add key ka [passthrough-deployments-model-restricted-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-model-restricted-vk]\";",
+                  "pm.test(\"02. add key ka [passthrough-deployments-model-restricted-vk]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/anthropic/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "anthropic",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"ka-{{run_id}}\",\"name\":\"catwiring-rt-passthrough-deployments-model-restricted-vk-ka-{{run_id}}\",\"models\":[\"*\"],\"enabled\":true,\"value\":\"env.ANTHROPIC_API_KEY\"}"
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-model-restricted-vk-03-create-vk",
+          "name": "03. create vk [passthrough-deployments-model-restricted-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-model-restricted-vk]\";",
+                  "var ok = pm.response.code === 200 || pm.response.code === 201;",
+                  "pm.test(\"03. create vk [passthrough-deployments-model-restricted-vk]\", function () {",
+                  "  pm.expect([200, 201], 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (ok) {",
+                  "  var vk = (pm.response.json() || {}).virtual_key || {};",
+                  "  pm.collectionVariables.set('vkval_passthrough-deployments-model-restricted-vk', vk.value || '');",
+                  "  pm.collectionVariables.set('vkid_passthrough-deployments-model-restricted-vk', vk.id || '');",
+                  "  var pcIds = {};",
+                  "  (vk.provider_configs || []).forEach(function (pc) { pcIds[pc.provider] = pc.id; });",
+                  "  pm.collectionVariables.set('vkpc_passthrough-deployments-model-restricted-vk', JSON.stringify(pcIds));",
+                  "} else { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"catwiring-rtvk-passthrough-deployments-model-restricted-vk-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"anthropic\",\"key_ids\":[\"*\"],\"allowed_models\":[\"claude-haiku-4-5\"],\"blacklisted_models\":[],\"weight\":1}]}"
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-model-restricted-vk-04-await-catalog",
+          "name": "04. wait for the catalog to list the provider's models [passthrough-deployments-model-restricted-vk]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-model-restricted-vk]\";",
+                  "function assertNow() {",
+                  "  var providerName = \"anthropic\";",
+                  "  var expected = [].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"04. wait for the catalog to list the provider's models [passthrough-deployments-model-restricted-vk]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"04. wait for the catalog to list the provider's models [passthrough-deployments-model-restricted-vk]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=anthropic&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-model-restricted-vk-05-passthrough",
+          "name": "05. reading a deployment reaches Anthropic (404 not_found_error), not refused by the model allowlist [passthrough-deployments-model-restricted-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-model-restricted-vk]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 404) { throw new Error('expected status 404 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { throw new Error('not JSON: ' + pm.response.text()); }",
+                  "  if (body.type !== 'error' || !body.error || body.error.type !== \"not_found_error\") { throw new Error('not the provider\\'s not_found_error: ' + pm.response.text()); }",
+                  "  if (pm.response.text().indexOf(pm.variables.replaceIn(\"model_blocked\")) >= 0) { throw new Error('body carries ' + \"model_blocked\" + ': ' + pm.response.text()); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"05. reading a deployment reaches Anthropic (404 not_found_error), not refused by the model allowlist [passthrough-deployments-model-restricted-vk]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkval_passthrough-deployments-model-restricted-vk}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "managed-agents-2026-04-01"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/anthropic_passthrough/v1/deployments/depl_01HarnessMissingDeploy",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "deployments",
+                "depl_01HarnessMissingDeploy"
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-model-restricted-vk-06-passthrough",
+          "name": "06. unpausing a deployment can start a run (403 model_blocked) [passthrough-deployments-model-restricted-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-model-restricted-vk]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 403) { throw new Error('expected status 403 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { throw new Error('not JSON: ' + pm.response.text()); }",
+                  "  if (body.type !== \"model_blocked\") { throw new Error('error type=' + body.type + ' expected model_blocked; body ' + pm.response.text()); }",
+                  "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
+                  "  var expectedSubstr = pm.variables.replaceIn(\"requires an access that allows every model of the provider\");",
+                  "  if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }",
+                  "  if (pm.response.text().indexOf(pm.variables.replaceIn(\"depl_01HarnessMissingDeploy\")) >= 0) { throw new Error('body carries ' + \"depl_01HarnessMissingDeploy\" + ': ' + pm.response.text()); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"06. unpausing a deployment can start a run (403 model_blocked) [passthrough-deployments-model-restricted-vk]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkval_passthrough-deployments-model-restricted-vk}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "managed-agents-2026-04-01"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/anthropic_passthrough/v1/deployments/depl_01HarnessMissingDeploy/unpause",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "deployments",
+                "depl_01HarnessMissingDeploy",
+                "unpause"
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-model-restricted-vk-07-passthrough",
+          "name": "07. running a deployment is refused even when the body names the allowed model (403 model_blocked) [passthrough-deployments-model-restricted-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-model-restricted-vk]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 403) { throw new Error('expected status 403 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { throw new Error('not JSON: ' + pm.response.text()); }",
+                  "  if (body.type !== \"model_blocked\") { throw new Error('error type=' + body.type + ' expected model_blocked; body ' + pm.response.text()); }",
+                  "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
+                  "  var expectedSubstr = pm.variables.replaceIn(\"requires an access that allows every model of the provider\");",
+                  "  if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }",
+                  "  if (pm.response.text().indexOf(pm.variables.replaceIn(\"depl_01HarnessMissingDeploy\")) >= 0) { throw new Error('body carries ' + \"depl_01HarnessMissingDeploy\" + ': ' + pm.response.text()); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"07. running a deployment is refused even when the body names the allowed model (403 model_blocked) [passthrough-deployments-model-restricted-vk]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkval_passthrough-deployments-model-restricted-vk}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "managed-agents-2026-04-01"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/anthropic_passthrough/v1/deployments/depl_01HarnessMissingDeploy/run",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "deployments",
+                "depl_01HarnessMissingDeploy",
+                "run"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-haiku-4-5\"}"
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-passthrough-deployments-model-restricted-vk-cleanup-vk",
+              "name": "cleanup: delete vk [passthrough-deployments-model-restricted-vk]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete vk [passthrough-deployments-model-restricted-vk]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/governance/virtual-keys/{{vkid_passthrough-deployments-model-restricted-vk}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "governance",
+                    "virtual-keys",
+                    "{{vkid_passthrough-deployments-model-restricted-vk}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-passthrough-deployments-model-restricted-vk-cleanup-provider-self",
+              "name": "cleanup: delete provider [passthrough-deployments-model-restricted-vk]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [passthrough-deployments-model-restricted-vk]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/anthropic",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "anthropic"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "/anthropic_passthrough: an all-models VK reads and unpauses a Managed Agents deployment",
+      "description": "The counterpart of the model-restricted case: a VK that allows every model of the standard anthropic provider (allowed_models [\"*\"]) passes governance on both a deployment read and an unpause, so both reach Anthropic and get its own 404 not_found_error for a deployment that does not exist. Red before the change: both are 403 model_blocked naming the deployment id, because the id is not in the model catalog. Needs an Anthropic key with Managed Agents access. Serial-only (global standard provider).",
+      "item": [
+        {
+          "id": "rt-passthrough-deployments-all-models-vk-01-add-provider",
+          "name": "01. add provider [passthrough-deployments-all-models-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-all-models-vk]\";",
+                  "pm.test(\"01. add provider [passthrough-deployments-all-models-vk]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"anthropic\"}"
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-all-models-vk-02-add-key",
+          "name": "02. add key ka [passthrough-deployments-all-models-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-all-models-vk]\";",
+                  "pm.test(\"02. add key ka [passthrough-deployments-all-models-vk]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/anthropic/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "anthropic",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"ka-{{run_id}}\",\"name\":\"catwiring-rt-passthrough-deployments-all-models-vk-ka-{{run_id}}\",\"models\":[\"*\"],\"enabled\":true,\"value\":\"env.ANTHROPIC_API_KEY\"}"
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-all-models-vk-03-create-vk",
+          "name": "03. create vk [passthrough-deployments-all-models-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-all-models-vk]\";",
+                  "var ok = pm.response.code === 200 || pm.response.code === 201;",
+                  "pm.test(\"03. create vk [passthrough-deployments-all-models-vk]\", function () {",
+                  "  pm.expect([200, 201], 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (ok) {",
+                  "  var vk = (pm.response.json() || {}).virtual_key || {};",
+                  "  pm.collectionVariables.set('vkval_passthrough-deployments-all-models-vk', vk.value || '');",
+                  "  pm.collectionVariables.set('vkid_passthrough-deployments-all-models-vk', vk.id || '');",
+                  "  var pcIds = {};",
+                  "  (vk.provider_configs || []).forEach(function (pc) { pcIds[pc.provider] = pc.id; });",
+                  "  pm.collectionVariables.set('vkpc_passthrough-deployments-all-models-vk', JSON.stringify(pcIds));",
+                  "} else { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"catwiring-rtvk-passthrough-deployments-all-models-vk-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"anthropic\",\"key_ids\":[\"*\"],\"allowed_models\":[\"*\"],\"blacklisted_models\":[],\"weight\":1}]}"
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-all-models-vk-04-await-catalog",
+          "name": "04. wait for the catalog to list the provider's models [passthrough-deployments-all-models-vk]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-all-models-vk]\";",
+                  "function assertNow() {",
+                  "  var providerName = \"anthropic\";",
+                  "  var expected = [].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"04. wait for the catalog to list the provider's models [passthrough-deployments-all-models-vk]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"04. wait for the catalog to list the provider's models [passthrough-deployments-all-models-vk]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=anthropic&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-all-models-vk-05-passthrough",
+          "name": "05. reading a deployment reaches Anthropic (404 not_found_error) [passthrough-deployments-all-models-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-all-models-vk]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 404) { throw new Error('expected status 404 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { throw new Error('not JSON: ' + pm.response.text()); }",
+                  "  if (body.type !== 'error' || !body.error || body.error.type !== \"not_found_error\") { throw new Error('not the provider\\'s not_found_error: ' + pm.response.text()); }",
+                  "  if (pm.response.text().indexOf(pm.variables.replaceIn(\"model_blocked\")) >= 0) { throw new Error('body carries ' + \"model_blocked\" + ': ' + pm.response.text()); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"05. reading a deployment reaches Anthropic (404 not_found_error) [passthrough-deployments-all-models-vk]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkval_passthrough-deployments-all-models-vk}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "managed-agents-2026-04-01"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/anthropic_passthrough/v1/deployments/depl_01HarnessMissingDeploy",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "deployments",
+                "depl_01HarnessMissingDeploy"
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-passthrough-deployments-all-models-vk-06-passthrough",
+          "name": "06. unpausing a deployment reaches Anthropic (404 not_found_error) [passthrough-deployments-all-models-vk]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete vk [passthrough-deployments-all-models-vk]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 404) { throw new Error('expected status 404 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { throw new Error('not JSON: ' + pm.response.text()); }",
+                  "  if (body.type !== 'error' || !body.error || body.error.type !== \"not_found_error\") { throw new Error('not the provider\\'s not_found_error: ' + pm.response.text()); }",
+                  "  if (pm.response.text().indexOf(pm.variables.replaceIn(\"model_blocked\")) >= 0) { throw new Error('body carries ' + \"model_blocked\" + ': ' + pm.response.text()); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"06. unpausing a deployment reaches Anthropic (404 not_found_error) [passthrough-deployments-all-models-vk]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkval_passthrough-deployments-all-models-vk}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "managed-agents-2026-04-01"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/anthropic_passthrough/v1/deployments/depl_01HarnessMissingDeploy/unpause",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "deployments",
+                "depl_01HarnessMissingDeploy",
+                "unpause"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-passthrough-deployments-all-models-vk-cleanup-vk",
+              "name": "cleanup: delete vk [passthrough-deployments-all-models-vk]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete vk [passthrough-deployments-all-models-vk]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/governance/virtual-keys/{{vkid_passthrough-deployments-all-models-vk}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "governance",
+                    "virtual-keys",
+                    "{{vkid_passthrough-deployments-all-models-vk}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-passthrough-deployments-all-models-vk-cleanup-provider-self",
+              "name": "cleanup: delete provider [passthrough-deployments-all-models-vk]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [passthrough-deployments-all-models-vk]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/anthropic",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "anthropic"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

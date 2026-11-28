@@ -1158,6 +1158,42 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
+// The deployments passthrough checks run against the two answers they tell apart: Anthropic's own
+// 404 for a deployment that does not exist, and the refusal the code before #10373 gave every request
+// (403 model_blocked naming the deployment id as the model). A read passes only on the first, a run
+// under a model-restricted key only on the governance refusal that names no deployment id.
+test("routing-wiring: the deployments passthrough checks tell Anthropic's 404 from a model_blocked refusal", () => {
+  const anthropic404 = { code: 404, body: { type: "error", error: { type: "not_found_error", message: "deployment not found" } } };
+  const oldRefusal = { code: 403, body: { type: "model_blocked", error: { message: "Model 'depl_01HarnessMissingDeploy' is not allowed for virtual key 'k'" } } };
+  const runRefusal = { code: 403, body: { type: "model_blocked", error: { message: "Passthrough on provider 'anthropic' requires an access that allows every model of the provider: this request can run a model it does not name for virtual key 'k'" } } };
+  const passes = (item, answer) => {
+    const src = listenScript(item, "test");
+    const body = src.slice(src.indexOf("function assertNow() {") + "function assertNow() {".length, src.indexOf("\n}\nvar ok = true"));
+    const text = JSON.stringify(answer.body);
+    const pm = { response: { code: answer.code, json: () => answer.body, text: () => text }, variables: { replaceIn: (v) => v } };
+    try { new Function("pm", body)(pm); return true; } catch { return false; }
+  };
+  const requests = (title) => requestsIn(title).filter((item) => item.request.url.path[0] === "anthropic_passthrough");
+  const restricted = requests("/anthropic_passthrough: a model-restricted VK");
+  const allModels = requests("/anthropic_passthrough: an all-models VK");
+  assert.strictEqual(restricted.length, 3);
+  assert.strictEqual(allModels.length, 2);
+  for (const item of [...restricted, ...allModels]) {
+    assert.ok((item.request.header || []).some((h) => h.key === "x-bf-vk"), `${item.name} sends no virtual key`);
+    assert.ok((item.request.header || []).some((h) => h.key === "anthropic-beta" && h.value.startsWith("managed-agents-")), `${item.name} sends no Managed Agents beta header`);
+    assert.ok(!passes(item, oldRefusal), `${item.name} passes on the refusal the deployment id used to get`);
+  }
+  const [read, unpause, run] = restricted;
+  assert.ok(passes(read, anthropic404) && !passes(read, runRefusal), `${read.name} does not require Anthropic's 404`);
+  for (const item of [unpause, run]) {
+    assert.ok(passes(item, runRefusal) && !passes(item, anthropic404), `${item.name} does not require the governance refusal`);
+  }
+  assert.deepStrictEqual(JSON.parse(run.request.body.raw), { model: "claude-haiku-4-5" }, "the run does not name the model the key allows");
+  for (const item of allModels) {
+    assert.ok(passes(item, anthropic404) && !passes(item, runRefusal), `${item.name} does not require Anthropic's 404`);
+  }
+});
+
 // Execute the collection's own folder scripts, not a copied implementation.
 const registrationFolder = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8")).item.find(
   (item) => item.name === "378. Management-created provider prefixes route immediately (provider-prefix-registration)",

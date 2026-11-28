@@ -103,6 +103,14 @@ const DEFAULT_PROVIDER = "openai";
 const MODEL_A = PROVIDERS.openai.altModel; // gpt-4o
 const MODEL_B = PROVIDERS.openai.model; // gpt-4o-mini
 
+// Claude Managed Agents on /anthropic_passthrough: the beta header the API requires, and a deployment
+// id that does not exist, so a request that reaches Anthropic gets its 404 and creates or runs nothing.
+const MANAGED_AGENTS_HEADERS = [
+  { key: "anthropic-version", value: "2023-06-01" },
+  { key: "anthropic-beta", value: "managed-agents-2026-04-01" },
+];
+const MISSING_DEPLOYMENT = "depl_01HarnessMissingDeploy";
+
 // --------------------------------------------------------------------------- //
 // Spec helpers
 // --------------------------------------------------------------------------- //
@@ -234,6 +242,33 @@ function routeAssertLines(sid, step, jsNameOf) {
     lines.push(`if (body.type !== ${JSON.stringify(step.expectErrorType)}) { throw new Error('error type=' + body.type + ' expected ${step.expectErrorType}'); }`);
   }
   return [...lines, ...routeHeaderLines(step, jsNameOf)];
+}
+
+// A passthrough answer is the provider's own body, or a governance refusal in Bifrost's error shape
+// (type and error.message, as on /v1). expectUpstreamErrorType names the provider's own error type
+// (Anthropic: {"type":"error","error":{"type":...}}), which shows the request reached the provider.
+// expectBodyExcludes lists text the body must not carry, run variables resolved.
+function passthroughAssertLines(step) {
+  const lines = [
+    `if (pm.response.code !== ${step.expectStatus}) { throw new Error('expected status ${step.expectStatus} got ' + pm.response.code + ' body ' + pm.response.text()); }`,
+    "var body = {};",
+    "try { body = pm.response.json() || {}; } catch (e) { throw new Error('not JSON: ' + pm.response.text()); }",
+  ];
+  if (step.expectErrorType) {
+    lines.push(`if (body.type !== ${JSON.stringify(step.expectErrorType)}) { throw new Error('error type=' + body.type + ' expected ${step.expectErrorType}; body ' + pm.response.text()); }`);
+  }
+  if (step.expectErrorSubstr) {
+    lines.push("var msg = (body.error && (body.error.message || body.error)) || body.message || '';");
+    lines.push(`var expectedSubstr = pm.variables.replaceIn(${JSON.stringify(step.expectErrorSubstr)});`);
+    lines.push("if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }");
+  }
+  if (step.expectUpstreamErrorType) {
+    lines.push(`if (body.type !== 'error' || !body.error || body.error.type !== ${JSON.stringify(step.expectUpstreamErrorType)}) { throw new Error('not the provider\\'s ${step.expectUpstreamErrorType}: ' + pm.response.text()); }`);
+  }
+  for (const text of step.expectBodyExcludes || []) {
+    lines.push(`if (pm.response.text().indexOf(pm.variables.replaceIn(${JSON.stringify(text)})) >= 0) { throw new Error('body carries ' + ${JSON.stringify(text)} + ': ' + pm.response.text()); }`);
+  }
+  return lines;
 }
 
 function logAssertLines(sid, step, jsNameOf) {
@@ -448,7 +483,7 @@ function expandScenario(sc) {
     }
     catalogPending = [];
   };
-  const inferenceSteps = new Set(["route", "keyDistribution", "providerDistribution"]);
+  const inferenceSteps = new Set(["route", "keyDistribution", "providerDistribution", "passthrough"]);
 
   for (const step of sc.steps) {
     if (inferenceSteps.has(step.type) && catalogPending.length) awaitCatalog();
@@ -531,6 +566,22 @@ function expandScenario(sc) {
         ] : null;
         items.push(item(nextId("route"), name, request("POST", url(path), body, headers),
           events(pre, singleTest(name, routeAssertLines(sid, step, jsNameOf), cleanupTarget))));
+        break;
+      }
+      case "passthrough": {
+        // A request on a provider's passthrough route (/<provider>_passthrough/<path>), forwarded as
+        // sent. The route fixes the provider, so the scenario adds that provider as a standard one;
+        // rules, load balancing and the catalog resolver are skipped, and governance still checks the
+        // virtual key. body is sent as JSON when given; headers are the provider's own.
+        const prefix = { anthropic: "anthropic_passthrough" }[step.provider || "anthropic"];
+        if (!prefix) throw new Error("no passthrough route for provider " + step.provider);
+        const name = uniq(step.label);
+        const headers = [
+          ...(step.useVk === false ? [] : [{ key: "x-bf-vk", value: `{{vkval_${sid}}}` }]),
+          ...(step.headers || []),
+        ];
+        items.push(item(nextId("passthrough"), name, request(step.method, url([prefix, ...step.path.split("/")]), step.body, headers),
+          events(null, singleTest(name, passthroughAssertLines(step), cleanupTarget))));
         break;
       }
       case "updateKey": {
@@ -1331,6 +1382,38 @@ const SCENARIOS = [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
       { type: "createVK", providerConfigs: [] },
       { type: "route", model: MODEL_B, expectStatus: 403, expectErrorType: "provider_blocked", expectErrorSubstr: "is not allowed", label: "deny-by-default refuses the request (403 provider_blocked)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "passthrough-deployments-model-restricted-vk",
+    title: "/anthropic_passthrough: a model-restricted VK reads a Managed Agents deployment but cannot start one",
+    description:
+      "Claude Managed Agents deployments live at /v1/deployments/{id} on the Anthropic API, and /anthropic_passthrough forwards them (#10373). " +
+      "Path model parsing used to read any deployments/{x} segment as an Azure deployment name, so the deployment id became the request's model and governance refused it with model_blocked before anything reached Anthropic. " +
+      "A deployments path names no model now. Reading a deployment starts nothing and skips the model allowlist; unpausing or running one can start a run of an agent whose model governance never sees, so a VK that restricts models is refused, even when the body names a model it allows (the run starts the agent's model, not that one). " +
+      "The VK allows only claude-haiku-4-5 on the standard anthropic provider. The deployment does not exist, so the read gets Anthropic's own 404 not_found_error and nothing is created or run on the Anthropic account. " +
+      "Red before the change: every request is 403 model_blocked naming the deployment id. Needs an Anthropic key with Managed Agents access. Serial-only (global standard provider).",
+    steps: [
+      { type: "addProvider", providerKind: "standard", providerType: "anthropic", keys: [key({ id: "ka", models: ["*"] })] },
+      { type: "createVK", providerConfigs: [vkProvider({ allowedModels: [PROVIDERS.anthropic.model] })] },
+      { type: "passthrough", method: "GET", path: `v1/deployments/${MISSING_DEPLOYMENT}`, headers: MANAGED_AGENTS_HEADERS, expectStatus: 404, expectUpstreamErrorType: "not_found_error", expectBodyExcludes: ["model_blocked"], label: "reading a deployment reaches Anthropic (404 not_found_error), not refused by the model allowlist" },
+      { type: "passthrough", method: "POST", path: `v1/deployments/${MISSING_DEPLOYMENT}/unpause`, headers: MANAGED_AGENTS_HEADERS, expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "requires an access that allows every model of the provider", expectBodyExcludes: [MISSING_DEPLOYMENT], label: "unpausing a deployment can start a run (403 model_blocked)" },
+      { type: "passthrough", method: "POST", path: `v1/deployments/${MISSING_DEPLOYMENT}/run`, headers: MANAGED_AGENTS_HEADERS, body: { model: PROVIDERS.anthropic.model }, expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "requires an access that allows every model of the provider", expectBodyExcludes: [MISSING_DEPLOYMENT], label: "running a deployment is refused even when the body names the allowed model (403 model_blocked)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "passthrough-deployments-all-models-vk",
+    title: "/anthropic_passthrough: an all-models VK reads and unpauses a Managed Agents deployment",
+    description:
+      "The counterpart of the model-restricted case: a VK that allows every model of the standard anthropic provider (allowed_models [\"*\"]) passes governance on both a deployment read and an unpause, so both reach Anthropic and get its own 404 not_found_error for a deployment that does not exist. " +
+      "Red before the change: both are 403 model_blocked naming the deployment id, because the id is not in the model catalog. Needs an Anthropic key with Managed Agents access. Serial-only (global standard provider).",
+    steps: [
+      { type: "addProvider", providerKind: "standard", providerType: "anthropic", keys: [key({ id: "ka", models: ["*"] })] },
+      { type: "createVK", providerConfigs: [vkProvider({ allowedModels: ["*"] })] },
+      { type: "passthrough", method: "GET", path: `v1/deployments/${MISSING_DEPLOYMENT}`, headers: MANAGED_AGENTS_HEADERS, expectStatus: 404, expectUpstreamErrorType: "not_found_error", expectBodyExcludes: ["model_blocked"], label: "reading a deployment reaches Anthropic (404 not_found_error)" },
+      { type: "passthrough", method: "POST", path: `v1/deployments/${MISSING_DEPLOYMENT}/unpause`, headers: MANAGED_AGENTS_HEADERS, expectStatus: 404, expectUpstreamErrorType: "not_found_error", expectBodyExcludes: ["model_blocked"], label: "unpausing a deployment reaches Anthropic (404 not_found_error)" },
       { type: "cleanup" },
     ],
   },

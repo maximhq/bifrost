@@ -67,6 +67,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyClientIP:                {},
 
 	BifrostContextKeyPassthroughModelListFilter: {},
+	BifrostContextKeyPassthroughRunsUnseenModel: {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are
