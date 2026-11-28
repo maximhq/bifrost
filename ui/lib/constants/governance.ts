@@ -149,6 +149,7 @@ export interface CalendarWindowInput {
 		request_max_limit?: number;
 		request_reset_duration?: string;
 	} | null;
+	request_limits?: { max_limit?: number; reset_duration?: string }[];
 	model_budgets?: CalendarWindowInput[];
 }
 
@@ -157,6 +158,7 @@ export function calendarWindowDurations(windows: CalendarWindowInput[]): string[
 		...(window.budgets ?? []).filter((b) => b.max_limit !== undefined).map((b) => b.reset_duration ?? ""),
 		...(window.rate_limit?.token_max_limit !== undefined ? [window.rate_limit.token_reset_duration ?? ""] : []),
 		...(window.rate_limit?.request_max_limit !== undefined ? [window.rate_limit.request_reset_duration ?? ""] : []),
+		...(window.request_limits ?? []).filter((l) => l.max_limit !== undefined).map((l) => l.reset_duration ?? ""),
 		...calendarWindowDurations(window.model_budgets ?? []),
 	]);
 }

@@ -1,6 +1,6 @@
 import { supportsCalendarAlignment } from "@/lib/constants/governance";
 import i18n from "@/lib/i18n";
-import type { Budget, LimitScope, ModelConfig } from "@/lib/types/governance";
+import type { Budget, LimitScope, ModelConfig, RateLimit, RequestLimit, RequestLimitRequest } from "@/lib/types/governance";
 import type { ParseKeys } from "i18next";
 
 const RESET_UNIT_KEYS: Record<string, ParseKeys<"common">> = {
@@ -255,6 +255,62 @@ export const budgetSignature = (budgets?: BudgetComparisonEntry[]) =>
 		.sort()
 		.join("|");
 
+/** One editable request limit, the shape MultiBudgetLines edits. */
+export interface RequestLimitLine {
+	id?: string;
+	max_limit?: number;
+	reset_duration: string;
+	scope?: LimitScope;
+}
+
+interface RequestLimitHolder {
+	rate_limit?: RateLimit | null;
+	request_limits?: RequestLimit[] | null;
+}
+
+/**
+ * A holder's request limits for display: its request_limits, preceded by its rate limit when that
+ * row still carries a request limit (for example a legacy combined row).
+ * Consumers read only the request fields of each entry.
+ */
+export function requestLimitsOf(holder: RequestLimitHolder | null | undefined): RequestLimit[] {
+	if (!holder) return [];
+	const legacy = holder.rate_limit?.request_max_limit != null ? [holder.rate_limit] : [];
+	return [...legacy, ...(holder.request_limits ?? [])];
+}
+
+/** True when a request limit's counter has reached its maximum. */
+export function isRequestLimitExhausted(rule: Pick<RateLimit, "request_max_limit" | "request_current_usage">): boolean {
+	return rule.request_max_limit != null && (rule.request_current_usage ?? 0) >= rule.request_max_limit;
+}
+
+/**
+ * A holder's request limits as editable lines. A legacy combined rate limit's request limit becomes
+ * one shared line without an id. Saving request_limits makes the backend replace that row's request
+ * fields for this holder (forking a row other holders share), and a new shared limit on the same
+ * reset period inherits the old row's usage.
+ */
+export function requestLimitLinesOf(holder: RequestLimitHolder | null | undefined): RequestLimitLine[] {
+	return requestLimitsOf(holder).map((rule) => ({
+		id: rule === holder?.rate_limit ? undefined : rule.id,
+		max_limit: rule.request_max_limit ?? undefined,
+		reset_duration: rule.request_reset_duration || "1h",
+		scope: rule === holder?.rate_limit ? undefined : rule.scope,
+	}));
+}
+
+/** Request lines as a request_limits payload; lines without a maximum are dropped. */
+export function toRequestLimitRequests(lines: RequestLimitLine[] | undefined): RequestLimitRequest[] {
+	return (lines ?? [])
+		.filter((line): line is RequestLimitLine & { max_limit: number } => line.max_limit !== undefined && line.max_limit !== null)
+		.map((line) => ({
+			...(line.id ? { id: line.id } : {}),
+			max_limit: line.max_limit,
+			reset_duration: line.reset_duration,
+			...(line.scope ? { scope: line.scope } : {}),
+		}));
+}
+
 // Callers name the entity in English; the sentence shows its localized noun when one is known.
 const GOVERNANCE_ENTITY_KEYS: Record<string, ParseKeys<"common">> = {
 	"virtual keys": "entities.virtualKeys",
@@ -302,25 +358,31 @@ export function isHolderLevelModelConfig(mc: Pick<ModelConfig, "model_name" | "p
 }
 
 /**
- * Whether traffic of this kind is charged by a model config: one of its lines is charged by it, and the
- * row is holder-level when the traffic names no model (scopeNeedsAllModelsOwner). Mirrors the API's
- * applies_to listing.
+ * Whether traffic of this kind is charged by a model config: one of its budgets or request limits is
+ * charged by it, and the row is holder-level when the traffic names no model (scopeNeedsAllModelsOwner).
+ * Mirrors the API's applies_to listing.
  */
 export function modelConfigAppliesTo(mc: ModelConfig, traffic: LimitTraffic): boolean {
 	if (scopeNeedsAllModelsOwner(traffic) && !isHolderLevelModelConfig(mc)) return false;
-	return (mc.budgets ?? []).some((b) => budgetScopeChargedBy(b.scope, traffic));
+	// requestLimitsOf includes a legacy combined rate limit's request limit, a shared line; Max Tokens alone is not one.
+	return [...(mc.budgets ?? []), ...requestLimitsOf(mc)].some((line) => budgetScopeChargedBy(line.scope, traffic));
 }
 
 /**
  * What removing one page's limits from a model config leaves on it, or null when the row is to be
  * deleted whole. On a holder-level row the lines the other page edits stay: from the MCP page the
- * Model lines and the rate limit, from the Models page the MCP lines. Shared lines are on both
+ * Model lines and the token limit, from the Models page the MCP lines. Shared lines are on both
  * pages, so either removes them. Any other row belongs to the Models page alone.
  */
-export function budgetsLeftAfterRemoving(mc: ModelConfig, traffic: LimitTraffic): Budget[] | null {
+export function limitsLeftAfterRemoving(
+	mc: ModelConfig,
+	traffic: LimitTraffic,
+): { budgets: Budget[]; requestLimits: RequestLimit[] } | null {
 	if (!isHolderLevelModelConfig(mc)) return null;
-	const left = (mc.budgets ?? []).filter((b) => !budgetScopeChargedBy(b.scope, traffic));
-	// The rate limit is edited with the model lines (Max Tokens counts model traffic only).
-	const keepsRateLimit = !budgetScopeChargedBy("model", traffic) && !!mc.rate_limit;
-	return left.length > 0 || keepsRateLimit ? left : null;
+	const kept = (line: { scope?: LimitScope }) => !budgetScopeChargedBy(line.scope, traffic);
+	const budgets = (mc.budgets ?? []).filter(kept);
+	const requestLimits = (mc.request_limits ?? []).filter(kept);
+	// The token limit is edited with the model lines (Max Tokens counts model traffic only).
+	const keepsTokenLimit = !budgetScopeChargedBy("model", traffic) && mc.rate_limit?.token_max_limit != null;
+	return budgets.length > 0 || requestLimits.length > 0 || keepsTokenLimit ? { budgets, requestLimits } : null;
 }

@@ -1,5 +1,6 @@
 import { Locator, Page, expect } from '@playwright/test'
 import { BasePage } from '../../../core/pages/base.page'
+import { fillRequestLimitLines } from '../../../core/utils/test-helpers'
 
 const resetPeriodLabels: Record<string, string> = {
   '1m': 'Every Minute',
@@ -346,9 +347,8 @@ export class ProviderSettingsPage extends BasePage {
     }
 
     if (config.requestLimit !== undefined) {
-      const input = this.page.locator('#providerRequestMaxLimit')
-      await input.clear()
-      await input.fill(String(config.requestLimit))
+      // The provider's shared request limit is line 0 of its request limits.
+      await fillRequestLimitLines(this.page, 'provider-governance-request-limits', [{ maxLimit: config.requestLimit }])
     }
   }
 

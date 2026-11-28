@@ -19,8 +19,9 @@ import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useEntityGovernanceProbe } from "@/lib/registries/entityGovernance";
 import "@enterprise/lib/registrations/entityGovernance";
-import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
-import { budgetPeriodKey } from "@/lib/budgetOutline";
+import MultiBudgetLines, { BudgetLineEntry, RequestLimitLines } from "@/components/ui/multibudgets";
+import { TokenLimitLabel } from "@/components/ui/tokenLimitLabel";
+import { budgetPeriodKey, hasDuplicateBudgetPeriods } from "@/lib/budgetOutline";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -28,6 +29,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateCustomerMutation, useUpdateCustomerMutation } from "@/lib/store";
 import { CreateBudgetRequest, CreateCustomerRequest, Customer, UpdateCustomerRequest } from "@/lib/types/governance";
+import { type RequestLimitLine, requestLimitLinesOf, toRequestLimitRequests } from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import isEqual from "lodash.isequal";
@@ -47,8 +49,7 @@ interface CustomerFormData {
 	budgets: BudgetLineEntry[];
 	tokenMaxLimit: number | undefined;
 	tokenResetDuration: string;
-	requestMaxLimit: number | undefined;
-	requestResetDuration: string;
+	requestLimits: RequestLimitLine[];
 	calendarAligned: boolean;
 	isDirty: boolean;
 }
@@ -65,8 +66,7 @@ const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, 
 		})),
 		tokenMaxLimit: customer?.rate_limit?.token_max_limit ?? undefined,
 		tokenResetDuration: customer?.rate_limit?.token_reset_duration || "1h",
-		requestMaxLimit: customer?.rate_limit?.request_max_limit ?? undefined,
-		requestResetDuration: customer?.rate_limit?.request_reset_duration || "1h",
+		requestLimits: requestLimitLinesOf(customer),
 		calendarAligned: customer?.calendar_aligned ?? false,
 	};
 };
@@ -77,7 +77,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	// governs it - in builds that can attach one, an access profile. The two are alternatives, so a
 	// governed customer gets its name field only, and the probe is asked before the fields are shown:
 	// a customer that already holds limits of its own cannot be governed, so it skips the wait.
-	const hasLegacyLimits = !!customer && ((customer.budgets?.length ?? 0) > 0 || !!customer.rate_limit);
+	const hasLegacyLimits =
+		!!customer && ((customer.budgets?.length ?? 0) > 0 || !!customer.rate_limit || (customer.request_limits?.length ?? 0) > 0);
 	const governance = useEntityGovernanceProbe("customer", customer?.id ?? "", IS_ENTERPRISE && isEditing && open && !hasLegacyLimits);
 	const editsLimits =
 		!IS_ENTERPRISE || !isEditing || hasLegacyLimits || (!governance.isLoading && !governance.failed && !governance.governedBy);
@@ -86,6 +87,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	const limitsCheckFailed = IS_ENTERPRISE && isEditing && !hasLegacyLimits && !!governance.failed;
 	const { t } = useTranslation("governance");
 	const { t: tCommon } = useTranslation("common");
+	const { t: tModels } = useTranslation("models");
 	const [initialState, setInitialState] = useState<Omit<CustomerFormData, "isDirty">>(createInitialState(customer));
 	const [formData, setFormData] = useState<CustomerFormData>({
 		...createInitialState(customer),
@@ -131,8 +133,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			budgets: formData.budgets,
 			tokenMaxLimit: formData.tokenMaxLimit,
 			tokenResetDuration: formData.tokenResetDuration,
-			requestMaxLimit: formData.requestMaxLimit,
-			requestResetDuration: formData.requestResetDuration,
+			requestLimits: formData.requestLimits,
 			calendarAligned: formData.calendarAligned,
 		};
 		setFormData((prev) => ({
@@ -144,8 +145,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		formData.budgets,
 		formData.tokenMaxLimit,
 		formData.tokenResetDuration,
-		formData.requestMaxLimit,
-		formData.requestResetDuration,
+		formData.requestLimits,
 		formData.calendarAligned,
 		initialState,
 	]);
@@ -161,11 +161,11 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			(formData.tokenMaxLimit !== undefined &&
 				formData.tokenMaxLimit !== null &&
 				(supportsCalendarAlignment(formData.tokenResetDuration) || isMultiUnitDuration(formData.tokenResetDuration))) ||
-			(formData.requestMaxLimit !== undefined &&
-				formData.requestMaxLimit !== null &&
-				(supportsCalendarAlignment(formData.requestResetDuration) || isMultiUnitDuration(formData.requestResetDuration)));
+			calendarWindowDurations([{ request_limits: formData.requestLimits }]).some(
+				(duration) => supportsCalendarAlignment(duration) || isMultiUnitDuration(duration),
+			);
 		return hasAlignableBudget || hasAlignableRateLimit;
-	}, [formData.budgets, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration]);
+	}, [formData.budgets, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestLimits]);
 
 	// Reset calendarAligned when no duration supports alignment,
 	// so a hidden toggle doesn't silently submit calendar_aligned: true.
@@ -177,7 +177,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	}, [canCalendarAlign, formData.calendarAligned]);
 
 	const tokenMaxLimitNum = formData.tokenMaxLimit;
-	const requestMaxLimitNum = formData.requestMaxLimit;
+	const submittableRequestLimits = useMemo(() => toRequestLimitRequests(formData.requestLimits), [formData.requestLimits]);
 
 	const hasDuplicateDuration = useMemo(() => {
 		const seen = new Set<string>();
@@ -211,16 +211,12 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 										Validator.required(formData.tokenResetDuration, t("sheet.tokenResetRequired")),
 									]
 								: []),
-							...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
-								? [
-										Validator.minValue(requestMaxLimitNum ?? 0, 1, t("sheet.requestMaxLimit")),
-										Validator.required(formData.requestResetDuration, t("sheet.requestResetRequired")),
-									]
-								: []),
+							...submittableRequestLimits.map((rl) => Validator.minValue(rl.max_limit, 1, t("sheet.requestMaxLimit"))),
+							Validator.custom(!hasDuplicateBudgetPeriods(submittableRequestLimits), t("requestLimits.unique")),
 						]
 					: []),
 			]),
-		[editsLimits, formData, hasDuplicateDuration, tokenMaxLimitNum, requestMaxLimitNum, t],
+		[editsLimits, formData, hasDuplicateDuration, tokenMaxLimitNum, submittableRequestLimits, t],
 	);
 
 	const updateField = <K extends keyof CustomerFormData>(field: K, value: CustomerFormData[K]) => {
@@ -278,21 +274,16 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 					reset_budget_usage: resetBudgetUsage || undefined,
 				};
 
+				// The rate limit carries the token limit only; {} removes it. A legacy row's request fields are
+				// replaced by request_limits on the backend.
 				const hadRateLimit = !!customer.rate_limit;
-				const hasRateLimit =
-					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
-					(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null);
-				if (hasRateLimit) {
-					updateData.rate_limit = {
-						token_max_limit: tokenMaxLimitNum,
-						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
-						request_max_limit: requestMaxLimitNum,
-						request_reset_duration:
-							requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
-					};
+				if (tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) {
+					updateData.rate_limit = { token_max_limit: tokenMaxLimitNum, token_reset_duration: formData.tokenResetDuration };
 				} else if (hadRateLimit) {
 					updateData.rate_limit = {} as UpdateCustomerRequest["rate_limit"];
 				}
+				// The full desired set: [] removes every request limit.
+				updateData.request_limits = submittableRequestLimits;
 
 				await updateCustomer({ customerId: customer.id, data: updateData }).unwrap();
 				toast.success(t("customers.updated"));
@@ -301,18 +292,11 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 					? { name: formData.name, calendar_aligned: formData.calendarAligned, budgets: budgetRequests }
 					: { name: formData.name };
 
-				if (
-					editsLimits &&
-					((tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
-						(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null))
-				) {
-					createData.rate_limit = {
-						token_max_limit: tokenMaxLimitNum,
-						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
-						request_max_limit: requestMaxLimitNum,
-						request_reset_duration:
-							requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
-					};
+				if (editsLimits && tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) {
+					createData.rate_limit = { token_max_limit: tokenMaxLimitNum, token_reset_duration: formData.tokenResetDuration };
+				}
+				if (editsLimits && submittableRequestLimits.length > 0) {
+					createData.request_limits = submittableRequestLimits;
 				}
 
 				await createCustomer(createData).unwrap();
@@ -385,27 +369,26 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 										showScope
 									/>
 
-									<NumberAndSelect
-										id="tokenMaxLimit"
-										dataTestId="customer-token-max-limit-input"
-										label={t("sheet.maximumTokens")}
-										value={formData.tokenMaxLimit}
-										selectValue={formData.tokenResetDuration}
-										onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
-										onChangeSelect={(value) => updateField("tokenResetDuration", value)}
-										options={resetDurationOptions}
-									/>
-
-									<NumberAndSelect
-										id="requestMaxLimit"
-										dataTestId="customer-request-max-limit-input"
-										label={t("sheet.maximumRequests")}
-										value={formData.requestMaxLimit}
-										selectValue={formData.requestResetDuration}
-										onChangeNumber={(value) => updateField("requestMaxLimit", value)}
-										onChangeSelect={(value) => updateField("requestResetDuration", value)}
-										options={resetDurationOptions}
-									/>
+									{/* Rate Limiting Configuration: request limits, one line per reset period and scope, then the token limit */}
+									<div className="space-y-5">
+										<Label className="text-sm font-medium">{tModels("virtualKeys.rateLimitingConfiguration")}</Label>
+										<RequestLimitLines
+											data-testid="customer-request-limit-lines"
+											lines={formData.requestLimits}
+											onChange={(lines) => updateField("requestLimits", lines)}
+											showScope
+										/>
+										<NumberAndSelect
+											id="tokenMaxLimit"
+											dataTestId="customer-token-max-limit-input"
+											label={<TokenLimitLabel label={t("sheet.maximumTokens")} data-testid="customer-token-limit-info" />}
+											value={formData.tokenMaxLimit}
+											selectValue={formData.tokenResetDuration}
+											onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
+											onChangeSelect={(value) => updateField("tokenResetDuration", value)}
+											options={resetDurationOptions}
+										/>
+									</div>
 
 									<CalendarAlignmentNotice
 										enabled={formData.calendarAligned}
@@ -415,9 +398,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 												rate_limit: {
 													token_max_limit: formData.tokenMaxLimit,
 													token_reset_duration: formData.tokenResetDuration,
-													request_max_limit: formData.requestMaxLimit,
-													request_reset_duration: formData.requestResetDuration,
 												},
+												request_limits: formData.requestLimits,
 											},
 										])}
 									/>

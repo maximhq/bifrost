@@ -49,6 +49,18 @@ export interface RateLimit {
 	request_reset_duration?: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	request_current_usage: number; // Current request usage
 	request_last_reset: string; // ISO timestamp
+	scope?: LimitScope; // Set on a request limit (an entry of request_limits): the traffic it counts
+}
+
+/** One request limit of a holder's request_limits: a request-only RateLimit row with a scope. */
+export type RequestLimit = RateLimit;
+
+/** One request limit in a create/update payload; id matches an existing rule, keeping its counter. */
+export interface RequestLimitRequest {
+	id?: string;
+	max_limit: number;
+	reset_duration: string;
+	scope?: LimitScope; // Omitted means "shared"
 }
 
 export interface Team {
@@ -68,7 +80,8 @@ export interface Team {
 	// Populated relationships
 	customer?: Customer;
 	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
-	rate_limit?: RateLimit;
+	rate_limit?: RateLimit; // Token limit (a legacy row may still carry request fields)
+	request_limits?: RequestLimit[];
 }
 
 export interface Customer {
@@ -85,6 +98,7 @@ export interface Customer {
 	teams?: Team[];
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	request_limits?: RequestLimit[];
 }
 
 export interface DBKey {
@@ -145,6 +159,7 @@ export interface VirtualKey {
 	business_unit?: { id: string; name: string };
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	request_limits?: RequestLimit[]; // The key's own rules of every scope, stored on its holder-level model config
 	// Read-only, server-computed: true when the VK is governed by an access profile.
 	// Lets the UI lock edits and show the managed-key notice without the separately
 	// RBAC-gated access-profile lookup.
@@ -162,6 +177,7 @@ export interface VirtualKeyModelBudget {
 	model_name: string;
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	request_limits?: RequestLimit[];
 }
 
 export interface VirtualKeyProviderConfig {
@@ -173,6 +189,7 @@ export interface VirtualKeyProviderConfig {
 	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	request_limits?: RequestLimit[];
 	model_budgets?: VirtualKeyModelBudget[]; // Per-model budgets/rate-limits under this provider
 	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
 }
@@ -224,6 +241,7 @@ export interface VirtualKeyModelBudgetRequest {
 	model_name: string;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
+	request_limits?: RequestLimitRequest[];
 }
 
 // Request interfaces for provider config operations
@@ -234,6 +252,7 @@ export interface VirtualKeyProviderConfigRequest {
 	blacklisted_models?: string[];
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
+	request_limits?: RequestLimitRequest[];
 	model_budgets?: VirtualKeyModelBudgetRequest[];
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
@@ -246,6 +265,7 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 	blacklisted_models?: string[];
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
+	request_limits?: RequestLimitRequest[]; // Omitted leaves them unchanged unless rate_limit is sent (its request fields are then the full set); [] removes all
 	model_budgets?: VirtualKeyModelBudgetRequest[]; // Full desired per-model set when provider_configs is supplied
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
@@ -264,6 +284,7 @@ export interface CreateVirtualKeyRequest {
 	business_unit_id?: string;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
+	request_limits?: RequestLimitRequest[];
 	is_active?: boolean;
 	calendar_aligned?: boolean;
 	allow_all_providers?: boolean; // When true, all providers are allowed
@@ -286,6 +307,7 @@ export interface UpdateVirtualKeyRequest {
 	business_unit_id?: string | null;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
+	request_limits?: RequestLimitRequest[]; // Omitted leaves them unchanged unless rate_limit is sent (its request fields are then the full set); [] removes all
 	is_active?: boolean;
 	calendar_aligned?: boolean;
 	allow_all_providers?: boolean; // When true, all providers are allowed; omit to leave unchanged
@@ -312,6 +334,7 @@ export interface CreateTeamRequest {
 	customer_id?: string;
 	budgets?: CreateBudgetRequest[]; // Multi-budget: each must have a unique reset_duration
 	rate_limit?: CreateRateLimitRequest;
+	request_limits?: RequestLimitRequest[];
 	calendar_aligned?: boolean; // Team-wide: applies to all team budgets and the team rate limit
 	disable_content_logging?: boolean; // Omit to inherit; true forces content off, false forces it on
 }
@@ -321,6 +344,7 @@ export interface UpdateTeamRequest {
 	customer_id?: string;
 	budgets?: CreateBudgetRequest[]; // Replaces all team budgets; empty array clears
 	rate_limit?: UpdateRateLimitRequest;
+	request_limits?: RequestLimitRequest[]; // Omitted leaves them unchanged unless rate_limit is sent (its request fields are then the full set); [] removes all
 	calendar_aligned?: boolean;
 	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
 	reset_budget_usage?: boolean;
@@ -332,6 +356,7 @@ export interface CreateCustomerRequest {
 	budgets?: CreateBudgetRequest[];
 	budget?: CreateBudgetRequest; // deprecated: use budgets
 	rate_limit?: CreateRateLimitRequest;
+	request_limits?: RequestLimitRequest[];
 	calendar_aligned?: boolean;
 }
 
@@ -340,6 +365,7 @@ export interface UpdateCustomerRequest {
 	budgets?: CreateBudgetRequest[]; // nil=no change, []=remove all
 	budget?: UpdateBudgetRequest; // deprecated: use budgets
 	rate_limit?: UpdateRateLimitRequest;
+	request_limits?: RequestLimitRequest[]; // Omitted leaves them unchanged unless rate_limit is sent (its request fields are then the full set); [] removes all
 	calendar_aligned?: boolean;
 	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
 	reset_budget_usage?: boolean;
@@ -500,6 +526,7 @@ export interface ModelConfig {
 	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
 	budget?: Budget; // Deprecated: superseded by budgets (kept for back-compat reads)
 	rate_limit?: RateLimit;
+	request_limits?: RequestLimit[];
 	created_at: string;
 	updated_at: string;
 }
@@ -512,6 +539,7 @@ export interface CreateModelConfigRequest {
 	scope_id?: string; // Required for non-global scopes (e.g. the virtual key ID)
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
+	request_limits?: RequestLimitRequest[];
 }
 
 export interface UpdateModelConfigRequest {
@@ -519,6 +547,7 @@ export interface UpdateModelConfigRequest {
 	provider?: string; // Optional provider - if empty/null, applies to all providers
 	budgets?: CreateBudgetRequest[]; // Full desired set; reconciled against existing
 	rate_limit?: UpdateRateLimitRequest;
+	request_limits?: RequestLimitRequest[]; // Full desired set; omitted leaves them unchanged, [] removes all
 	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
 	reset_budget_usage?: boolean;
 }
@@ -787,12 +816,14 @@ export interface ProviderGovernance {
 	budget?: Budget; // deprecated: use budgets
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	request_limits?: RequestLimit[];
 	calendar_aligned?: boolean;
 }
 
 export interface UpdateProviderGovernanceRequest {
 	budgets?: CreateBudgetRequest[]; // [] = remove all
 	rate_limit?: UpdateRateLimitRequest;
+	request_limits?: RequestLimitRequest[]; // Omitted leaves them unchanged unless rate_limit is sent (its request fields are then the full set); [] removes all
 	calendar_aligned?: boolean;
 	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
 	reset_budget_usage?: boolean;
