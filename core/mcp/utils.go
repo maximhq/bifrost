@@ -1053,7 +1053,7 @@ func ApplyParamHeaders(conn *client.Client, req *mcp.CallToolRequest, tool *sche
 		clearParamHeaders(req)
 		return
 	}
-	props := tool.Function.Parameters.Properties.ToMap()
+	props := sanitizeParamHeaderProperties(tool.Function.Parameters.Properties.ToMap())
 	if len(props) == 0 {
 		clearParamHeaders(req)
 		return
@@ -1083,6 +1083,57 @@ func ApplyParamHeaders(conn *client.Client, req *mcp.CallToolRequest, tool *sche
 	for name, value := range paramHeaders {
 		req.Header.Set(name, value)
 	}
+}
+
+func sanitizeParamHeaderProperties(props map[string]any) map[string]any {
+	sanitized := make(map[string]any, len(props))
+	for key, val := range props {
+		if clean, keep := sanitizeParamHeaderSchema(val); keep {
+			sanitized[key] = clean
+		}
+	}
+	return sanitized
+}
+
+func sanitizeParamHeaderSchema(schema any) (any, bool) {
+	switch typed := schema.(type) {
+	case bool:
+		return nil, false
+	case *schemas.OrderedMap:
+		if typed == nil {
+			return nil, false
+		}
+		return sanitizeParamHeaderSchemaMap(typed.ToMap()), true
+	case schemas.OrderedMap:
+		return sanitizeParamHeaderSchemaMap(typed.ToMap()), true
+	case map[string]any:
+		return sanitizeParamHeaderSchemaMap(typed), true
+	default:
+		return schema, true
+	}
+}
+
+func sanitizeParamHeaderSchemaMap(schema map[string]any) map[string]any {
+	copyMap := make(map[string]any, len(schema))
+	for key, val := range schema {
+		if key == "properties" {
+			switch props := val.(type) {
+			case map[string]any:
+				copyMap[key] = sanitizeParamHeaderProperties(props)
+			case *schemas.OrderedMap:
+				if props != nil {
+					copyMap[key] = sanitizeParamHeaderProperties(props.ToMap())
+				}
+			case schemas.OrderedMap:
+				copyMap[key] = sanitizeParamHeaderProperties(props.ToMap())
+			default:
+				copyMap[key] = val
+			}
+			continue
+		}
+		copyMap[key] = val
+	}
+	return copyMap
 }
 
 func schemaHasMCPHeader(props map[string]any) bool {

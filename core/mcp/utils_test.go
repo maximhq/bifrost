@@ -1477,6 +1477,67 @@ func TestApplyParamHeaders_ClearsStaleHeadersOnLegacyRetry(t *testing.T) {
 	assert.Equal(t, string(mcp.MethodToolsCall), req.Request.Method)
 }
 
+func TestApplyParamHeaders_BooleanSiblingProperty(t *testing.T) {
+	srv := server.NewMCPServer("bool-schema", "1.0.0")
+	cl, err := client.NewInProcessClient(srv)
+	require.NoError(t, err)
+	require.NoError(t, cl.Start(context.Background()))
+	t.Cleanup(func() { _ = cl.Close() })
+	_, err = cl.Initialize(context.Background(), mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcp.Implementation{Name: "test", Version: "1.0.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	nestedProps := schemas.OrderedMapFromMap(map[string]any{
+		"mode":    map[string]any{"type": "string", "x-mcp-header": "Mode"},
+		"ignored": false,
+	})
+	tool := &schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name: "action_tool",
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				Properties: schemas.OrderedMapFromMap(map[string]any{
+					"action": map[string]any{"type": "string", "x-mcp-header": "Action"},
+					"extra":  true,
+					"nested": map[string]any{
+						"type":       "object",
+						"properties": nestedProps,
+					},
+				}),
+			},
+		},
+		MCP: &schemas.MCPToolMetadata{HasParamHeaders: schemas.Ptr(true)},
+	}
+
+	req := mcp.CallToolRequest{
+		Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+		Params: mcp.CallToolParams{
+			Name: "action_tool",
+			Arguments: map[string]any{
+				"action": "list",
+				"extra":  "ignored",
+				"nested": map[string]any{"mode": "fast", "ignored": true},
+			},
+		},
+	}
+
+	ApplyParamHeaders(cl, &req, tool)
+	assert.Equal(t, "list", req.Header.Get("Mcp-Param-Action"))
+	assert.Equal(t, "fast", req.Header.Get("Mcp-Param-Mode"))
+
+	extraVal, hasExtra := tool.Function.Parameters.Properties.Get("extra")
+	assert.True(t, hasExtra)
+	assert.Equal(t, true, extraVal)
+	ignoredVal, hasIgnored := nestedProps.Get("ignored")
+	assert.True(t, hasIgnored)
+	assert.Equal(t, false, ignoredVal)
+}
+
 func BenchmarkApplyParamHeaders(b *testing.B) {
 	newBenchClient := func(protocolVersion string) *client.Client {
 		srv := server.NewMCPServer("bench", "1.0.0")
