@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/gorm"
 )
 
@@ -20,6 +21,74 @@ const (
 	// BudgetOverrideModeForever keeps an override active until it is explicitly removed.
 	BudgetOverrideModeForever BudgetOverrideMode = "forever"
 )
+
+// LimitScope selects which traffic a budget is charged by: model (LLM) requests,
+// MCP tool executions, or both (shared). The zero value reads as LimitScopeShared, so a
+// budget written before scopes existed, or by a client that does not send one,
+// keeps its original shared behaviour.
+type LimitScope string
+
+const (
+	// LimitScopeShared is shared by model requests and MCP tool executions (default).
+	LimitScopeShared LimitScope = "shared"
+	// LimitScopeModel is charged only by model requests.
+	LimitScopeModel LimitScope = "model"
+	// LimitScopeMCP is charged only by MCP tool executions.
+	LimitScopeMCP LimitScope = "mcp"
+)
+
+// Normalize returns the scope with the empty value read as LimitScopeShared.
+func (s LimitScope) Normalize() LimitScope {
+	if s == "" {
+		return LimitScopeShared
+	}
+	return s
+}
+
+// IsValid reports whether the scope, once normalized, is a known value.
+func (s LimitScope) IsValid() bool {
+	switch s.Normalize() {
+	case LimitScopeShared, LimitScopeModel, LimitScopeMCP:
+		return true
+	}
+	return false
+}
+
+// RequestScope is the scope of the traffic a request of this type is, and the one place a request
+// type is classified: an MCP tool execution is mcp traffic, every other request is model traffic.
+//
+// A new scope is added in one place each: its constant, IsValid, the request types it classifies
+// here, AppliesTo when it is a narrow scope, and NeedsAllModelsOwner when its traffic names no model.
+func RequestScope(requestType schemas.RequestType) LimitScope {
+	if requestType == schemas.MCPToolExecutionRequest {
+		return LimitScopeMCP
+	}
+	return LimitScopeModel
+}
+
+// AppliesTo reports whether a limit of this scope is checked and charged by traffic of the given
+// scope (see RequestScope): a narrow limit by its own traffic only, a shared one by every request.
+// A scope this build does not know applies to every request, as shared does.
+func (s LimitScope) AppliesTo(traffic LimitScope) bool {
+	switch s = s.Normalize(); s {
+	case LimitScopeModel, LimitScopeMCP:
+		return s == traffic.Normalize()
+	}
+	return true
+}
+
+// NeedsAllModelsOwner reports whether a limit of this scope can only be charged on an owner that
+// covers every model on every provider. Its traffic names no model or provider (an MCP tool execution
+// does not), so a model config narrower than that is never reached by it.
+func (s LimitScope) NeedsAllModelsOwner() bool {
+	return s.Normalize() == LimitScopeMCP
+}
+
+// LimitPeriodKey is the identity of a budget within one owner: no two budgets
+// of the same owner may share both reset duration and scope.
+func LimitPeriodKey(resetDuration string, scope LimitScope) string {
+	return resetDuration + "|" + string(scope.Normalize())
+}
 
 // BudgetResetConfig carries per-budget settings that shape the reset window
 // beyond what the duration string alone can express.
@@ -38,11 +107,12 @@ type BudgetResetConfig struct {
 
 // TableBudget defines spending limits with configurable reset periods
 type TableBudget struct {
-	ID            string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	MaxLimit      float64   `gorm:"not null" json:"max_limit"`                       // Maximum budget in dollars
-	ResetDuration string    `gorm:"type:varchar(50);not null" json:"reset_duration"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y"
-	LastReset     time.Time `gorm:"index" json:"last_reset"`                         // Last time budget was reset
-	CurrentUsage  float64   `gorm:"default:0" json:"current_usage"`                  // Current usage in dollars
+	ID            string     `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	MaxLimit      float64    `gorm:"not null" json:"max_limit"`                               // Maximum budget in dollars
+	ResetDuration string     `gorm:"type:varchar(50);not null" json:"reset_duration"`         // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y"
+	LastReset     time.Time  `gorm:"index" json:"last_reset"`                                 // Last time budget was reset
+	CurrentUsage  float64    `gorm:"default:0" json:"current_usage"`                          // Current usage in dollars
+	Scope         LimitScope `gorm:"type:varchar(20);not null;default:'shared'" json:"scope"` // Traffic charged: shared, model or mcp
 
 	// UsageResetEpoch records window-clearing resets in Unix nanoseconds; zero means unknown.
 	UsageResetEpoch int64 `gorm:"type:bigint;not null;default:0" json:"usage_reset_epoch"`
@@ -548,6 +618,10 @@ func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	if err := b.validateResetConfig(); err != nil {
 		return err
 	}
+	if !b.Scope.IsValid() {
+		return fmt.Errorf("invalid budget scope: %s (must be one of shared, model, mcp)", b.Scope)
+	}
+	b.Scope = b.Scope.Normalize()
 	// Serialize last, so a rejected config is never written to the column.
 	if b.ResetConfig != nil {
 		data, err := json.Marshal(b.ResetConfig)

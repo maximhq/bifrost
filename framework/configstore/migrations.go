@@ -614,6 +614,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
+	{IDs: []string{"add_budget_scope_column"}, run: migrationAddBudgetScopeColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -4499,6 +4500,36 @@ func migrationAddBudgetOverrideAnchorColumns(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return fmt.Errorf("add_budget_override_anchor_columns is non-rollbackable: dropping the grant columns would strip every active finite override of the state its remaining-cycle count is derived from; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddBudgetScopeColumn adds governance_budgets.scope; existing budgets become 'shared'.
+func migrationAddBudgetScopeColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_scope_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "scope"); err != nil {
+				return fmt.Errorf("failed to add scope column: %w", err)
+			}
+			if err := tx.Exec(`UPDATE governance_budgets SET scope = 'shared' WHERE scope IS NULL OR scope = ''`).Error; err != nil {
+				return fmt.Errorf("failed to backfill budget scope: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_budget_scope_column is non-rollbackable: dropping scope would merge separate model and MCP budgets")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

@@ -275,3 +275,104 @@ func TestUpdateBudgetClearsResetConfigWhenLeavingQuarterly(t *testing.T) {
 	assert.Nil(t, afterUpdate.ResetConfig)
 	assert.Empty(t, afterUpdate.ResetConfigJSON)
 }
+
+// TestGenerateBudgetHashUnchangedForDefaultScope pins that scopes do not shift the
+// digest of a budget that keeps the default: omitted and explicit "shared" both hash
+// to the pre-scope digest, so upgrading never reads as a config.json change.
+func TestGenerateBudgetHashUnchangedForDefaultScope(t *testing.T) {
+	for _, scope := range []tables.LimitScope{"", tables.LimitScopeShared} {
+		b := tables.TableBudget{ID: "b1", MaxLimit: 10, ResetDuration: "1d", Scope: scope}
+		got, err := GenerateBudgetHash(b)
+		require.NoError(t, err)
+		assert.Equal(t, legacyBudgetDigest(t, b), got, "scope %q must keep the legacy digest", scope)
+	}
+}
+
+// TestGenerateBudgetHashTracksScope verifies a scope edit in config.json is visible to
+// change detection, and that model and mcp hash differently.
+func TestGenerateBudgetHashTracksScope(t *testing.T) {
+	hashOf := func(scope tables.LimitScope) string {
+		got, err := GenerateBudgetHash(tables.TableBudget{ID: "b1", MaxLimit: 10, ResetDuration: "1d", Scope: scope})
+		require.NoError(t, err)
+		return got
+	}
+	shared, model, mcp := hashOf(tables.LimitScopeShared), hashOf(tables.LimitScopeModel), hashOf(tables.LimitScopeMCP)
+	assert.NotEqual(t, shared, model)
+	assert.NotEqual(t, shared, mcp)
+	assert.NotEqual(t, model, mcp)
+}
+
+// TestOwnerHashesTrackInlineBudgetScope verifies that a scope edit on a team's or
+// customer's inline budget that keeps the budget's ID changes the owner's hash, which is
+// what makes config.json write the inline budgets again, while an owner whose budgets
+// are all shared keeps the digest it had before scopes existed.
+func TestOwnerHashesTrackInlineBudgetScope(t *testing.T) {
+	budgets := func(scope tables.LimitScope) []tables.TableBudget {
+		return []tables.TableBudget{
+			{ID: "b-day", MaxLimit: 10, ResetDuration: "1d"},
+			{ID: "b-month", MaxLimit: 100, ResetDuration: "1M", Scope: scope},
+		}
+	}
+	teamHash := func(scope tables.LimitScope) string {
+		got, err := GenerateTeamHash(tables.TableTeam{ID: "team-1", Name: "platform", Budgets: budgets(scope)})
+		require.NoError(t, err)
+		return got
+	}
+	customerHash := func(scope tables.LimitScope) string {
+		got, err := GenerateCustomerHash(tables.TableCustomer{ID: "customer-1", Name: "acme", Budgets: budgets(scope)})
+		require.NoError(t, err)
+		return got
+	}
+	for name, hashOf := range map[string]func(tables.LimitScope) string{"team": teamHash, "customer": customerHash} {
+		assert.Equal(t, hashOf(""), hashOf(tables.LimitScopeShared), "%s: an explicit shared scope keeps the legacy digest", name)
+		assert.NotEqual(t, hashOf(tables.LimitScopeShared), hashOf(tables.LimitScopeMCP), "%s: moving an inline budget to mcp changes the hash", name)
+		assert.NotEqual(t, hashOf(tables.LimitScopeModel), hashOf(tables.LimitScopeMCP), "%s: model and mcp hash apart", name)
+	}
+}
+
+// TestMigrationAddsBudgetScopeColumnAsShared is the upgrade-safety test for scopes: a
+// budget written before the column existed reads back as "shared", so it keeps being
+// charged by model requests and MCP tool executions exactly as before, and re-running
+// the migration is a no-op.
+func TestMigrationAddsBudgetScopeColumnAsShared(t *testing.T) {
+	db := setupBudgetDBWithoutResetConfigColumn(t)
+	ctx := context.Background()
+	require.False(t, db.Migrator().HasColumn(&tables.TableBudget{}, "scope"), "precondition: no scope column")
+
+	require.NoError(t, db.WithContext(ctx).Exec(
+		`INSERT INTO governance_budgets (id, max_limit, reset_duration, last_reset, current_usage, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-budget", 250.0, "1M", time.Now().UTC(), 42.0, time.Now().UTC(), time.Now().UTC(),
+	).Error)
+
+	require.NoError(t, migrationAddBudgetScopeColumn(ctx, db, testMigrationLogger))
+	require.NoError(t, migrationAddBudgetScopeColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, "scope"))
+
+	var scope string
+	require.NoError(t, db.WithContext(ctx).Raw(`SELECT scope FROM governance_budgets WHERE id = ?`, "legacy-budget").Scan(&scope).Error)
+	assert.Equal(t, string(tables.LimitScopeShared), scope)
+}
+
+// TestBudgetScopeIsNormalizedAndValidatedOnSave verifies a budget saved without a scope
+// is stored as "shared", a valid scope round-trips through UpdateBudget, and an unknown
+// one is refused before it reaches the column.
+func TestBudgetScopeIsNormalizedAndValidatedOnSave(t *testing.T) {
+	store, db := setupFullMigrationDB(t)
+	ctx := context.Background()
+
+	budget := &tables.TableBudget{ID: "scoped-budget", MaxLimit: 10, ResetDuration: "1d", LastReset: time.Now().UTC()}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+	var loaded tables.TableBudget
+	require.NoError(t, db.WithContext(ctx).First(&loaded, "id = ?", budget.ID).Error)
+	assert.Equal(t, tables.LimitScopeShared, loaded.Scope)
+
+	loaded.Scope = tables.LimitScopeMCP
+	require.NoError(t, store.UpdateBudget(ctx, &loaded))
+	var updated tables.TableBudget
+	require.NoError(t, db.WithContext(ctx).First(&updated, "id = ?", budget.ID).Error)
+	assert.Equal(t, tables.LimitScopeMCP, updated.Scope)
+
+	invalid := &tables.TableBudget{ID: "bad-scope", MaxLimit: 10, ResetDuration: "1d", Scope: "tools", LastReset: time.Now().UTC()}
+	require.Error(t, store.CreateBudget(ctx, invalid))
+}

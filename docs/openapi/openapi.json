@@ -59445,7 +59445,13 @@
                                       },
                                       "scope": {
                                         "type": "string",
-                                        "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                        "enum": [
+                                          "shared",
+                                          "model",
+                                          "mcp"
+                                        ],
+                                        "default": "shared",
+                                        "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                       },
                                       "current_usage": {
                                         "type": "number",
@@ -59553,7 +59559,13 @@
                                 },
                                 "scope": {
                                   "type": "string",
-                                  "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                  "enum": [
+                                    "shared",
+                                    "model",
+                                    "mcp"
+                                  ],
+                                  "default": "shared",
+                                  "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                 },
                                 "current_usage": {
                                   "type": "number",
@@ -59940,7 +59952,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -60048,7 +60066,13 @@
                         },
                         "scope": {
                           "type": "string",
-                          "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                          "enum": [
+                            "shared",
+                            "model",
+                            "mcp"
+                          ],
+                          "default": "shared",
+                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                         },
                         "current_usage": {
                           "type": "number",
@@ -60410,7 +60434,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -60518,7 +60548,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -60937,7 +60973,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -61045,7 +61087,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -61460,7 +61508,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -61568,7 +61622,13 @@
                         },
                         "scope": {
                           "type": "string",
-                          "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                          "enum": [
+                            "shared",
+                            "model",
+                            "mcp"
+                          ],
+                          "default": "shared",
+                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                         },
                         "current_usage": {
                           "type": "number",
@@ -61946,7 +62006,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -62054,7 +62120,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -62540,7 +62612,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -62648,7 +62726,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -63057,7 +63141,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -63165,7 +63255,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -63594,7 +63690,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -63702,7 +63804,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -65500,6 +65608,16 @@
                                   },
                                   "additionalProperties": false
                                 },
+                                "scope": {
+                                  "type": "string",
+                                  "enum": [
+                                    "shared",
+                                    "model",
+                                    "mcp"
+                                  ],
+                                  "default": "shared",
+                                  "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                                },
                                 "current_usage": {
                                   "type": "number",
                                   "readOnly": true,
@@ -65698,6 +65816,16 @@
                                         },
                                         "additionalProperties": false
                                       },
+                                      "scope": {
+                                        "type": "string",
+                                        "enum": [
+                                          "shared",
+                                          "model",
+                                          "mcp"
+                                        ],
+                                        "default": "shared",
+                                        "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                                      },
                                       "current_usage": {
                                         "type": "number",
                                         "readOnly": true,
@@ -65856,6 +65984,16 @@
                                                 }
                                               },
                                               "additionalProperties": false
+                                            },
+                                            "scope": {
+                                              "type": "string",
+                                              "enum": [
+                                                "shared",
+                                                "model",
+                                                "mcp"
+                                              ],
+                                              "default": "shared",
+                                              "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                             },
                                             "current_usage": {
                                               "type": "number",
@@ -66159,6 +66297,16 @@
                                                   }
                                                 },
                                                 "additionalProperties": false
+                                              },
+                                              "scope": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "shared",
+                                                  "model",
+                                                  "mcp"
+                                                ],
+                                                "default": "shared",
+                                                "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                               },
                                               "current_usage": {
                                                 "type": "number",
@@ -66579,6 +66727,16 @@
                           },
                           "additionalProperties": false
                         },
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "shared",
+                            "model",
+                            "mcp"
+                          ],
+                          "default": "shared",
+                          "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                        },
                         "current_usage": {
                           "type": "number",
                           "readOnly": true,
@@ -66777,6 +66935,16 @@
                                 },
                                 "additionalProperties": false
                               },
+                              "scope": {
+                                "type": "string",
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                              },
                               "current_usage": {
                                 "type": "number",
                                 "readOnly": true,
@@ -66935,6 +67103,16 @@
                                         }
                                       },
                                       "additionalProperties": false
+                                    },
+                                    "scope": {
+                                      "type": "string",
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -67275,6 +67453,16 @@
                                 },
                                 "additionalProperties": false
                               },
+                              "scope": {
+                                "type": "string",
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                              },
                               "current_usage": {
                                 "type": "number",
                                 "readOnly": true,
@@ -67473,6 +67661,16 @@
                                       },
                                       "additionalProperties": false
                                     },
+                                    "scope": {
+                                      "type": "string",
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                                    },
                                     "current_usage": {
                                       "type": "number",
                                       "readOnly": true,
@@ -67631,6 +67829,16 @@
                                               }
                                             },
                                             "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "enum": [
+                                              "shared",
+                                              "model",
+                                              "mcp"
+                                            ],
+                                            "default": "shared",
+                                            "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                           },
                                           "current_usage": {
                                             "type": "number",
@@ -67934,6 +68142,16 @@
                                                 }
                                               },
                                               "additionalProperties": false
+                                            },
+                                            "scope": {
+                                              "type": "string",
+                                              "enum": [
+                                                "shared",
+                                                "model",
+                                                "mcp"
+                                              ],
+                                              "default": "shared",
+                                              "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                             },
                                             "current_usage": {
                                               "type": "number",
@@ -68366,6 +68584,16 @@
                                 },
                                 "additionalProperties": false
                               },
+                              "scope": {
+                                "type": "string",
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                              },
                               "current_usage": {
                                 "type": "number",
                                 "readOnly": true,
@@ -68564,6 +68792,16 @@
                                       },
                                       "additionalProperties": false
                                     },
+                                    "scope": {
+                                      "type": "string",
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                                    },
                                     "current_usage": {
                                       "type": "number",
                                       "readOnly": true,
@@ -68722,6 +68960,16 @@
                                               }
                                             },
                                             "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "enum": [
+                                              "shared",
+                                              "model",
+                                              "mcp"
+                                            ],
+                                            "default": "shared",
+                                            "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                           },
                                           "current_usage": {
                                             "type": "number",
@@ -69025,6 +69273,16 @@
                                                 }
                                               },
                                               "additionalProperties": false
+                                            },
+                                            "scope": {
+                                              "type": "string",
+                                              "enum": [
+                                                "shared",
+                                                "model",
+                                                "mcp"
+                                              ],
+                                              "default": "shared",
+                                              "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                             },
                                             "current_usage": {
                                               "type": "number",
@@ -69435,6 +69693,16 @@
                           },
                           "additionalProperties": false
                         },
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "shared",
+                            "model",
+                            "mcp"
+                          ],
+                          "default": "shared",
+                          "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                        },
                         "current_usage": {
                           "type": "number",
                           "readOnly": true,
@@ -69641,6 +69909,16 @@
                                 },
                                 "additionalProperties": false
                               },
+                              "scope": {
+                                "type": "string",
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                              },
                               "current_usage": {
                                 "type": "number",
                                 "readOnly": true,
@@ -69799,6 +70077,16 @@
                                         }
                                       },
                                       "additionalProperties": false
+                                    },
+                                    "scope": {
+                                      "type": "string",
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -70146,6 +70434,16 @@
                                 },
                                 "additionalProperties": false
                               },
+                              "scope": {
+                                "type": "string",
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                              },
                               "current_usage": {
                                 "type": "number",
                                 "readOnly": true,
@@ -70344,6 +70642,16 @@
                                       },
                                       "additionalProperties": false
                                     },
+                                    "scope": {
+                                      "type": "string",
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                                    },
                                     "current_usage": {
                                       "type": "number",
                                       "readOnly": true,
@@ -70502,6 +70810,16 @@
                                               }
                                             },
                                             "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "enum": [
+                                              "shared",
+                                              "model",
+                                              "mcp"
+                                            ],
+                                            "default": "shared",
+                                            "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                           },
                                           "current_usage": {
                                             "type": "number",
@@ -70805,6 +71123,16 @@
                                                 }
                                               },
                                               "additionalProperties": false
+                                            },
+                                            "scope": {
+                                              "type": "string",
+                                              "enum": [
+                                                "shared",
+                                                "model",
+                                                "mcp"
+                                              ],
+                                              "default": "shared",
+                                              "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                             },
                                             "current_usage": {
                                               "type": "number",
@@ -71296,6 +71624,16 @@
                                           },
                                           "additionalProperties": false
                                         },
+                                        "scope": {
+                                          "type": "string",
+                                          "enum": [
+                                            "shared",
+                                            "model",
+                                            "mcp"
+                                          ],
+                                          "default": "shared",
+                                          "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                                        },
                                         "current_usage": {
                                           "type": "number",
                                           "readOnly": true,
@@ -71686,6 +72024,16 @@
                                           }
                                         },
                                         "additionalProperties": false
+                                      },
+                                      "scope": {
+                                        "type": "string",
+                                        "enum": [
+                                          "shared",
+                                          "model",
+                                          "mcp"
+                                        ],
+                                        "default": "shared",
+                                        "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                       },
                                       "current_usage": {
                                         "type": "number",
@@ -72095,6 +72443,16 @@
                                   },
                                   "additionalProperties": false
                                 },
+                                "scope": {
+                                  "type": "string",
+                                  "enum": [
+                                    "shared",
+                                    "model",
+                                    "mcp"
+                                  ],
+                                  "default": "shared",
+                                  "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                                },
                                 "current_usage": {
                                   "type": "number",
                                   "readOnly": true,
@@ -72416,6 +72774,16 @@
                                           }
                                         },
                                         "additionalProperties": false
+                                      },
+                                      "scope": {
+                                        "type": "string",
+                                        "enum": [
+                                          "shared",
+                                          "model",
+                                          "mcp"
+                                        ],
+                                        "default": "shared",
+                                        "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                       },
                                       "current_usage": {
                                         "type": "number",
@@ -72914,6 +73282,16 @@
                                   },
                                   "additionalProperties": false
                                 },
+                                "scope": {
+                                  "type": "string",
+                                  "enum": [
+                                    "shared",
+                                    "model",
+                                    "mcp"
+                                  ],
+                                  "default": "shared",
+                                  "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                                },
                                 "current_usage": {
                                   "type": "number",
                                   "readOnly": true,
@@ -73112,6 +73490,16 @@
                                         },
                                         "additionalProperties": false
                                       },
+                                      "scope": {
+                                        "type": "string",
+                                        "enum": [
+                                          "shared",
+                                          "model",
+                                          "mcp"
+                                        ],
+                                        "default": "shared",
+                                        "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
+                                      },
                                       "current_usage": {
                                         "type": "number",
                                         "readOnly": true,
@@ -73270,6 +73658,16 @@
                                                 }
                                               },
                                               "additionalProperties": false
+                                            },
+                                            "scope": {
+                                              "type": "string",
+                                              "enum": [
+                                                "shared",
+                                                "model",
+                                                "mcp"
+                                              ],
+                                              "default": "shared",
+                                              "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                             },
                                             "current_usage": {
                                               "type": "number",
@@ -73573,6 +73971,16 @@
                                                   }
                                                 },
                                                 "additionalProperties": false
+                                              },
+                                              "scope": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "shared",
+                                                  "model",
+                                                  "mcp"
+                                                ],
+                                                "default": "shared",
+                                                "description": "Traffic the budget is charged by: `shared` (default), `model` or `mcp`. Only the project's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                               },
                                               "current_usage": {
                                                 "type": "number",
@@ -77898,7 +78306,13 @@
                                       },
                                       "scope": {
                                         "type": "string",
-                                        "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                        "enum": [
+                                          "shared",
+                                          "model",
+                                          "mcp"
+                                        ],
+                                        "default": "shared",
+                                        "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                       },
                                       "current_usage": {
                                         "type": "number",
@@ -78006,7 +78420,13 @@
                                 },
                                 "scope": {
                                   "type": "string",
-                                  "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                  "enum": [
+                                    "shared",
+                                    "model",
+                                    "mcp"
+                                  ],
+                                  "default": "shared",
+                                  "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                 },
                                 "current_usage": {
                                   "type": "number",
@@ -78396,7 +78816,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -78504,7 +78930,13 @@
                         },
                         "scope": {
                           "type": "string",
-                          "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                          "enum": [
+                            "shared",
+                            "model",
+                            "mcp"
+                          ],
+                          "default": "shared",
+                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                         },
                         "current_usage": {
                           "type": "number",
@@ -78866,7 +79298,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -78974,7 +79412,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -79396,7 +79840,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -79504,7 +79954,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -79922,7 +80378,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -80030,7 +80492,13 @@
                         },
                         "scope": {
                           "type": "string",
-                          "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                          "enum": [
+                            "shared",
+                            "model",
+                            "mcp"
+                          ],
+                          "default": "shared",
+                          "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                         },
                         "current_usage": {
                           "type": "number",
@@ -80408,7 +80876,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -80516,7 +80990,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -81008,7 +81488,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -81116,7 +81602,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -81528,7 +82020,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -81636,7 +82134,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -82068,7 +82572,13 @@
                                     },
                                     "scope": {
                                       "type": "string",
-                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                      "enum": [
+                                        "shared",
+                                        "model",
+                                        "mcp"
+                                      ],
+                                      "default": "shared",
+                                      "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                                     },
                                     "current_usage": {
                                       "type": "number",
@@ -82176,7 +82686,13 @@
                               },
                               "scope": {
                                 "type": "string",
-                                "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                "enum": [
+                                  "shared",
+                                  "model",
+                                  "mcp"
+                                ],
+                                "default": "shared",
+                                "description": "Traffic the budget is charged by: `shared` (default, shared by model requests and MCP tool executions), `model` or `mcp`. Only the profile's own budgets may use `model` or `mcp`; provider and model budgets are always `shared`."
                               },
                               "current_usage": {
                                 "type": "number",
@@ -154652,6 +155168,16 @@
             },
             "additionalProperties": false
           },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "shared",
+              "model",
+              "mcp"
+            ],
+            "default": "shared",
+            "description": "Traffic the budget is charged by. `shared` is shared by model requests and MCP tool\nexecutions (the behaviour of every budget created before scopes existed), `model` is\ncharged only by model requests, and `mcp` only by MCP tool executions.\n"
+          },
           "last_reset": {
             "type": "string",
             "format": "date-time"
@@ -154841,6 +155367,16 @@
               }
             },
             "additionalProperties": false
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "shared",
+              "model",
+              "mcp"
+            ],
+            "default": "shared",
+            "description": "Traffic the budget is charged by: `shared` (default, shared), `model` (model requests only)\nor `mcp` (MCP tool executions only). A reset duration may appear once per scope on one\nowner, so a `shared` and an `mcp` budget may share `1d`, but two `mcp` budgets may not.\n`mcp` is accepted only where MCP tool executions are charged: a virtual key's own\nbudgets, teams, customers, and model limits for all models (`*`) with no provider.\nElsewhere the API rejects it; `shared` and `model` are accepted on every owner.\n"
           }
         }
       },
@@ -155073,6 +155609,15 @@
           },
           "reset_duration": {
             "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "shared",
+              "model",
+              "mcp"
+            ],
+            "description": "Traffic the budget is charged by. Tells apart budgets of one owner on the same reset period."
           },
           "override_amount": {
             "type": "number"
@@ -158607,7 +159152,7 @@
           },
           "budgets": {
             "type": "array",
-            "description": "Budget configurations for this model limit. Each entry must have a unique reset_duration.",
+            "description": "Budget configurations for this model limit. Each entry must have a unique reset_duration and scope pair.",
             "items": {
               "$ref": "#/components/schemas/Budget"
             }

@@ -1,5 +1,6 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
@@ -11,11 +12,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
-import { resetDurationLabels, resetDurationOptions } from "@/lib/constants/governance";
+import { BUDGET_SCOPE_VALUES, resetDurationLabels, resetDurationOptions } from "@/lib/constants/governance";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
-import { budgetSignature } from "@/lib/utils/governance";
-import { shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
+import { budgetSignature, scopeNeedsAllModelsOwner } from "@/lib/utils/governance";
+import { hasMCPBudgetOnNarrowLimit, shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
 // Side-effect import: pulls in downstream scope registrations (e.g. enterprise
 // registers "user" + user picker). The OSS-build fallback is an empty module.
 import { getErrorMessage, useCreateModelConfigMutation, useLazyGetModelsQuery, useUpdateModelConfigMutation } from "@/lib/store";
@@ -51,6 +52,7 @@ const formSchema = z
 					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string().optional(),
 					reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
+					scope: z.enum(BUDGET_SCOPE_VALUES).optional(),
 				}),
 			)
 			.optional(),
@@ -69,6 +71,12 @@ type FormData = z.infer<typeof formSchema>;
 // A limit with no provider applies across all of them; the form spells that absence as a
 // sentinel so the control has something to show. Module level so its identity is stable.
 const ALL_PROVIDERS_VALUE = "all";
+
+// A limit for every model on every provider is holder-level: it is the only one a scope whose traffic
+// names no model (scopeNeedsAllModelsOwner, as MCP) is charged on.
+const isHolderLevelSelection = (modelName: string | undefined, provider: string | undefined) => modelName === "*" && !provider;
+// The scopes a narrower limit can carry: every scope but those needing an all-models owner.
+const NARROW_LIMIT_SCOPES = BUDGET_SCOPE_VALUES.filter((scope) => !scopeNeedsAllModelsOwner(scope));
 
 export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: ModelLimitSheetProps) {
 	const { t } = useTranslation("models");
@@ -140,6 +148,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				max_limit: b.max_limit,
 				reset_duration: b.reset_duration,
 				reset_config: b.reset_config,
+				scope: b.scope,
 			})),
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: modelConfig?.rate_limit?.token_reset_duration || "1h",
@@ -174,6 +183,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					max_limit: b.max_limit,
 					reset_duration: b.reset_duration,
 					reset_config: b.reset_config,
+					scope: b.scope,
 				})),
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: modelConfig.rate_limit?.token_reset_duration || "1h",
@@ -197,11 +207,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				max_limit: b.max_limit,
 				reset_duration: b.reset_duration,
 				reset_config: b.reset_config,
+				scope: b.scope,
 			}));
 		const current = (modelConfig.budgets ?? []).map((b) => ({
 			max_limit: b.max_limit ?? undefined,
 			reset_duration: b.reset_duration,
 			reset_config: b.reset_config,
+			scope: b.scope,
 		}));
 		return budgetSignature(next) !== budgetSignature(current);
 	};
@@ -230,6 +242,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 			// Full desired set of budgets (kept lines with a max_limit). For updates this is
 			// reconciled server-side; an empty array removes all budgets.
+			// Only an all-models, all-providers limit is charged by MCP tool executions, so an MCP budget
+			// cannot stay once the limit is narrowed: it is never turned into a shared one, the operator
+			// resolves it first.
+			if (hasMCPBudgetOnNarrowLimit(data.modelName, provider, data.budgets)) {
+				form.setError("root", { message: t("modelLimits.mcpBudgetNeedsAllModels") });
+				return;
+			}
 			const budgetsPayload = (data.budgets ?? [])
 				.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
 				.map((b) => ({
@@ -237,6 +256,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					max_limit: b.max_limit as number,
 					reset_duration: b.reset_duration || "1M",
 					reset_config: b.reset_config,
+					scope: b.scope,
 				}));
 
 			if (isEditing && modelConfig) {
@@ -372,10 +392,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											<p className="font-medium">
 												{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
 											</p>
-											<p className="text-muted-foreground text-xs">
+											<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
 												{t("modelLimits.resets", {
 													period: resetDurationLabels[b.reset_duration] || b.reset_duration,
 												})}
+												<BudgetScopeBadge scope={b.scope} />
 											</p>
 										</div>
 									))}
@@ -603,8 +624,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										max_limit: b.max_limit,
 										reset_duration: b.reset_duration ?? "1M",
 										reset_config: b.reset_config,
+										scope: b.scope,
 									}))}
 									onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
+									showScope
+									scopeOptions={isHolderLevelSelection(form.watch("modelName"), form.watch("provider")) ? undefined : NARROW_LIMIT_SCOPES}
 								/>
 							</div>
 
@@ -665,8 +689,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
 											{(modelConfig?.budgets ?? []).map((b) => (
 												<div key={b.id} className="space-y-1">
-													<p className="text-muted-foreground text-xs">
+													<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
 														{t("modelLimits.budgetWithDuration", { duration: b.reset_duration })}
+														<BudgetScopeBadge scope={b.scope} />
 													</p>
 													<p className="text-sm font-medium">
 														${b.current_usage.toFixed(2)} / ${b.max_limit.toFixed(2)}

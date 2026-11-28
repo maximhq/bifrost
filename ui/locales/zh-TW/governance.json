@@ -482,9 +482,8 @@
 		"budgetMaxLimit": "預算上限必須大於 $0.01",
 		"budgetNMaxLimit": "預算 #{{n}} 上限必須大於 $0.01",
 		"budgetNResetRequired": "預算 #{{n}} 重置週期為必填項",
-		"distinctResetDuration": "每項預算必須使用不同的重置週期",
-		"uniqueResetPeriod": "每項預算必須使用唯一的重置週期",
-		"budgetNLabel": "預算 #{{n}}：最高支出（USD）",
+		"distinctResetDuration": "同一範圍內的每項預算必須使用不同的重置週期",
+		"uniqueResetPeriod": "同一範圍內的每項預算必須使用唯一的重置週期",
 		"noBudgets": "暫無預算。點選「新增預算」以設定支出上限。",
 		"budgetDuration": "預算（{{duration}}）",
 		"noLimit": "無限制",
@@ -498,7 +497,8 @@
 		"contentLoggingInherit": "繼承",
 		"contentLoggingOff": "此團隊關閉",
 		"contentLoggingOn": "此團隊開啟",
-		"contentLoggingHelp": "是否把此團隊流量的請求和回應內容寫入日誌。團隊優先於其虛擬金鑰和供應商金鑰，因此金鑰無法重新開啟團隊已關閉的內容。「關閉」也會從連接器匯出中去掉內容。在允許依請求覆寫時，單次請求的標頭仍然生效。"
+		"contentLoggingHelp": "是否把此團隊流量的請求和回應內容寫入日誌。團隊優先於其虛擬金鑰和供應商金鑰，因此金鑰無法重新開啟團隊已關閉的內容。「關閉」也會從連接器匯出中去掉內容。在允許依請求覆寫時，單次請求的標頭仍然生效。",
+		"duplicateResetPeriodScope": "該範圍內重置週期重複；同一範圍的預算必須使用不同的間隔。"
 	},
 	"filters": {
 		"filters": "篩選",

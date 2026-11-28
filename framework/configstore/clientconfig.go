@@ -1866,6 +1866,11 @@ func GenerateBudgetHash(b tables.TableBudget) (string, error) {
 		hash.Write([]byte(strconv.Itoa(int(b.QuarterStartMonth()))))
 	}
 
+	// Only a non-default scope is hashed, so budgets written before scopes existed keep their digest.
+	if scope := b.Scope.Normalize(); scope != tables.LimitScopeShared {
+		hash.Write([]byte("scope:" + string(scope)))
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -1938,6 +1943,7 @@ func GenerateCustomerHash(c tables.TableCustomer) (string, error) {
 	for _, id := range budgetIDs {
 		hash.Write([]byte("budgetID:" + id))
 	}
+	hashInlineBudgetScopes(hash, c.Budgets)
 
 	// Only when set, so a customer declaring none keeps the hash it had before the field existed.
 	if c.AccessProfile != "" {
@@ -1945,6 +1951,25 @@ func GenerateCustomerHash(c tables.TableCustomer) (string, error) {
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// hashInlineBudgetScopes writes the non-default scope of each of an owner's inline budgets, by budget
+// ID in sorted order. An owner's hash names its inline budgets only by ID, and config.json writes
+// them only when that hash changes, so a scope edit that keeps the ID would otherwise never reach
+// the database. Shared budgets write nothing, so an owner whose budgets are all shared keeps the
+// digest it had before scopes existed.
+func hashInlineBudgetScopes(h hash.Hash, budgets []tables.TableBudget) {
+	scoped := make([]string, 0, len(budgets))
+	for i := range budgets {
+		if scope := budgets[i].Scope.Normalize(); scope != tables.LimitScopeShared {
+			scoped = append(scoped, budgets[i].ID+"="+string(scope))
+		}
+	}
+	if len(scoped) == 0 {
+		return
+	}
+	sort.Strings(scoped)
+	h.Write([]byte("budgetScopes:" + strings.Join(scoped, ",")))
 }
 
 // GenerateTeamHash generates a SHA256 hash for a team.
@@ -1980,6 +2005,7 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 			hash.Write([]byte(id))
 		}
 	}
+	hashInlineBudgetScopes(hash, t.Budgets)
 
 	// Hash Profile - use Profile if set, else marshal ParsedProfile
 	// (Profile has json:"-" so when loading from JSON, only ParsedProfile is populated)

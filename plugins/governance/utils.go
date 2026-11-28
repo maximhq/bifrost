@@ -14,6 +14,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
@@ -686,18 +687,22 @@ func (p *GovernancePlugin) aliasTargets(ctx *schemas.BifrostContext) grant.Alias
 // composes several possible payers settles there on who pays, and this only records the answer. An
 // error is a request whose payers cannot be settled at all; nothing is recorded for it, and the
 // funnel refuses it rather than serving it against half an answer.
-func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
+//
+// A budget's scope is applied here, once, so that what is checked, logged and charged agree: an
+// MCP tool execution answers only to "mcp" and "shared" budgets, every other request only to "model"
+// and "shared" ones. See budgetsForRequestKind.
+func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, requestType schemas.RequestType, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
 	g := ctx.Grant()
 	if g == nil {
 		return nil, nil
 	}
-	return resolveLimitsWith(ctx, store, g.Access(), provider, model)
+	return resolveLimitsWith(ctx, store, g.Access(), requestType, provider, model)
 }
 
 // resolveLimitsWith is resolveLimits over a given access rather than the grant's own, for a request
 // whose model check used a different one (see literalAccessFor). The grant is still where the
 // settled limits are recorded.
-func resolveLimitsWith(ctx *schemas.BifrostContext, store GovernanceStore, access schemas.Access, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
+func resolveLimitsWith(ctx *schemas.BifrostContext, store GovernanceStore, access schemas.Access, requestType schemas.RequestType, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
 	g := ctx.Grant()
 	if g == nil {
 		return nil, nil
@@ -706,6 +711,7 @@ func resolveLimitsWith(ctx *schemas.BifrostContext, store GovernanceStore, acces
 	if err != nil {
 		return nil, err
 	}
+	budgets = budgetsForRequestKind(ctx, store, budgets, configstoreTables.RequestScope(requestType))
 	limits := grant.NewLimits(budgets, rateLimits)
 	g.SetLimits(limits)
 	return limits, nil

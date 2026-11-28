@@ -483,9 +483,8 @@
 		"budgetMaxLimit": "Budget max limit must be greater than $0.01",
 		"budgetNMaxLimit": "Budget #{{n}} max limit must be greater than $0.01",
 		"budgetNResetRequired": "Budget #{{n}} reset duration is required",
-		"distinctResetDuration": "Each budget must have a distinct reset duration",
-		"uniqueResetPeriod": "Each budget must have a unique reset period",
-		"budgetNLabel": "Budget #{{n}}: Maximum Spend (USD)",
+		"distinctResetDuration": "Each budget must have a distinct reset duration for its scope",
+		"uniqueResetPeriod": "Each budget must have a unique reset period for its scope",
 		"noBudgets": "No budgets. Click \"Add budget\" to enforce a spend limit.",
 		"budgetDuration": "Budget ({{duration}})",
 		"noLimit": "No limit",
@@ -499,7 +498,8 @@
 		"contentLoggingInherit": "Inherit",
 		"contentLoggingOff": "Off for this team",
 		"contentLoggingOn": "On for this team",
-		"contentLoggingHelp": "Whether request and response content is stored in logs for this team's traffic. The team outranks its virtual keys and provider keys, so a key cannot reopen content the team turned off. \"Off\" also strips content from connector exports. The per-request header still applies when per-request overrides are allowed."
+		"contentLoggingHelp": "Whether request and response content is stored in logs for this team's traffic. The team outranks its virtual keys and provider keys, so a key cannot reopen content the team turned off. \"Off\" also strips content from connector exports. The per-request header still applies when per-request overrides are allowed.",
+		"duplicateResetPeriodScope": "Duplicate reset period for this scope; budget lines with the same scope must use different intervals."
 	},
 	"filters": {
 		"filters": "Filters",

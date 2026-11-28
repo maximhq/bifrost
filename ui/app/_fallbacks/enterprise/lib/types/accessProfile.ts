@@ -1,6 +1,8 @@
+import type { LimitScope } from "@/lib/types/governance";
+
 export interface AccessProfileBudgetLine {
 	id: string;
-	scope: string;
+	scope?: LimitScope;
 	max_limit: number;
 	reset_duration: string;
 	current_usage: number;

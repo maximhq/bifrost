@@ -482,9 +482,8 @@
 		"budgetMaxLimit": "예산 최대 한도는 $0.01보다 커야 해요.",
 		"budgetNMaxLimit": "예산 #{{n}} 최대 한도는 0.01달러보다 커야 해요.",
 		"budgetNResetRequired": "예산 #{{n}} 재설정 기간이 필요해요.",
-		"distinctResetDuration": "각 예산에는 고유한 재설정 기간이 있어야 해요.",
-		"uniqueResetPeriod": "각 예산에는 고유한 재설정 기간이 있어야 해요.",
-		"budgetNLabel": "예산 #{{n}}: 최대 지출(USD)",
+		"distinctResetDuration": "각 예산에는 적용 범위별로 고유한 재설정 기간이 있어야 해요.",
+		"uniqueResetPeriod": "각 예산에는 적용 범위별로 고유한 재설정 주기가 있어야 해요.",
 		"noBudgets": "예산이 없어요. 지출 한도를 적용하려면 '예산 추가'를 클릭하세요.",
 		"budgetDuration": "예산({{duration}})",
 		"noLimit": "제한 없음",
@@ -498,7 +497,8 @@
 		"contentLoggingInherit": "상속",
 		"contentLoggingOff": "이 팀에서는 끄기",
 		"contentLoggingOn": "이 팀에서는 켜기",
-		"contentLoggingHelp": "이 팀의 트래픽에 대해 요청과 응답 내용을 로그에 저장할지 여부입니다. 팀은 자신의 가상 키와 프로바이더 키보다 우선하므로, 팀이 끈 내용을 키가 다시 켤 수 없습니다. \"끄기\"는 커넥터 내보내기에서도 내용을 제거합니다. 요청별 재정의가 허용되면 요청 헤더는 그대로 적용됩니다."
+		"contentLoggingHelp": "이 팀의 트래픽에 대해 요청과 응답 내용을 로그에 저장할지 여부입니다. 팀은 자신의 가상 키와 프로바이더 키보다 우선하므로, 팀이 끈 내용을 키가 다시 켤 수 없습니다. \"끄기\"는 커넥터 내보내기에서도 내용을 제거합니다. 요청별 재정의가 허용되면 요청 헤더는 그대로 적용됩니다.",
+		"duplicateResetPeriodScope": "이 적용 범위에서 재설정 기간이 중복되었어요. 같은 적용 범위의 예산 항목은 서로 다른 간격을 사용해야 해요."
 	},
 	"filters": {
 		"filters": "필터",

@@ -483,9 +483,8 @@
 		"budgetMaxLimit": "La limite max. du budget doit être supérieure à $0.01",
 		"budgetNMaxLimit": "La limite max. du budget n°{{n}} doit être supérieure à $0.01",
 		"budgetNResetRequired": "La durée de réinitialisation du budget n°{{n}} est requise",
-		"distinctResetDuration": "Chaque budget doit avoir une durée de réinitialisation distincte",
-		"uniqueResetPeriod": "Chaque budget doit avoir une période de réinitialisation unique",
-		"budgetNLabel": "Budget n°{{n}} : dépense maximale (USD)",
+		"distinctResetDuration": "Chaque budget doit avoir une durée de réinitialisation distincte pour sa portée",
+		"uniqueResetPeriod": "Chaque budget doit avoir une période de réinitialisation unique pour sa portée",
 		"noBudgets": "Aucun budget. Cliquez sur « Ajouter un budget » pour imposer une limite de dépense.",
 		"budgetDuration": "Budget alloué ({{duration}})",
 		"noLimit": "Aucune limite",
@@ -499,7 +498,8 @@
 		"contentLoggingInherit": "Hériter",
 		"contentLoggingOff": "Désactivé pour cette équipe",
 		"contentLoggingOn": "Activé pour cette équipe",
-		"contentLoggingHelp": "Indique si le contenu des requêtes et des réponses est enregistré dans les journaux du trafic de cette équipe. L'équipe prime sur ses clés virtuelles et ses clés de fournisseur : une clé ne peut pas réactiver un contenu que l'équipe a désactivé. « Désactivé » retire aussi le contenu des exports des connecteurs. L'en-tête par requête s'applique toujours lorsque les remplacements par requête sont autorisés."
+		"contentLoggingHelp": "Indique si le contenu des requêtes et des réponses est enregistré dans les journaux du trafic de cette équipe. L'équipe prime sur ses clés virtuelles et ses clés de fournisseur : une clé ne peut pas réactiver un contenu que l'équipe a désactivé. « Désactivé » retire aussi le contenu des exports des connecteurs. L'en-tête par requête s'applique toujours lorsque les remplacements par requête sont autorisés.",
+		"duplicateResetPeriodScope": "Période de réinitialisation en double pour cette portée ; les lignes de budget de même portée doivent utiliser des intervalles différents."
 	},
 	"filters": {
 		"filters": "Filtres",

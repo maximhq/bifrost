@@ -130,13 +130,14 @@ Budgets cap cumulative spend (in USD) for an owning governance entity over a rol
 | `max_limit` | Yes | Maximum spend in USD |
 | `reset_duration` | Yes | Window length: `"30s"`, `"5m"`, `"1h"`, `"1d"`, `"1w"`, `"1M"`, `"1Q"`, `"1Y"` |
 | `reset_config` | No | Quarterly windows only. `{ "quarter_start_month": 4 }` sets the first month of Q1. Values are integers from 1 through 12; omit the field for January. See [Quarterly budgets](/features/governance/budget-and-limits#quarterly-budgets-and-fiscal-quarters) |
+| `scope` | No | `"shared"` (default), `"model"` or `"mcp"`: which traffic the budget is charged by. `"mcp"` is accepted on virtual key, team and customer budgets and on model configs for `*` with no provider; on any other owner it fails the config load, while `"shared"` and `"model"` are accepted everywhere. See [Budget scope](/features/governance/budget-and-limits#budget-scope-model-and-mcp) |
 | `team_id` | No | Attach to a team. Set this on the budget; teams do not have `budget_id` |
 | `virtual_key_id` | No | Attach to a virtual key |
 | `provider_config_id` | No | Attach to a provider config ID |
 | `model_config_id` | No | Attach to a model config ID |
 | `customer_id` | No | Attach to a customer |
 
-Set at most one owner field on a budget. A team can own multiple budgets with different reset durations.
+Set at most one owner field on a budget. A team can own multiple budgets with different reset durations, and the same reset duration once per scope: two `"mcp"` budgets on `"1M"` for one owner fail the config load. Two default-scope budgets sharing a reset duration are still loaded, with a warning, so files written before scopes existed keep working.
 
 ---
 

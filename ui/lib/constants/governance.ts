@@ -22,6 +22,11 @@ export const resetDurationOptions = RESET_DURATION_VALUES.map(resetDurationOptio
 // cannot enforce.
 export const budgetResetDurationOptions = [...resetDurationOptions, resetDurationOption("1Q")];
 
+// Budget scopes, in display order. "shared" is the default: the budget is shared by model requests
+// and MCP tool executions, which is how every budget behaved before scopes existed.
+export const BUDGET_SCOPE_VALUES = ["shared", "model", "mcp"] as const;
+export const DEFAULT_BUDGET_SCOPE = "shared";
+
 // Durations that support calendar-aligned resets (snap to day/week/month/quarter/year boundaries).
 // Must stay in sync with IsCalendarAlignableDuration in framework/configstore/tables/utils.go.
 // Case matters: "M" is a month while "m" is a minute, so "1q" is not a quarter.

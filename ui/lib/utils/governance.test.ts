@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { periodRank, shortPeriod } from "@/lib/budgetOutline";
+import { budgetPeriodKey, hasDuplicateBudgetPeriods, periodRank, shortPeriod } from "@/lib/budgetOutline";
 import {
 	budgetResetDurationOptions,
 	currentQuarterIndex,
@@ -18,6 +18,7 @@ import {
 	getEffectiveBudgetLimit,
 	hasActiveBudgetOverride,
 	parseResetPeriod,
+	scopeNeedsAllModelsOwner,
 	validateBudgetOverride,
 } from "./governance";
 
@@ -194,6 +195,30 @@ describe("quarter map helpers", () => {
 		expect(nextQuarterReset(11, new Date(2026, 11, 5)).getTime()).toBe(new Date(2027, 1, 1).getTime());
 	});
 });
+describe("budget period identity", () => {
+	it("treats a missing scope as the shared default", () => {
+		expect(budgetPeriodKey("1d", undefined)).toBe(budgetPeriodKey("1d", "shared"));
+		expect(budgetPeriodKey("1d", "mcp")).not.toBe(budgetPeriodKey("1d", "shared"));
+	});
+
+	// One reset period may be used once per scope: Shared + MCP over a day is fine, two MCP days are not.
+	it("flags a duplicate only when period and scope shared repeat", () => {
+		expect(hasDuplicateBudgetPeriods([{ reset_duration: "1d" }, { reset_duration: "1d", scope: "mcp" }])).toBe(false);
+		expect(
+			hasDuplicateBudgetPeriods([
+				{ reset_duration: "1d", scope: "model" },
+				{ reset_duration: "1d", scope: "mcp" },
+			]),
+		).toBe(false);
+		expect(
+			hasDuplicateBudgetPeriods([
+				{ reset_duration: "1d", scope: "mcp" },
+				{ reset_duration: "1d", scope: "mcp" },
+			]),
+		).toBe(true);
+		expect(hasDuplicateBudgetPeriods([{ reset_duration: "1d" }, { reset_duration: "1d", scope: "shared" }])).toBe(true);
+	});
+});
 describe("budgetSignature", () => {
 	const quarterly = (quarterStartMonth?: number) => [
 		{
@@ -212,6 +237,13 @@ describe("budgetSignature", () => {
 
 	it("treats an absent quarter start and an explicit January as the same window", () => {
 		expect(budgetSignature(quarterly(undefined))).toBe(budgetSignature(quarterly(1)));
+	});
+
+	it("changes when only the scope changes, and keeps the pre-scope signature for the default", () => {
+		const daily = (scope?: string) => [{ id: "b-1", max_limit: 500, reset_duration: "1d", ...(scope ? { scope } : {}) }];
+		expect(budgetSignature(daily("mcp"))).not.toBe(budgetSignature(daily()));
+		expect(budgetSignature(daily("mcp"))).not.toBe(budgetSignature(daily("model")));
+		expect(budgetSignature(daily("shared"))).toBe(budgetSignature(daily()));
 	});
 
 	it("ignores the quarter start for non-quarterly durations", () => {
@@ -281,5 +313,14 @@ describe("multi-unit override expiry", () => {
 	it.each(["7d", "2w", "3M", "2Q", "2Y"])("uses rolling expiry for %s despite calendar alignment", (duration) => {
 		const budget = { max_limit: 100, last_reset: "2026-03-10T12:30:00Z", reset_duration: duration };
 		expect(getBudgetOverrideValidUntil(budget, 2, true)).toEqual(getBudgetOverrideValidUntil(budget, 2, false));
+	});
+});
+
+describe("scopeNeedsAllModelsOwner", () => {
+	it("names the scopes whose traffic carries no model, as the API's LimitScope.NeedsAllModelsOwner does", () => {
+		expect(scopeNeedsAllModelsOwner("mcp")).toBe(true);
+		for (const scope of [undefined, "", "shared", "model"]) {
+			expect(scopeNeedsAllModelsOwner(scope)).toBe(false);
+		}
 	});
 });
