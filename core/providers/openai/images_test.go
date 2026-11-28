@@ -40,3 +40,29 @@ func TestToOpenAIImageGenerationRequest_XAIQuality(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkToOpenAIImageGenerationRequest_XAI(b *testing.B) {
+	for _, bc := range []struct {
+		name    string
+		model   string
+		quality *string
+	}{
+		{"grok-imagine-image-2.0/quality-low", "grok-imagine-image-2.0", schemas.Ptr("low")},
+		{"grok-imagine-image-2.0/quality-high", "grok-imagine-image-2.0", schemas.Ptr("high")},
+		{"grok-imagine-image/quality-low", "grok-imagine-image", schemas.Ptr("low")},
+		{"grok-imagine-image-2.0/no-quality", "grok-imagine-image-2.0", nil},
+	} {
+		req := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.XAI,
+			Model:    bc.model,
+			Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+			Params:   &schemas.ImageGenerationParameters{Quality: bc.quality, Size: schemas.Ptr("1024x1024")},
+		}
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				_ = ToOpenAIImageGenerationRequest(req)
+			}
+		})
+	}
+}
