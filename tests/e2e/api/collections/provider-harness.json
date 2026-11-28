@@ -352427,6 +352427,71 @@
           ]
         }
       ]
+    },
+    {
+      "name": "393. Bedrock invoke stream message_start carries null stop fields (#9538 / PR #9543)",
+      "description": "Regression for #9538 / PR #9543. The Bedrock InvokeModel streaming route (POST /bedrock/model/{id}/invoke-with-response-stream) re-emits Anthropic-native events through toAnthropicInvokeStreamBytes. The initial message_start frame must carry stop_reason and stop_sequence as explicit nulls (as the Anthropic API does), not omit them. The case decodes the base64 bytes envelopes and asserts both properties are present and strictly null.",
+      "item": [
+        {
+          "name": "Bedrock invoke-with-response-stream: message_start has null stop_reason and stop_sequence (Haiku 4.5) - #9538",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke-with-response-stream succeeds - #9538', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('message_start carries explicit null stop_reason and stop_sequence (regression for #9538 - the properties were absent) - #9538', function () {",
+                  "  var rawText = pm.response.text() || '';",
+                  "  var b64Matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(b64Matches.length, 'expected at least one invoke-stream chunk event: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var events = b64Matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  var messageStart = events.filter(function (e) { return e.type === 'message_start'; })[0];",
+                  "  pm.expect(messageStart, 'expected a message_start event in the decoded stream: ' + JSON.stringify(events).slice(0, 500)).to.be.an('object');",
+                  "  var msg = messageStart && messageStart.message;",
+                  "  pm.expect(msg, 'message_start.message missing: ' + JSON.stringify(messageStart)).to.be.an('object');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(msg, 'stop_reason'), 'message.stop_reason absent: ' + JSON.stringify(msg)).to.equal(true);",
+                  "  pm.expect(msg.stop_reason, 'message.stop_reason must be null: ' + JSON.stringify(msg)).to.equal(null);",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(msg, 'stop_sequence'), 'message.stop_sequence absent: ' + JSON.stringify(msg)).to.equal(true);",
+                  "  pm.expect(msg.stop_sequence, 'message.stop_sequence must be null: ' + JSON.stringify(msg)).to.equal(null);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
